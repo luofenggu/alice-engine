@@ -44,7 +44,9 @@ use anyhow::{Result, Context};
 use tracing::{info, warn};
 use chrono::Local;
 
+use alice_persist::Document;
 use crate::chat::ChatHistory;
+use crate::model::InstanceSettings;
 use crate::action::Action;
 use crate::action::execute::execute_action;
 use crate::llm::{LlmClient, LlmConfig, ChatMessage, InferenceStream, StreamItem, RecvResult};
@@ -407,6 +409,8 @@ pub struct Alice {
     pub active_config_index: usize,
     /// Display name from settings.json (e.g. "小白", "牧星").
     pub instance_name: Option<String>,
+    /// Settings document (JSON file persistence via Document<T>).
+    pub settings_doc: Document<InstanceSettings>,
 
     /// Maximum number of session blocks before history rolling is triggered.
     pub session_blocks_limit: u32,
@@ -424,7 +428,7 @@ impl Alice {
     /// Create a new Alice instance from an instance directory.
     ///
     /// @TRACE: INSTANCE
-    pub fn new(instance_id: &str, user_id: &str, instance_dir: PathBuf, config: AliceConfig) -> Result<Self> {
+    pub fn new(instance_id: &str, user_id: &str, instance_dir: PathBuf, config: AliceConfig, settings_doc: Document<InstanceSettings>) -> Result<Self> {
         let memory_dir = instance_dir.join("memory");
         let sessions_dir = memory_dir.join(SESSIONS_DIR);
         let knowledge_dir = memory_dir.join(KNOWLEDGE_DIR);
@@ -522,6 +526,7 @@ impl Alice {
             extra_configs: Vec::new(),
             active_config_index: 0,
             instance_name: None,
+            settings_doc,
             inference_failures: 0,
             inference_backoff_until: None,
             session_blocks_limit: 4,
@@ -1377,11 +1382,16 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("memory")).unwrap();
         std::fs::create_dir_all(tmp.path().join("workspace")).unwrap();
 
+        // Create minimal settings.json for Document<InstanceSettings>
+        let settings_path = tmp.path().join("settings.json");
+        std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
+        let settings_doc = alice_persist::Document::open(&settings_path).unwrap();
+
         let config = AliceConfig {
             log_dir: tmp.path().join("logs"),
             ..Default::default()
         };
-        let alice = Alice::new("test", "user1", tmp.path().to_path_buf(), config).unwrap();
+        let alice = Alice::new("test", "user1", tmp.path().to_path_buf(), config, settings_doc).unwrap();
         (alice, tmp)
     }
 

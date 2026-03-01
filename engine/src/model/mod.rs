@@ -158,3 +158,112 @@ pub struct QueryResult {
     pub start_id: i64,
     pub has_more: bool,
 }
+
+// ---------------------------------------------------------------------------
+// InstanceSettings — per-instance configuration (.proto for settings.json)
+// ---------------------------------------------------------------------------
+
+/// A model entry in extra_models array.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct ExtraModel {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+/// Per-instance settings loaded from instance root settings.json.
+///
+/// This is the declarative contract for settings.json structure.
+/// All fields use serde for serialization — no manual JSON parsing.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct InstanceSettings {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub privileged: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_beats: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_separator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_blocks_limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_block_kb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_kb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_max_consecutive_beats: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_cooldown_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_models: Vec<ExtraModel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+}
+
+impl InstanceSettings {
+    /// Default model when not specified in settings.json or env.
+    pub const DEFAULT_MODEL: &str = "openrouter@anthropic/claude-opus-4.6";
+
+    /// Apply environment variable fallbacks for api_key, model, and user_id.
+    /// Call this after loading from file to fill in missing values.
+    pub fn apply_env_fallbacks(&mut self) {
+        if self.api_key.is_empty() {
+            self.api_key = std::env::var("ALICE_DEFAULT_API_KEY").ok().unwrap_or_default();
+        }
+        if self.model.is_empty() {
+            self.model = std::env::var("ALICE_DEFAULT_MODEL").ok()
+                .unwrap_or_else(|| Self::DEFAULT_MODEL.to_string());
+        }
+        if self.user_id.is_empty() {
+            self.user_id = std::env::var("ALICE_USER_ID").ok()
+                .unwrap_or_else(|| "default".to_string());
+        }
+    }
+
+    /// Check that required fields are present. Call after apply_env_fallbacks().
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.api_key.is_empty() {
+            anyhow::bail!("Missing api_key: set in settings.json or ALICE_DEFAULT_API_KEY env var");
+        }
+        Ok(())
+    }
+
+    /// Parse the model field "provider@model_id" into (api_url, model_id).
+    pub fn parse_model(&self) -> (String, String) {
+        Self::parse_model_str(&self.model)
+    }
+
+    /// Parse a model string "provider@model_id" into (api_url, model_id).
+    pub fn parse_model_str(model: &str) -> (String, String) {
+        if let Some(pos) = model.find('@') {
+            let provider = &model[..pos];
+            let model_id = &model[pos + 1..];
+            let api_url = match provider {
+                "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
+                "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
+                "zenmux" => "https://zenmux.ai/api/v1/chat/completions".to_string(),
+                other => {
+                    tracing::warn!("Unknown provider '{}', using as direct URL", other);
+                    other.to_string()
+                }
+            };
+            (api_url, model_id.to_string())
+        } else {
+            (
+                "https://openrouter.ai/api/v1/chat/completions".to_string(),
+                model.to_string(),
+            )
+        }
+    }
+}

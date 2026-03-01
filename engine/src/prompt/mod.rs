@@ -329,7 +329,11 @@ mod tests {
             log_dir: tmp.path().join("logs"),
             ..Default::default()
         };
-        let alice = Alice::new("alice", "user1", tmp.path().to_path_buf(), config).unwrap();
+        // Create a minimal settings.json for Document<InstanceSettings>
+        let settings_path = tmp.path().join("settings.json");
+        std::fs::write(&settings_path, "{}").unwrap();
+        let settings_doc = alice_persist::Document::open(&settings_path).unwrap();
+        let alice = Alice::new("alice", "user1", tmp.path().to_path_buf(), config, settings_doc).unwrap();
         (alice, tmp)
     }
 

@@ -36,7 +36,6 @@ use tracing::{info, warn, error};
 use chrono::Local;
 
 use crate::core::{Alice, AliceConfig};
-
 /// Graceful shutdown signal file path.
 /// Written by engine.sh stop / self-deploy.sh to request graceful shutdown.
 /// Engine checks this every 3s in main loop; instance threads check after each beat.
@@ -52,105 +51,8 @@ const MEMORY_BACKUP_PATHS: &[(&str, &str)] = &[
 /// Settings file name in instance root directory.
 const SETTINGS_FILE: &str = "settings.json";
 
-// ─── Settings ────────────────────────────────────────────────────
-
-/// A model entry in extra_models array.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-struct ExtraModel {
-    api_key: String,
-    model: String,
-}
-
-/// Per-instance settings loaded from instance root settings.json.
-#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
-#[serde(default)]
-struct InstanceSettings {
-    #[serde(default)]
-    api_key: String,
-    #[serde(default)]
-    model: String,
-    #[serde(default)]
-    user_id: String,
-    #[serde(default)]
-    privileged: bool,
-    max_beats: Option<u32>,
-    action_separator: Option<String>,
-    session_blocks_limit: Option<u32>,
-    session_block_kb: Option<u32>,
-    history_kb: Option<u32>,
-    safety_max_consecutive_beats: Option<u32>,
-    safety_cooldown_secs: Option<u64>,
-    #[serde(default)]
-    extra_models: Vec<ExtraModel>,
-    name: Option<String>,
-    color: Option<String>,
-    avatar: Option<String>,
-}
-
-impl InstanceSettings {
-    /// Default model when not specified in settings.json or env.
-    const DEFAULT_MODEL: &str = "openrouter@anthropic/claude-opus-4.6";
-
-    fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read settings: {}", path.display()))?;
-
-        let mut settings: Self = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse settings: {}", path.display()))?;
-
-        // Env fallback: api_key
-        if settings.api_key.is_empty() {
-            settings.api_key = std::env::var("ALICE_DEFAULT_API_KEY").ok().unwrap_or_default();
-        }
-        // Env fallback: model
-        if settings.model.is_empty() {
-            settings.model = std::env::var("ALICE_DEFAULT_MODEL").ok()
-                .unwrap_or_else(|| Self::DEFAULT_MODEL.to_string());
-        }
-        // Env fallback: user_id
-        if settings.user_id.is_empty() {
-            settings.user_id = std::env::var("ALICE_USER_ID").ok()
-                .unwrap_or_else(|| "default".to_string());
-        }
-
-        // api_key is required
-        if settings.api_key.is_empty() {
-            anyhow::bail!("Missing api_key: set in settings.json or ALICE_DEFAULT_API_KEY env var");
-        }
-
-        Ok(settings)
-    }
-
-    /// Parse model string "provider@model_id" into (api_url, model_id).
-    fn parse_model(&self) -> (String, String) {
-        Self::parse_model_str(&self.model)
-    }
-
-    /// Parse a model string "provider@model_id" into (api_url, model_id).
-    fn parse_model_str(model: &str) -> (String, String) {
-        if let Some(pos) = model.find('@') {
-            let provider = &model[..pos];
-            let model_id = &model[pos + 1..];
-            let api_url = match provider {
-                "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
-                "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
-                "zenmux" => "https://zenmux.ai/api/v1/chat/completions".to_string(),
-                other => {
-                    warn!("Unknown provider '{}', using as direct URL", other);
-                    other.to_string()
-                }
-            };
-            (api_url, model_id.to_string())
-        } else {
-            (
-                "https://openrouter.ai/api/v1/chat/completions".to_string(),
-                model.to_string(),
-            )
-        }
-    }
-}
-
-
+use crate::model::InstanceSettings;
+use alice_persist::Document;
 
 // ─── Free function: sandbox user management ──────────────────────
 
@@ -482,7 +384,11 @@ impl AliceEngine {
     /// (`agent-{name}`) and sets workspace ownership (紧箍咒).
     fn create_instance(&mut self, name: &str, instance_dir: &Path) -> Result<()> {
         let settings_path = instance_dir.join(SETTINGS_FILE);
-        let settings = InstanceSettings::load(&settings_path)?;
+        let settings_doc: Document<InstanceSettings> = Document::open(&settings_path)?;
+        let mut settings = settings_doc.get().clone();
+        settings.apply_env_fallbacks();
+        settings.validate()?;
+
         let (api_url, model) = settings.parse_model();
 
         let user_id = &settings.user_id;
@@ -490,15 +396,15 @@ impl AliceEngine {
         let config = AliceConfig {
             model,
             api_url,
-            api_key: settings.api_key,
+            api_key: settings.api_key.clone(),
             max_tokens: 16384,
             temperature: 0.5,
             log_dir: self.logs_dir.clone(),
             beat_interval_secs: 3,
-            action_separator: settings.action_separator,
+            action_separator: settings.action_separator.clone(),
         };
 
-        let mut alice = Alice::new(name, user_id, instance_dir.to_path_buf(), config)?;
+        let mut alice = Alice::new(name, user_id, instance_dir.to_path_buf(), config, settings_doc)?;
 
         // Build extra model configs for failover
         let extra_configs: Vec<crate::llm::LlmConfig> = settings.extra_models.iter().map(|em| {
@@ -740,7 +646,6 @@ impl AliceEngine {
         let instance_id = alice.instance_id.clone();
         let rolling_in_progress = Arc::new(AtomicBool::new(false));
         let instance_dir = alice.instance_dir.clone();
-        let settings_path = instance_dir.join(SETTINGS_FILE);
         info!("[THREAD-{}] Instance thread started", instance_id);
 
         let mut consecutive_beats: u32 = 0;
@@ -754,15 +659,10 @@ impl AliceEngine {
                 break;
             }
 
-            // Check settings.json exists (instance deleted = file moved to .trash)
-            if !settings_path.exists() {
-                info!("[THREAD-{}] Settings file missing, instance likely deleted. Exiting.", instance_id);
-                break;
-            }
-
-            // Hot-reload mutable settings from settings.json
-            if let Ok(content) = std::fs::read_to_string(&settings_path) {
-                if let Ok(s) = serde_json::from_str::<InstanceSettings>(&content) {
+            // Hot-reload settings via Document (also detects instance deletion)
+            match alice.settings_doc.reload() {
+                Ok(()) => {
+                    let s = alice.settings_doc.get();
                     if let Some(v) = s.safety_max_consecutive_beats { alice.safety_max_consecutive_beats = v; }
                     if let Some(v) = s.safety_cooldown_secs { alice.safety_cooldown_secs = v; }
                     if let Some(v) = s.session_blocks_limit { alice.session_blocks_limit = v; }
@@ -771,7 +671,7 @@ impl AliceEngine {
 
                     // Hot-reload instance name
                     if s.name != alice.instance_name {
-                        alice.instance_name = s.name;
+                        alice.instance_name = s.name.clone();
                     }
 
                     // Hot-reload privileged
@@ -794,7 +694,7 @@ impl AliceEngine {
                     if !s.api_key.is_empty() && s.api_key != alice.config.api_key {
                         info!("[HOT-RELOAD-{}] API key changed", instance_id);
                         alice.config.api_key = s.api_key.clone();
-                        alice.llm_client.config.api_key = s.api_key;
+                        alice.llm_client.config.api_key = s.api_key.clone();
                     }
 
                     // Hot-reload extra_models
@@ -826,6 +726,11 @@ impl AliceEngine {
                             alice.extra_configs = new_extra_configs;
                         }
                     }
+                }
+                Err(_) => {
+                    // reload failed = file missing or corrupted, instance likely deleted
+                    info!("[THREAD-{}] Settings reload failed, instance likely deleted. Exiting.", instance_id);
+                    break;
                 }
             }
 
@@ -1177,7 +1082,8 @@ mod tests {
             r#"{"api_key":"sk-test-key","model":"openrouter@anthropic/claude-sonnet-4"}"#
         ).unwrap();
 
-        let settings = InstanceSettings::load(&settings_path).unwrap();
+        let doc: Document<InstanceSettings> = Document::open(&settings_path).unwrap();
+        let settings = doc.get();
         assert_eq!(settings.api_key, "sk-test-key");
         assert_eq!(settings.model, "openrouter@anthropic/claude-sonnet-4");
         assert!(settings.action_separator.is_none());
@@ -1191,7 +1097,8 @@ mod tests {
             r#"{"api_key":"sk-test","model":"openrouter@google/gemini-flash","action_separator":"fixed123"}"#
         ).unwrap();
 
-        let settings = InstanceSettings::load(&settings_path).unwrap();
+        let doc: Document<InstanceSettings> = Document::open(&settings_path).unwrap();
+        let settings = doc.get();
         assert_eq!(settings.action_separator, Some("fixed123".to_string()));
     }
 
@@ -1297,15 +1204,15 @@ mod tests {
         std::fs::write(&path,
             r#"{"api_key":"sk-test","model":"test","max_beats":20}"#
         ).unwrap();
-        let settings = InstanceSettings::load(&path).unwrap();
-        assert_eq!(settings.max_beats, Some(20));
+        let doc: Document<InstanceSettings> = Document::open(&path).unwrap();
+        assert_eq!(doc.get().max_beats, Some(20));
 
         // Without max_beats
         std::fs::write(&path,
             r#"{"api_key":"sk-test","model":"test"}"#
         ).unwrap();
-        let settings = InstanceSettings::load(&path).unwrap();
-        assert_eq!(settings.max_beats, None);
+        let doc: Document<InstanceSettings> = Document::open(&path).unwrap();
+        assert_eq!(doc.get().max_beats, None);
     }
 
     #[test]

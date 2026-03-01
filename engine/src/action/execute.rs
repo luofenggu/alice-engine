@@ -590,36 +590,12 @@ pub fn extract_msg_ids(text: &str) -> Vec<String> {
 fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, entries: &[(String, String)]) -> Result<String> {
     info!("[ACTION-{}] set_profile ({} entries)", tx.instance_id, entries.len());
 
-    let settings_path = alice.instance_dir.join("settings.json");
-    let content = std::fs::read_to_string(&settings_path)
-        .with_context(|| format!("Failed to read settings: {}", settings_path.display()))?;
-
-    let mut json: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| "Failed to parse settings.json")?;
-
     let mut applied = Vec::new();
-    for (key, value) in entries {
+
+    // Validate keys first
+    for (key, _) in entries {
         match key.as_str() {
-            "name" | "color" | "avatar" | "privileged" => {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    if let Some(obj) = json.as_object_mut() {
-                        obj.remove(key);
-                    }
-                    applied.push(format!("{}: (cleared)", key));
-                } else {
-                    // privileged uses boolean value
-                    if key == "privileged" {
-                        let bool_val = trimmed == "true";
-                        json["privileged"] = serde_json::Value::Bool(bool_val);
-                        alice.privileged = bool_val;
-                        applied.push(format!("{}: {}", key, bool_val));
-                    } else {
-                        json[key.as_str()] = serde_json::Value::String(trimmed.to_string());
-                        applied.push(format!("{}: {}", key, trimmed));
-                    }
-                }
-            }
+            "name" | "color" | "avatar" | "privileged" => {}
             _ => {
                 return Ok(format!(
                     "set_profile failed: unknown key '{}'\n", key
@@ -628,10 +604,34 @@ fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, entries: &[(Stri
         }
     }
 
-    let new_content = serde_json::to_string_pretty(&json)
-        .context("Failed to serialize settings.json")?;
-    std::fs::write(&settings_path, &new_content)
-        .with_context(|| format!("Failed to write settings: {}", settings_path.display()))?;
+    // Collect changes to apply
+    let entries_owned: Vec<(String, String)> = entries.to_vec();
+    for (key, value) in &entries_owned {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            applied.push(format!("{}: (cleared)", key));
+        } else {
+            applied.push(format!("{}: {}", key, trimmed));
+        }
+    }
+
+    // Apply changes via Document::update (auto-saves to disk)
+    alice.settings_doc.update(|s| {
+        for (key, value) in &entries_owned {
+            let trimmed = value.trim();
+            match key.as_str() {
+                "name" => s.name = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
+                "color" => s.color = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
+                "avatar" => s.avatar = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
+                "privileged" => s.privileged = trimmed == "true",
+                _ => {} // already validated above
+            }
+        }
+    })?;
+
+    // Apply runtime effects
+    alice.privileged = alice.settings_doc.get().privileged;
+    alice.instance_name = alice.settings_doc.get().name.clone();
 
     let detail = applied.join(", ");
     Ok(format!("profile updated: {}\n", detail))
@@ -687,8 +687,12 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("memory/sessions")).unwrap();
         std::fs::create_dir_all(tmp.path().join("memory/knowledge")).unwrap();
         std::fs::create_dir_all(tmp.path().join("workspace")).unwrap();
+        // Create minimal settings.json for Document
+        let settings_path = tmp.path().join("settings.json");
+        std::fs::write(&settings_path, r#"{"api_key":"test","model":"test@test"}"#).unwrap();
+        let settings_doc = alice_persist::Document::open(&settings_path).unwrap();
         let config = AliceConfig::default();
-        let mut alice = Alice::new("test", "user1", tmp.path().to_path_buf(), config).unwrap();
+        let mut alice = Alice::new("test", "user1", tmp.path().to_path_buf(), config, settings_doc).unwrap();
         alice.privileged = true;
         let tx = Transaction::new("test", "abc123");
         (alice, tx, tmp)
