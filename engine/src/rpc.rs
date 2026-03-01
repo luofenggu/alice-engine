@@ -348,18 +348,22 @@ fn collect_instances(instances_dir: &Path) -> anyhow::Result<Vec<InstanceInfo>> 
 
 /// 启动RPC server（Unix socket）
 pub async fn start_rpc_server(state: Arc<AppState>) {
-    // 清理旧socket文件
-    let _ = std::fs::remove_file(RPC_SOCKET_PATH);
+    // RPC socket路径：环境变量 > 默认常量
+    let socket_path = std::env::var("ALICE_RPC_SOCKET")
+        .unwrap_or_else(|_| RPC_SOCKET_PATH.to_string());
 
-    let listener = match UnixListener::bind(RPC_SOCKET_PATH) {
+    // 清理旧socket文件
+    let _ = std::fs::remove_file(&socket_path);
+
+    let listener = match UnixListener::bind(&socket_path) {
         Ok(l) => l,
         Err(e) => {
-            error!("[RPC] Failed to bind Unix socket {}: {}", RPC_SOCKET_PATH, e);
+            error!("[RPC] Failed to bind Unix socket {}: {}", socket_path, e);
             return;
         }
     };
 
-    info!("[RPC] Server listening on {}", RPC_SOCKET_PATH);
+    info!("[RPC] Server listening on {}", socket_path);
 
     loop {
         match listener.accept().await {
