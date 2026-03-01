@@ -41,6 +41,7 @@ sha2 = "0.10"
 hex = "0.4"
 http = "1"
 alice-rpc = { path = "../rpc" }
+alice-persist = { path = "../defense/persist" }
 tarpc = { version = "0.37", features = ["tokio1", "serde-transport", "unix"] }
 futures = "0.3"
 

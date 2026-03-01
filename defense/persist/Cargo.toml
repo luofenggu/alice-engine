@@ -1,0 +1,11 @@
+[package]
+name = "alice-persist"
+version = "0.1.0"
+edition = "2021"
+description = "Persistence isolator — generic ORM bridging in-memory structs to storage backends."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+anyhow = "1"

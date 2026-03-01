@@ -219,4 +219,4 @@ pub mod chat;
 pub mod web;
 pub mod rpc;
 pub mod model;
-pub mod persist;
+pub use alice_persist as persist;

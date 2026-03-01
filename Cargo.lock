@@ -27,6 +27,7 @@ dependencies = [
 name = "alice-engine"
 version = "0.1.0"
 dependencies = [
+ "alice-persist",
  "alice-rpc",
  "anyhow",
  "axum",
@@ -51,6 +52,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "alice-persist"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
