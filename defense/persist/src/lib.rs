@@ -547,9 +547,114 @@ where
     }
 }
 
+// ─── TextFile: plain text file storage ───
+
+/// A plain text file with in-memory caching and atomic writes.
+///
+/// Similar to `Document<T>` but without JSON serialization —
+/// reads and writes raw strings directly.
+///
+/// ```ignore
+/// let mut tf = TextFile::open("notes.txt")?;
+/// tf.set("hello world");
+/// tf.append("\nmore text");
+/// tf.flush()?;              // atomic write: tmp file + rename
+/// tf.reload()?;             // re-read from disk
+/// ```
+pub struct TextFile {
+    path: std::path::PathBuf,
+    content: String,
+    dirty: bool,
+}
+
+impl TextFile {
+    /// Open a text file at the given path.
+    /// If the file exists, load its content. Otherwise start with empty string.
+    pub fn open(path: impl Into<std::path::PathBuf>) -> Result<Self> {
+        let path = path.into();
+        let content = if path.exists() {
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read text file: {}", path.display()))?
+        } else {
+            String::new()
+        };
+        Ok(Self { path, content, dirty: false })
+    }
+
+    /// Get the current content (from memory).
+    pub fn get(&self) -> &str {
+        &self.content
+    }
+
+    /// Replace the entire content.
+    pub fn set(&mut self, content: impl Into<String>) {
+        self.content = content.into();
+        self.dirty = true;
+    }
+
+    /// Append text to the content.
+    pub fn append(&mut self, text: &str) {
+        self.content.push_str(text);
+        self.dirty = true;
+    }
+
+    /// Clear the content (set to empty string).
+    pub fn clear(&mut self) {
+        self.content.clear();
+        self.dirty = true;
+    }
+
+    /// Returns true if content has been modified since last flush/open/reload.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Flush to disk using atomic write (write to .tmp then rename).
+    /// No-op if not dirty.
+    pub fn flush(&mut self) -> Result<()> {
+        if !self.dirty {
+            return Ok(());
+        }
+
+        // Ensure parent directory exists
+        if let Some(parent) = self.path.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+            }
+        }
+
+        // Atomic write: write to tmp file, then rename
+        let tmp_path = self.path.with_extension("tmp");
+        std::fs::write(&tmp_path, &self.content)
+            .with_context(|| format!("failed to write tmp file: {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &self.path)
+            .with_context(|| format!("failed to rename tmp to target: {}", self.path.display()))?;
+
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Reload content from disk, discarding any in-memory changes.
+    pub fn reload(&mut self) -> Result<()> {
+        self.content = if self.path.exists() {
+            std::fs::read_to_string(&self.path)
+                .with_context(|| format!("failed to read text file: {}", self.path.display()))?
+        } else {
+            String::new()
+        };
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Get the file path.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 // ─── Helpers ───
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests;
 

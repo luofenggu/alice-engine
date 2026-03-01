@@ -174,4 +174,132 @@ mod tests {
         assert_eq!(col.count(), 1);
         assert_eq!(col.all()[0].title, "Before");
     }
+
+    // ─── TextFile tests ───
+
+    fn temp_text_path(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir()
+            .join(format!("persist_textfile_{}_{}", std::process::id(), n))
+            .join(name)
+    }
+
+    #[test]
+    fn test_textfile_basic() {
+        let path = temp_text_path("basic.txt");
+
+        // Open non-existent file → empty content
+        let mut tf = TextFile::open(&path).unwrap();
+        assert_eq!(tf.get(), "");
+        assert!(!tf.is_dirty());
+
+        // Set content
+        tf.set("hello world");
+        assert_eq!(tf.get(), "hello world");
+        assert!(tf.is_dirty());
+
+        // Flush
+        tf.flush().unwrap();
+        assert!(!tf.is_dirty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
+
+        // Reload
+        std::fs::write(&path, "modified externally").unwrap();
+        tf.reload().unwrap();
+        assert_eq!(tf.get(), "modified externally");
+        assert!(!tf.is_dirty());
+    }
+
+    #[test]
+    fn test_textfile_append() {
+        let path = temp_text_path("append.txt");
+        let mut tf = TextFile::open(&path).unwrap();
+
+        tf.set("line1\n");
+        tf.append("line2\n");
+        tf.append("line3\n");
+        assert_eq!(tf.get(), "line1\nline2\nline3\n");
+
+        tf.flush().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "line1\nline2\nline3\n");
+    }
+
+    #[test]
+    fn test_textfile_clear() {
+        let path = temp_text_path("clear.txt");
+        let mut tf = TextFile::open(&path).unwrap();
+
+        tf.set("some content");
+        tf.flush().unwrap();
+
+        tf.clear();
+        assert_eq!(tf.get(), "");
+        assert!(tf.is_dirty());
+
+        tf.flush().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn test_textfile_persistence() {
+        let path = temp_text_path("persist.txt");
+
+        // Write and flush
+        {
+            let mut tf = TextFile::open(&path).unwrap();
+            tf.set("persisted data");
+            tf.flush().unwrap();
+        }
+
+        // Reopen and verify
+        {
+            let tf = TextFile::open(&path).unwrap();
+            assert_eq!(tf.get(), "persisted data");
+        }
+    }
+
+    #[test]
+    fn test_textfile_no_tmp_after_flush() {
+        let path = temp_text_path("atomic.txt");
+        let tmp_path = path.with_extension("tmp");
+
+        let mut tf = TextFile::open(&path).unwrap();
+        tf.set("atomic write test");
+        tf.flush().unwrap();
+
+        // .tmp file should not exist after successful rename
+        assert!(!tmp_path.exists());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_textfile_flush_noop_when_clean() {
+        let path = temp_text_path("noop.txt");
+        let mut tf = TextFile::open(&path).unwrap();
+
+        // Not dirty, flush should be no-op (file shouldn't be created)
+        tf.flush().unwrap();
+        assert!(!path.exists());
+
+        // Now set and flush
+        tf.set("content");
+        tf.flush().unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_textfile_open_existing() {
+        let path = temp_text_path("existing.txt");
+
+        // Create file first
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "pre-existing content").unwrap();
+
+        // Open should load existing content
+        let tf = TextFile::open(&path).unwrap();
+        assert_eq!(tf.get(), "pre-existing content");
+        assert!(!tf.is_dirty());
+    }
 }
