@@ -78,15 +78,40 @@ pub struct ActionResult {
     pub message: Option<String>,
 }
 
+/// 文件信息
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileInfo {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// 文件读取结果
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileReadResult {
+    /// 文件内容（文本文件）或元信息描述（二进制文件）
+    pub content: String,
+    /// 文件大小（字节）
+    pub size: u64,
+    /// 是否为二进制文件
+    pub is_binary: bool,
+}
+
 // ============================================================
 // RPC Service — trait定义即契约
 // ============================================================
 
 #[tarpc::service]
 pub trait AliceEngine {
-    // --- 实例 ---
+    // --- 实例管理 ---
     /// 获取所有实例列表
     async fn get_instances() -> Vec<InstanceInfo>;
+
+    /// Create a new instance with optional display name
+    async fn create_instance(display_name: String) -> ActionResult;
+
+    /// Delete an instance (move to trash)
+    async fn delete_instance(instance_id: String) -> ActionResult;
 
     // --- 消息 ---
     /// 查询消息（支持分页：before_id向上翻页，after_id轮询新消息）
@@ -113,9 +138,20 @@ pub trait AliceEngine {
     /// 切换LLM模型
     async fn switch_model(instance_id: String, model_index: u32) -> ActionResult;
 
-    /// Create a new instance with optional display name
-    async fn create_instance(display_name: String) -> ActionResult;
+    // --- 设置 ---
+    /// 获取实例设置（JSON字符串，调用方负责解析和mask敏感字段）
+    async fn get_settings(instance_id: String) -> String;
 
-    /// Delete an instance (move to trash)
-    async fn delete_instance(instance_id: String) -> ActionResult;
+    /// 更新实例设置（JSON字符串，合并更新）
+    async fn update_settings(instance_id: String, settings_json: String) -> ActionResult;
+
+    // --- 文件与知识 ---
+    /// 列出实例工作空间中的文件
+    async fn list_files(instance_id: String, path: String) -> Vec<FileInfo>;
+
+    /// 读取实例工作空间中的文件
+    async fn read_file(instance_id: String, path: String) -> FileReadResult;
+
+    /// 获取实例的知识文件内容
+    async fn get_knowledge(instance_id: String) -> String;
 }

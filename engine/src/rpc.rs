@@ -9,6 +9,7 @@ use std::path::Path;
 use alice_rpc::{
     AliceEngine, ObserveResult, ActionResult,
     InstanceInfo, MessageInfo, MessagesResult,
+    FileInfo, FileReadResult,
     RPC_SOCKET_PATH,
 };
 use tarpc::context::Context;
@@ -255,6 +256,197 @@ impl AliceEngine for AliceEngineServer {
             Err(e) => ActionResult { success: false, message: Some(format!("Failed to move to trash: {}", e)) },
         }
     }
+
+    async fn get_settings(self, _: Context, instance_id: String) -> String {
+        let settings_path = self.state.instances_dir
+            .join(&instance_id)
+            .join("settings.json");
+
+        match std::fs::read_to_string(&settings_path) {
+            Ok(content) => content,
+            Err(e) => {
+                error!("[RPC] get_settings error for {}: {}", instance_id, e);
+                String::new()
+            }
+        }
+    }
+
+    async fn update_settings(self, _: Context, instance_id: String, settings_json: String) -> ActionResult {
+        let settings_path = self.state.instances_dir
+            .join(&instance_id)
+            .join("settings.json");
+
+        if !settings_path.exists() {
+            return ActionResult { success: false, message: Some("Instance not found".to_string()) };
+        }
+
+        let result = tokio::task::spawn_blocking(move || {
+            // Read current settings
+            let content = std::fs::read_to_string(&settings_path)?;
+            let mut settings: serde_json::Value = serde_json::from_str(&content)?;
+            let body: serde_json::Value = serde_json::from_str(&settings_json)?;
+
+            // Update allowed fields
+            let mut updated = Vec::new();
+            let string_fields = ["name", "avatar", "color", "api_key", "model"];
+            for field in &string_fields {
+                if let Some(val) = body.get(*field).and_then(|v| v.as_str()) {
+                    let val = val.trim();
+                    if !val.is_empty() {
+                        settings[*field] = serde_json::json!(val);
+                        if *field == "api_key" {
+                            updated.push(format!("{}: ...{}", field, &val[val.len().saturating_sub(4)..]));
+                        } else {
+                            updated.push(format!("{}: {}", field, val));
+                        }
+                    }
+                }
+            }
+            if let Some(val) = body.get("privileged") {
+                if let Some(b) = val.as_bool() {
+                    settings["privileged"] = serde_json::json!(b);
+                    updated.push(format!("privileged: {}", b));
+                }
+            }
+            if let Some(val) = body.get("extra_models") {
+                if let Some(arr) = val.as_array() {
+                    settings["extra_models"] = serde_json::json!(arr);
+                    updated.push(format!("extra_models: {} items", arr.len()));
+                }
+            }
+
+            if updated.is_empty() {
+                return Ok(ActionResult { success: false, message: Some("No valid fields to update".to_string()) });
+            }
+
+            let new_content = serde_json::to_string_pretty(&settings)?;
+            std::fs::write(&settings_path, &new_content)?;
+
+            info!("[RPC] Settings updated for {}: {}", instance_id, updated.join(", "));
+            Ok::<_, anyhow::Error>(ActionResult { success: true, message: Some(updated.join(", ")) })
+        }).await;
+
+        match result {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => ActionResult { success: false, message: Some(e.to_string()) },
+            Err(e) => ActionResult { success: false, message: Some(e.to_string()) },
+        }
+    }
+
+    async fn list_files(self, _: Context, instance_id: String, path: String) -> Vec<FileInfo> {
+        let workspace = self.state.instances_dir.join(&instance_id).join("workspace");
+
+        let result = tokio::task::spawn_blocking(move || {
+            let workspace_canonical = workspace.canonicalize()?;
+            let target = if path.is_empty() {
+                workspace_canonical.clone()
+            } else {
+                workspace.join(&path).canonicalize()?
+            };
+
+            if !target.starts_with(&workspace_canonical) || !target.is_dir() {
+                return Ok::<_, anyhow::Error>(vec![]);
+            }
+
+            let mut items = Vec::new();
+            for entry in std::fs::read_dir(&target)? {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') || name == "target" || name == "node_modules" {
+                    continue;
+                }
+                let metadata = entry.metadata()?;
+                items.push(FileInfo {
+                    name,
+                    is_dir: metadata.is_dir(),
+                    size: if metadata.is_file() { metadata.len() } else { 0 },
+                });
+            }
+            // Sort: dirs first, then by name
+            items.sort_by(|a, b| {
+                match (a.is_dir, b.is_dir) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                }
+            });
+            Ok(items)
+        }).await;
+
+        match result {
+            Ok(Ok(items)) => items,
+            Ok(Err(e)) => {
+                error!("[RPC] list_files error: {}", e);
+                vec![]
+            }
+            Err(e) => {
+                error!("[RPC] list_files join error: {}", e);
+                vec![]
+            }
+        }
+    }
+
+    async fn read_file(self, _: Context, instance_id: String, path: String) -> FileReadResult {
+        let workspace = self.state.instances_dir.join(&instance_id).join("workspace");
+        let empty = FileReadResult { content: String::new(), size: 0, is_binary: false };
+
+        let result = tokio::task::spawn_blocking(move || {
+            let workspace_canonical = workspace.canonicalize()?;
+            let target = workspace.join(&path).canonicalize()?;
+
+            if !target.starts_with(&workspace_canonical) || !target.is_file() {
+                anyhow::bail!("File not found or access denied");
+            }
+
+            let metadata = target.metadata()?;
+            let size = metadata.len();
+
+            if size > 1024 * 1024 {
+                anyhow::bail!("File too large (>1MB)");
+            }
+
+            let file_name = target.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+
+            if is_binary_file(&file_name) {
+                return Ok(FileReadResult {
+                    content: format!("[Binary file: {}, {} bytes]", file_name, size),
+                    size,
+                    is_binary: true,
+                });
+            }
+
+            let content = std::fs::read_to_string(&target)?;
+            Ok::<_, anyhow::Error>(FileReadResult { content, size, is_binary: false })
+        }).await;
+
+        match result {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                error!("[RPC] read_file error: {}", e);
+                FileReadResult { content: e.to_string(), size: 0, is_binary: false }
+            }
+            Err(e) => {
+                error!("[RPC] read_file join error: {}", e);
+                empty
+            }
+        }
+    }
+
+    async fn get_knowledge(self, _: Context, instance_id: String) -> String {
+        let knowledge_path = self.state.instances_dir
+            .join(&instance_id)
+            .join("memory")
+            .join("knowledge.md");
+
+        match std::fs::read_to_string(&knowledge_path) {
+            Ok(content) => content,
+            Err(_) => String::new(),
+        }
+    }
+
 }
 
 // ObserveResult::default() 由 alice-rpc 的 #[derive(Default)] 提供
@@ -344,6 +536,17 @@ fn collect_instances(instances_dir: &Path) -> anyhow::Result<Vec<InstanceInfo>> 
     }
 
     Ok(instances)
+}
+
+
+/// 判断文件是否为二进制格式（基于扩展名）
+fn is_binary_file(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name.ends_with(".jar") || name.ends_with(".class") || name.ends_with(".zip")
+        || name.ends_with(".gz") || name.ends_with(".png") || name.ends_with(".jpg")
+        || name.ends_with(".jpeg") || name.ends_with(".gif") || name.ends_with(".ico")
+        || name.ends_with(".pdf") || name.ends_with(".exe") || name.ends_with(".so")
+        || name.ends_with(".wasm")
 }
 
 /// 启动RPC server（Unix socket）
