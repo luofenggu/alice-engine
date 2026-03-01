@@ -75,6 +75,7 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "pulldown-cmark",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

@@ -46,15 +46,14 @@ pub struct ObserveData {
 
 const USER_ID: &str = "24007";
 
-#[cfg(feature = "ssr")]
-const RPC_SOCKET: &str = "/opt/alice/engine/alice-rpc.sock";
-
 /// 创建RPC client连接
 #[cfg(feature = "ssr")]
 async fn rpc_client() -> Result<alice_rpc::AliceEngineClient, ServerFnError> {
     use tokio::net::UnixStream;
 
-    let stream = UnixStream::connect(RPC_SOCKET)
+    let socket = std::env::var("ALICE_RPC_SOCKET")
+        .unwrap_or_else(|_| "/opt/alice/engine/alice-rpc.sock".to_string());
+    let stream = UnixStream::connect(&socket)
         .await
         .map_err(|e| ServerFnError::new(format!("[RPC] connect failed: {}", e)))?;
     let transport = tarpc::serde_transport::Transport::from((

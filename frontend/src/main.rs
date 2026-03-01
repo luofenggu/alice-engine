@@ -1,9 +1,7 @@
 #[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
-    use axum::http::{header, HeaderMap, StatusCode};
     use axum::middleware::{self, Next};
-    use axum::response::{Html, IntoResponse, Redirect, Response};
     use axum::routing::{get, post};
     use axum::Router;
     use leptos::prelude::*;
@@ -14,6 +12,7 @@ async fn main() {
     use tower_http::compression::CompressionLayer;
 
     use alice_frontend::app::*;
+    use alice_frontend::api;
 
     // ── Auth Setup ──
 
@@ -63,10 +62,26 @@ async fn main() {
     let leptos_options = conf.leptos_options;
     let routes = generate_route_list(App);
 
+    // ── API State ──
+
+    let instances_dir = std::env::var("ALICE_INSTANCES_DIR")
+        .unwrap_or_else(|_| "/opt/alice/instances".to_string());
+    let rpc_socket = std::env::var("ALICE_RPC_SOCKET")
+        .unwrap_or_else(|_| "/opt/alice/engine/alice-rpc.sock".to_string());
+
+    let api_state = Arc::new(api::ApiState {
+        instances_dir: std::path::PathBuf::from(&instances_dir),
+        rpc_socket,
+    });
+
+    println!("[API] instances_dir={}, rpc_socket={}", instances_dir, api_state.rpc_socket);
+
     // ── Router ──
     // Auth middleware uses a closure to capture auth_state (avoids state type mismatch with LeptosOptions)
     let auth = auth_state.clone();
     let app = Router::new()
+        // Public API routes (no auth required)
+        .merge(api::public_api_routes().with_state(api_state.clone()))
         // Public routes (before auth middleware)
         .route("/login", get({
             let _auth = auth_state.clone();
@@ -78,6 +93,8 @@ async fn main() {
         .route("/logout", get(handle_logout))
         // Frontend error reporting
         .route("/api/frontend-error", post(handle_frontend_error))
+        // Authenticated API routes
+        .merge(api::authenticated_api_routes().with_state(api_state.clone()))
         // Server Functions catch-all
         .route("/api/{*fn_name}", post(leptos_axum::handle_server_fns))
         // Leptos routes (SSR pages)
@@ -159,11 +176,12 @@ async fn check_auth(
 
     let path = req.uri().path().to_string();
 
-    // Whitelist: login page, static assets, error reporter
+    // Whitelist: login page, static assets, error reporter, public files
     if path == "/login"
         || path.starts_with("/pkg/")
         || path == "/error-reporter.js"
         || path == "/api/frontend-error"
+        || path.starts_with("/public/")
     {
         return next.run(req).await;
     }
