@@ -54,12 +54,24 @@ const SETTINGS_FILE: &str = "settings.json";
 
 // ─── Settings ────────────────────────────────────────────────────
 
-/// Per-instance settings loaded from instance root settings.json.
-#[derive(Debug)]
-struct InstanceSettings {
+/// A model entry in extra_models array.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct ExtraModel {
     api_key: String,
     model: String,
+}
+
+/// Per-instance settings loaded from instance root settings.json.
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+struct InstanceSettings {
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
     user_id: String,
+    #[serde(default)]
     privileged: bool,
     max_beats: Option<u32>,
     action_separator: Option<String>,
@@ -68,59 +80,45 @@ struct InstanceSettings {
     history_kb: Option<u32>,
     safety_max_consecutive_beats: Option<u32>,
     safety_cooldown_secs: Option<u64>,
-    extra_models: Vec<(String, String)>,
+    #[serde(default)]
+    extra_models: Vec<ExtraModel>,
     name: Option<String>,
+    color: Option<String>,
+    avatar: Option<String>,
 }
 
 impl InstanceSettings {
-    /// Load settings from a JSON file.
-    /// Default model when not specified in settings.json.
+    /// Default model when not specified in settings.json or env.
     const DEFAULT_MODEL: &str = "openrouter@anthropic/claude-opus-4.6";
 
     fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read settings: {}", path.display()))?;
 
-        // api_key: settings.json > env ALICE_DEFAULT_API_KEY > error
-        let api_key = extract_json_string(&content, "api_key")
-            .or_else(|| std::env::var("ALICE_DEFAULT_API_KEY").ok())
-            .ok_or_else(|| anyhow::anyhow!(
-                "Missing api_key: set in settings.json or ALICE_DEFAULT_API_KEY env var"
-            ))?;
-        // model: settings.json > env ALICE_DEFAULT_MODEL > default
-        let model = extract_json_string(&content, "model")
-            .or_else(|| std::env::var("ALICE_DEFAULT_MODEL").ok())
-            .unwrap_or_else(|| Self::DEFAULT_MODEL.to_string());
-        // user_id: settings.json > env ALICE_USER_ID > "default"
-        let user_id = extract_json_string(&content, "user_id")
-            .or_else(|| std::env::var("ALICE_USER_ID").ok())
-            .unwrap_or_else(|| "default".to_string());
-        let privileged = extract_json_bool(&content, "privileged")
-            .unwrap_or(false);
-        let max_beats = extract_json_u32(&content, "max_beats");
-        let action_separator = extract_json_string(&content, "action_separator");
-        let session_blocks_limit = extract_json_u32(&content, "session_blocks_limit");
-        let session_block_kb = extract_json_u32(&content, "session_block_kb");
-        let history_kb = extract_json_u32(&content, "history_kb");
-        let safety_max_consecutive_beats = extract_json_u32(&content, "safety_max_consecutive_beats");
-        let safety_cooldown_secs = extract_json_u32(&content, "safety_cooldown_secs").map(|v| v as u64);
+        let mut settings: Self = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse settings: {}", path.display()))?;
 
-        // extra_models: array of {api_key, model} for failover
-        let extra_models = serde_json::from_str::<serde_json::Value>(&content)
-            .ok()
-            .and_then(|v| v.get("extra_models")?.as_array().cloned())
-            .map(|arr| {
-                arr.iter().filter_map(|item| {
-                    let api_key = item.get("api_key")?.as_str()?.to_string();
-                    let model = item.get("model")?.as_str()?.to_string();
-                    Some((api_key, model))
-                }).collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        // Env fallback: api_key
+        if settings.api_key.is_empty() {
+            settings.api_key = std::env::var("ALICE_DEFAULT_API_KEY").ok().unwrap_or_default();
+        }
+        // Env fallback: model
+        if settings.model.is_empty() {
+            settings.model = std::env::var("ALICE_DEFAULT_MODEL").ok()
+                .unwrap_or_else(|| Self::DEFAULT_MODEL.to_string());
+        }
+        // Env fallback: user_id
+        if settings.user_id.is_empty() {
+            settings.user_id = std::env::var("ALICE_USER_ID").ok()
+                .unwrap_or_else(|| "default".to_string());
+        }
 
-        let name = extract_json_string(&content, "name");
+        // api_key is required
+        if settings.api_key.is_empty() {
+            anyhow::bail!("Missing api_key: set in settings.json or ALICE_DEFAULT_API_KEY env var");
+        }
 
-        Ok(Self { api_key, model, user_id, privileged, max_beats, action_separator, session_blocks_limit, session_block_kb, history_kb, safety_max_consecutive_beats, safety_cooldown_secs, extra_models, name })
+        Ok(settings)
     }
 
     /// Parse model string "provider@model_id" into (api_url, model_id).
@@ -152,56 +150,7 @@ impl InstanceSettings {
     }
 }
 
-/// Extract a string value from simple JSON (no nested objects).
-fn extract_json_string(json: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\"", key);
-    let key_pos = json.find(&pattern)?;
-    let after_key = &json[key_pos + pattern.len()..];
-    let after_colon = after_key.trim_start().strip_prefix(':')?;
-    let after_colon = after_colon.trim_start();
-    let after_quote = after_colon.strip_prefix('"')?;
-    let mut end = 0;
-    let bytes = after_quote.as_bytes();
-    while end < bytes.len() {
-        if bytes[end] == b'"' && (end == 0 || bytes[end - 1] != b'\\') {
-            break;
-        }
-        end += 1;
-    }
-    if end >= bytes.len() {
-        return None;
-    }
-    Some(after_quote[..end].to_string()) // safe: end from ASCII byte scan
-}
 
-/// Extract an unsigned integer value from simple JSON (e.g. `"max_beats": 10`).
-fn extract_json_u32(json: &str, key: &str) -> Option<u32> {
-    let pattern = format!("\"{}\"", key);
-    let key_pos = json.find(&pattern)?;
-    let after_key = &json[key_pos + pattern.len()..];
-    let after_colon = after_key.trim_start().strip_prefix(':')?;
-    let value = after_colon.trim_start();
-    // Parse digits until non-digit
-    let end = value.find(|c: char| !c.is_ascii_digit()).unwrap_or(value.len());
-    if end == 0 { return None; }
-    value[..end].parse().ok()
-}
-
-/// Extract a boolean value from simple JSON.
-fn extract_json_bool(json: &str, key: &str) -> Option<bool> {
-    let pattern = format!("\"{}\"", key);
-    let key_pos = json.find(&pattern)?;
-    let after_key = &json[key_pos + pattern.len()..];
-    let after_colon = after_key.trim_start().strip_prefix(':')?;
-    let value = after_colon.trim_start();
-    if value.starts_with("true") {
-        Some(true)
-    } else if value.starts_with("false") {
-        Some(false)
-    } else {
-        None
-    }
-}
 
 // ─── Free function: sandbox user management ──────────────────────
 
@@ -552,11 +501,11 @@ impl AliceEngine {
         let mut alice = Alice::new(name, user_id, instance_dir.to_path_buf(), config)?;
 
         // Build extra model configs for failover
-        let extra_configs: Vec<crate::llm::LlmConfig> = settings.extra_models.iter().map(|(key, model_str)| {
-            let (url, model_id) = InstanceSettings::parse_model_str(model_str);
+        let extra_configs: Vec<crate::llm::LlmConfig> = settings.extra_models.iter().map(|em| {
+            let (url, model_id) = InstanceSettings::parse_model_str(&em.model);
             crate::llm::LlmConfig {
                 api_url: url,
-                api_key: key.clone(),
+                api_key: em.api_key.clone(),
                 model: model_id,
                 max_tokens: 16384,
                 temperature: 0.5,
@@ -813,92 +762,69 @@ impl AliceEngine {
 
             // Hot-reload mutable settings from settings.json
             if let Ok(content) = std::fs::read_to_string(&settings_path) {
-                if let Some(v) = extract_json_u32(&content, "safety_max_consecutive_beats") {
-                    alice.safety_max_consecutive_beats = v;
-                }
-                if let Some(v) = extract_json_u32(&content, "safety_cooldown_secs") {
-                    alice.safety_cooldown_secs = v as u64;
-                }
-                if let Some(v) = extract_json_u32(&content, "session_blocks_limit") {
-                    alice.session_blocks_limit = v;
-                }
-                if let Some(v) = extract_json_u32(&content, "session_block_kb") {
-                    alice.session_block_kb = v;
-                }
-                if let Some(v) = extract_json_u32(&content, "history_kb") {
-                    alice.history_kb = v;
-                }
+                if let Ok(s) = serde_json::from_str::<InstanceSettings>(&content) {
+                    if let Some(v) = s.safety_max_consecutive_beats { alice.safety_max_consecutive_beats = v; }
+                    if let Some(v) = s.safety_cooldown_secs { alice.safety_cooldown_secs = v; }
+                    if let Some(v) = s.session_blocks_limit { alice.session_blocks_limit = v; }
+                    if let Some(v) = s.session_block_kb { alice.session_block_kb = v; }
+                    if let Some(v) = s.history_kb { alice.history_kb = v; }
 
-                // Hot-reload instance name
-                let new_name = extract_json_string(&content, "name");
-                if new_name != alice.instance_name {
-                    alice.instance_name = new_name;
-                }
-
-                // Hot-reload privileged
-                if let Some(v) = extract_json_bool(&content, "privileged") {
-                    if v != alice.privileged {
-                        info!("[HOT-RELOAD-{}] Privileged changed: {} -> {}", instance_id, alice.privileged, v);
-                        alice.privileged = v;
+                    // Hot-reload instance name
+                    if s.name != alice.instance_name {
+                        alice.instance_name = s.name;
                     }
-                }
 
-                // Hot-reload model and api_key
-                if let Some(new_model_raw) = extract_json_string(&content, "model") {
-                    let (new_api_url, new_model_id) = InstanceSettings::parse_model_str(&new_model_raw);
-                    if new_model_id != alice.config.model || new_api_url != alice.config.api_url {
-                        info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.config.model, new_model_id);
-                        alice.config.model = new_model_id;
-                        alice.config.api_url = new_api_url.clone();
-                        alice.llm_client.config.model = alice.config.model.clone();
-                        alice.llm_client.config.api_url = new_api_url;
+                    // Hot-reload privileged
+                    if s.privileged != alice.privileged {
+                        info!("[HOT-RELOAD-{}] Privileged changed: {} -> {}", instance_id, alice.privileged, s.privileged);
+                        alice.privileged = s.privileged;
                     }
-                }
-                if let Some(new_api_key) = extract_json_string(&content, "api_key") {
-                    if new_api_key != alice.config.api_key {
+
+                    // Hot-reload model and api_key
+                    if !s.model.is_empty() {
+                        let (new_api_url, new_model_id) = InstanceSettings::parse_model_str(&s.model);
+                        if new_model_id != alice.config.model || new_api_url != alice.config.api_url {
+                            info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.config.model, new_model_id);
+                            alice.config.model = new_model_id;
+                            alice.config.api_url = new_api_url.clone();
+                            alice.llm_client.config.model = alice.config.model.clone();
+                            alice.llm_client.config.api_url = new_api_url;
+                        }
+                    }
+                    if !s.api_key.is_empty() && s.api_key != alice.config.api_key {
                         info!("[HOT-RELOAD-{}] API key changed", instance_id);
-                        alice.config.api_key = new_api_key.clone();
-                        alice.llm_client.config.api_key = new_api_key;
+                        alice.config.api_key = s.api_key.clone();
+                        alice.llm_client.config.api_key = s.api_key;
                     }
-                }
 
-                // Hot-reload extra_models
-                let new_extra_configs: Vec<crate::llm::LlmConfig> = serde_json::from_str::<serde_json::Value>(&content)
-                    .ok()
-                    .and_then(|v| v.get("extra_models")?.as_array().cloned())
-                    .map(|arr| {
-                        arr.iter().filter_map(|item| {
-                            let api_key = item.get("api_key")?.as_str()?.to_string();
-                            let model_str = item.get("model")?.as_str()?.to_string();
-                            let (api_url, model_id) = InstanceSettings::parse_model_str(&model_str);
-                            Some(crate::llm::LlmConfig {
-                                api_url,
-                                api_key,
-                                model: model_id,
-                                max_tokens: 16384,
-                                temperature: 0.5,
-                            })
-                        }).collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if new_extra_configs.len() != alice.extra_configs.len() {
-                    info!("[HOT-RELOAD-{}] Extra models changed: {} -> {} entries",
-                        instance_id, alice.extra_configs.len(), new_extra_configs.len());
-                    // Reset to primary if active extra was removed
-                    if alice.active_config_index > 0 && alice.active_config_index > new_extra_configs.len() {
-                        let _ = alice.switch_model(0);
-                    }
-                    alice.extra_configs = new_extra_configs;
-                } else {
-                    // Check if any entry changed
-                    let changed = new_extra_configs.iter().zip(alice.extra_configs.iter())
-                        .any(|(a, b)| a.api_url != b.api_url || a.model != b.model || a.api_key != b.api_key);
-                    if changed {
-                        info!("[HOT-RELOAD-{}] Extra models content changed", instance_id);
-                        if alice.active_config_index > 0 {
+                    // Hot-reload extra_models
+                    let new_extra_configs: Vec<crate::llm::LlmConfig> = s.extra_models.iter().map(|em| {
+                        let (api_url, model_id) = InstanceSettings::parse_model_str(&em.model);
+                        crate::llm::LlmConfig {
+                            api_url,
+                            api_key: em.api_key.clone(),
+                            model: model_id,
+                            max_tokens: 16384,
+                            temperature: 0.5,
+                        }
+                    }).collect();
+                    if new_extra_configs.len() != alice.extra_configs.len() {
+                        info!("[HOT-RELOAD-{}] Extra models changed: {} -> {} entries",
+                            instance_id, alice.extra_configs.len(), new_extra_configs.len());
+                        if alice.active_config_index > 0 && alice.active_config_index > new_extra_configs.len() {
                             let _ = alice.switch_model(0);
                         }
                         alice.extra_configs = new_extra_configs;
+                    } else {
+                        let changed = new_extra_configs.iter().zip(alice.extra_configs.iter())
+                            .any(|(a, b)| a.api_url != b.api_url || a.model != b.model || a.api_key != b.api_key);
+                        if changed {
+                            info!("[HOT-RELOAD-{}] Extra models content changed", instance_id);
+                            if alice.active_config_index > 0 {
+                                let _ = alice.switch_model(0);
+                            }
+                            alice.extra_configs = new_extra_configs;
+                        }
                     }
                 }
             }
@@ -1145,14 +1071,14 @@ pub fn create_instance_dir(
     ];
     let color = PRESET_COLORS[rand::random::<usize>() % PRESET_COLORS.len()];
 
-    // Build settings JSON
-    let mut settings_map = serde_json::Map::new();
-    settings_map.insert("user_id".to_string(), serde_json::Value::String(user_id.to_string()));
-    settings_map.insert("color".to_string(), serde_json::Value::String(color.to_string()));
-    if let Some(name) = display_name {
-        settings_map.insert("name".to_string(), serde_json::Value::String(name.to_string()));
-    }
-    let settings = serde_json::to_string(&serde_json::Value::Object(settings_map))
+    // Build settings via struct serialization
+    let settings_obj = InstanceSettings {
+        user_id: user_id.to_string(),
+        color: Some(color.to_string()),
+        name: display_name.map(|n| n.to_string()),
+        ..Default::default()
+    };
+    let settings = serde_json::to_string_pretty(&settings_obj)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
 
     let settings_path = instance_dir.join("settings.json");
@@ -1169,23 +1095,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_extract_json_string() {
-        let json = r#"{"api_key":"sk-test-123","model":"openrouter@anthropic/claude-sonnet-4"}"#;
-        assert_eq!(extract_json_string(json, "api_key").unwrap(), "sk-test-123");
-        assert_eq!(
-            extract_json_string(json, "model").unwrap(),
-            "openrouter@anthropic/claude-sonnet-4"
-        );
-        assert!(extract_json_string(json, "nonexistent").is_none());
-    }
 
-    #[test]
-    fn test_extract_json_string_with_spaces() {
-        let json = r#"{ "api_key" : "sk-123" , "model" : "test" }"#;
-        assert_eq!(extract_json_string(json, "api_key").unwrap(), "sk-123");
-        assert_eq!(extract_json_string(json, "model").unwrap(), "test");
-    }
 
     #[test]
     fn test_instance_settings_parse_model_openrouter() {
@@ -1203,6 +1113,8 @@ mod tests {
             safety_cooldown_secs: None,
             extra_models: vec![],
             name: None,
+            color: None,
+            avatar: None,
         };
         let (url, model) = settings.parse_model();
         assert_eq!(url, "https://openrouter.ai/api/v1/chat/completions");
@@ -1225,6 +1137,8 @@ mod tests {
             safety_cooldown_secs: None,
             extra_models: vec![],
             name: None,
+            color: None,
+            avatar: None,
         };
         let (url, model) = settings.parse_model();
         assert_eq!(url, "https://api.openai.com/v1/chat/completions");
@@ -1247,6 +1161,8 @@ mod tests {
             safety_cooldown_secs: None,
             extra_models: vec![],
             name: None,
+            color: None,
+            avatar: None,
         };
         let (url, model) = settings.parse_model();
         assert_eq!(url, "https://openrouter.ai/api/v1/chat/completions");
@@ -1370,14 +1286,6 @@ mod tests {
     fn test_check_restart_signal_no_file() {
         let pid_file = PathBuf::from("/tmp/test-alice-engine.pid");
         assert!(!check_shutdown_signal(&pid_file));
-    }
-
-    #[test]
-    fn test_extract_json_u32() {
-        let json = r#"{"max_beats": 10, "other": 42}"#;
-        assert_eq!(extract_json_u32(json, "max_beats"), Some(10));
-        assert_eq!(extract_json_u32(json, "other"), Some(42));
-        assert_eq!(extract_json_u32(json, "missing"), None);
     }
 
     #[test]

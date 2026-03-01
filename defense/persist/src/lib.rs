@@ -477,6 +477,76 @@ impl KvStore {
     }
 }
 
+// ─── Document ────────────────────────────────────────────────────
+
+/// A single struct persisted to a JSON file.
+///
+/// Business code reads/writes the in-memory struct; `Document` handles
+/// serialization to/from a JSON file on disk.
+///
+/// ```ignore
+/// let mut doc: Document<MySettings> = Document::open("settings.json")?;
+/// let val = doc.get().some_field;          // read from memory
+/// doc.update(|s| s.some_field = 42)?;      // modify + auto-save
+/// doc.reload()?;                           // re-read from file (hot-reload)
+/// ```
+pub struct Document<T> {
+    path: std::path::PathBuf,
+    data: T,
+}
+
+impl<T> Document<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + Default,
+{
+    /// Open a document at the given path.
+    /// If the file exists, load and deserialize it.
+    /// If the file does not exist, create it with `T::default()`.
+    pub fn open(path: impl Into<std::path::PathBuf>) -> Result<Self> {
+        let path = path.into();
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read document: {}", path.display()))?;
+            let data: T = serde_json::from_str(&content)
+                .with_context(|| format!("failed to parse document: {}", path.display()))?;
+            Ok(Self { path, data })
+        } else {
+            let doc = Self { path, data: T::default() };
+            doc.save()?;
+            Ok(doc)
+        }
+    }
+
+    /// Get a reference to the in-memory data.
+    pub fn get(&self) -> &T {
+        &self.data
+    }
+
+    /// Modify the data and automatically save to disk.
+    pub fn update(&mut self, f: impl FnOnce(&mut T)) -> Result<()> {
+        f(&mut self.data);
+        self.save()
+    }
+
+    /// Reload data from the file on disk (for hot-reload scenarios).
+    pub fn reload(&mut self) -> Result<()> {
+        let content = std::fs::read_to_string(&self.path)
+            .with_context(|| format!("failed to read document: {}", self.path.display()))?;
+        self.data = serde_json::from_str(&content)
+            .with_context(|| format!("failed to parse document: {}", self.path.display()))?;
+        Ok(())
+    }
+
+    /// Save the current in-memory data to disk.
+    pub fn save(&self) -> Result<()> {
+        let content = serde_json::to_string_pretty(&self.data)
+            .context("failed to serialize document")?;
+        std::fs::write(&self.path, content)
+            .with_context(|| format!("failed to write document: {}", self.path.display()))?;
+        Ok(())
+    }
+}
+
 // ─── Helpers ───
 
 #[cfg(test)]
