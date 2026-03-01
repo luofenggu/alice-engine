@@ -118,23 +118,23 @@ pub fn build_prompts(
     action_token: &str,
     host: Option<&str>,
 ) -> (String, String, MemorySnapshot) {
-    // Load knowledge file (single file, always injected)
+    // Load knowledge from memory
     let knowledge_content = load_knowledge_file(alice);
 
-    // Load history
-    let history_content = alice.read_history()
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "(空)".to_string());
+    // Load history from memory
+    let history_content = {
+        let h = alice.memory.history.get();
+        if h.is_empty() { "(空)".to_string() } else { h.to_string() }
+    };
 
     // Load and render session blocks
     let daily_rendered = render_all_session_blocks(alice);
 
-    // Load current session
-    let current_content = alice.read_current()
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "(空)".to_string());
+    // Load current from memory
+    let current_content = {
+        let c = alice.memory.current.get();
+        if c.is_empty() { "(空)".to_string() } else { c.to_string() }
+    };
 
     let unread_count = alice.count_unread_messages();
     let current_time = Local::now().format("%Y%m%d%H%M%S").to_string();
@@ -195,41 +195,32 @@ pub fn build_prompts(
     (system_prompt, user_prompt, snapshot)
 }
 
-/// Load knowledge.md file for injection into prompt.
-/// Returns formatted knowledge section or empty string if not found.
+/// Load knowledge from memory for injection into prompt.
+/// Returns formatted knowledge section or empty string if empty.
 fn load_knowledge_file(alice: &Alice) -> String {
-    let knowledge_path = alice.memory_dir.join(KNOWLEDGE_FILE);
-    if !knowledge_path.exists() {
+    let content = alice.memory.knowledge.get();
+    if content.trim().is_empty() {
         return String::new();
     }
-    match std::fs::read_to_string(&knowledge_path) {
-        Ok(content) if !content.trim().is_empty() => {
-            format!("### 要点与知识 ###\n{}\n", content.trim())
-        }
-        _ => String::new(),
-    }
+    format!("### 要点与知识 ###\n{}\n", content.trim())
 }
 
-/// Load knowledge.md raw content (for capture prompt).
+/// Load knowledge raw content from memory (for summary prompt).
 /// Returns raw content or empty string.
 pub fn load_knowledge_raw(alice: &Alice) -> String {
-    let knowledge_path = alice.memory_dir.join(KNOWLEDGE_FILE);
-    if !knowledge_path.exists() {
-        return String::new();
-    }
-    std::fs::read_to_string(&knowledge_path).unwrap_or_default()
+    alice.memory.knowledge.get().to_string()
 }
 
 /// Render all session block JSONL files in chronological order.
 pub fn render_all_session_blocks(alice: &Alice) -> String {
-    let blocks = alice.list_session_blocks().unwrap_or_default();
+    let blocks = alice.memory.list_session_blocks().unwrap_or_default();
     if blocks.is_empty() {
         return String::new();
     }
 
     let mut sections = Vec::new();
     for block_name in &blocks {
-        if let Ok(content) = alice.read_session_block(block_name) {
+        if let Ok(content) = alice.memory.read_session_block(block_name) {
             let rendered = render_session_block(&content, alice);
             if !rendered.is_empty() {
                 sections.push(format!("[{}]\n{}", block_name, rendered));
@@ -439,10 +430,10 @@ mod tests {
 
 
     fn test_build_prompts_basic() {
-        let (alice, _tmp) = setup_alice();
+        let (mut alice, _tmp) = setup_alice();
 
-        alice.write_history("history data").unwrap();
-        alice.write_current("current data").unwrap();
+        alice.memory.history.set("history data");
+        alice.memory.current.set("current data");
 
         let (system, user, snapshot) = build_prompts(&alice, "test123", None);
 
@@ -469,11 +460,11 @@ mod tests {
     fn test_build_prompts_with_session_block() {
         let (mut alice, _tmp) = setup_alice();
 
-        alice.write_history("some history").unwrap();
+        alice.memory.history.set("some history");
         // Write a chat message to DB and a session block referencing it
         alice.chat_history.write_user_message("24007", "hi there", "20260223120000", "chat").unwrap();
         let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
-        alice.append_session_block("20260223120000", jsonl).unwrap();
+        alice.memory.append_session_block("20260223120000", jsonl).unwrap();
 
         let (_, user, _) = build_prompts(&alice, "tok", None);
         assert!(user.contains("24007 [20260223120000]: hi there"));
@@ -482,15 +473,14 @@ mod tests {
 
     #[test]
     fn test_load_knowledge_file() {
-        let (alice, _tmp) = setup_alice();
+        let (mut alice, _tmp) = setup_alice();
 
         // No knowledge file yet
         let knowledge = load_knowledge_file(&alice);
         assert!(knowledge.is_empty(), "no knowledge file should return empty string");
 
-        // Write knowledge file
-        let knowledge_path = alice.memory_dir.join("knowledge.md");
-        std::fs::write(&knowledge_path, "# 泛准则\n- 收到消息先回复\n\n# 引擎架构\n模块结构...").unwrap();
+        // Set knowledge content
+        alice.memory.knowledge.set("# 泛准则\n- 收到消息先回复\n\n# 引擎架构\n模块结构...");
 
         let knowledge = load_knowledge_file(&alice);
         assert!(knowledge.contains("### 要点与知识 ###"));
@@ -500,10 +490,9 @@ mod tests {
 
     #[test]
     fn test_load_knowledge_file_empty() {
-        let (alice, _tmp) = setup_alice();
+        let (mut alice, _tmp) = setup_alice();
 
-        let knowledge_path = alice.memory_dir.join("knowledge.md");
-        std::fs::write(&knowledge_path, "  \n  ").unwrap();
+        alice.memory.knowledge.set("  \n  ");
 
         let knowledge = load_knowledge_file(&alice);
         assert!(knowledge.is_empty(), "empty knowledge file should return empty string");
@@ -511,10 +500,9 @@ mod tests {
 
     #[test]
     fn test_load_knowledge_file_raw() {
-        let (alice, _tmp) = setup_alice();
+        let (mut alice, _tmp) = setup_alice();
 
-        let knowledge_path = alice.memory_dir.join("knowledge.md");
-        std::fs::write(&knowledge_path, "raw knowledge content").unwrap();
+        alice.memory.knowledge.set("raw knowledge content");
 
         let raw = load_knowledge_raw(&alice);
         assert_eq!(raw, "raw knowledge content");
@@ -522,10 +510,9 @@ mod tests {
 
     #[test]
     fn test_build_prompts_with_knowledge() {
-        let (alice, _tmp) = setup_alice();
+        let (mut alice, _tmp) = setup_alice();
 
-        let knowledge_path = alice.memory_dir.join("knowledge.md");
-        std::fs::write(&knowledge_path, "# 泛准则\n- 谨慎加信任").unwrap();
+        alice.memory.knowledge.set("# 泛准则\n- 谨慎加信任");
 
         let (_, user, _) = build_prompts(&alice, "tok", None);
         assert!(user.contains("### 要点与知识 ###"));

@@ -155,14 +155,8 @@ impl Action {
 // ─── Directory and file constants ────────────────────────────────
 /// @TRACE: MEMORY
 
-/// Sessions subdirectory under memory_dir
-const SESSIONS_DIR: &str = "sessions";
 /// Knowledge subdirectory under memory_dir
 const KNOWLEDGE_DIR: &str = "knowledge";
-/// History file (long-range narrative, plain text)
-const HISTORY_FILE: &str = "history.txt";
-/// Current session file (raw action records, like old session.txt)
-const CURRENT_FILE: &str = "current.txt";
 
 // ─── Configuration ───────────────────────────────────────────────
 
@@ -354,12 +348,8 @@ pub struct Alice {
     pub user_id: String,
     /// Instance root directory (e.g. /root/agents/alice)
     pub instance_dir: PathBuf,
-    /// Memory root directory (instance_dir/memory)
-    pub memory_dir: PathBuf,
-    /// Sessions directory (memory_dir/sessions)
-    pub sessions_dir: PathBuf,
-    /// Knowledge directory (memory_dir/knowledge)
-    pub knowledge_dir: PathBuf,
+    /// Memory subsystem (knowledge, history, current, sessions)
+    pub memory: memory::Memory,
     /// Workspace root path (instance_dir/workspace)
     pub workspace: PathBuf,
     /// File repository for workspace I/O (actions operate on workspace)
@@ -430,7 +420,6 @@ impl Alice {
     /// @TRACE: INSTANCE
     pub fn new(instance_id: &str, user_id: &str, instance_dir: PathBuf, config: AliceConfig, settings_doc: Document<InstanceSettings>) -> Result<Self> {
         let memory_dir = instance_dir.join("memory");
-        let sessions_dir = memory_dir.join(SESSIONS_DIR);
         let knowledge_dir = memory_dir.join(KNOWLEDGE_DIR);
         let workspace = instance_dir.join("workspace");
         let data_dir = instance_dir.join("data");
@@ -439,8 +428,6 @@ impl Alice {
         // Ensure directories exist
         std::fs::create_dir_all(&memory_dir)
             .with_context(|| format!("Failed to create memory dir: {}", memory_dir.display()))?;
-        std::fs::create_dir_all(&sessions_dir)
-            .with_context(|| format!("Failed to create sessions dir: {}", sessions_dir.display()))?;
         std::fs::create_dir_all(&knowledge_dir)
             .with_context(|| format!("Failed to create knowledge dir: {}", knowledge_dir.display()))?;
         std::fs::create_dir_all(&workspace)
@@ -485,6 +472,9 @@ impl Alice {
             }
         }
 
+        // Open memory subsystem (after migration so TextFile reads migrated content)
+        let memory = memory::Memory::open(&memory_dir)?;
+
         let chat_history = ChatHistory::open(&chat_db_path)
             .context("Failed to open ChatHistory database")?;
 
@@ -503,9 +493,7 @@ impl Alice {
             instance_id: instance_id.to_string(),
             user_id: user_id.to_string(),
             instance_dir,
-            memory_dir,
-            sessions_dir,
-            knowledge_dir,
+            memory: memory,
             workspace,
             chat_history,
             config,
@@ -593,129 +581,7 @@ impl Alice {
 
     // ─── Sessions access ────────────────────────────────────────
 
-    /// Read history file (long-range narrative).
-    /// @TRACE: MEMORY
-    pub fn read_history(&self) -> Result<String> {
-        let path = self.sessions_dir.join(HISTORY_FILE);
-        if !path.exists() {
-            return Ok(String::new());
-        }
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read history: {}", path.display()))
-    }
 
-    /// Write history file.
-    /// @TRACE: MEMORY
-    pub fn write_history(&self, content: &str) -> Result<()> {
-        let path = self.sessions_dir.join(HISTORY_FILE);
-        std::fs::write(&path, content)
-            .with_context(|| format!("Failed to write history: {}", path.display()))
-    }
-
-    /// Read current session file (raw action records).
-    /// @TRACE: MEMORY
-    pub fn read_current(&self) -> Result<String> {
-        let path = self.sessions_dir.join(CURRENT_FILE);
-        if !path.exists() {
-            return Ok(String::new());
-        }
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read current: {}", path.display()))
-    }
-
-    /// Write current session file.
-    /// @TRACE: MEMORY
-    pub fn write_current(&self, content: &str) -> Result<()> {
-        let path = self.sessions_dir.join(CURRENT_FILE);
-        crate::atomic_write(&path, content)
-            .with_context(|| format!("Failed to write current: {}", path.display()))
-    }
-
-    /// Append to current session file.
-    /// @TRACE: MEMORY
-    pub fn append_current(&self, content: &str) -> Result<()> {
-        let current = self.read_current().unwrap_or_default();
-        let new_content = if current.is_empty() {
-            content.to_string()
-        } else {
-            format!("{}\n{}", current, content)
-        };
-        self.write_current(&new_content)
-    }
-
-    /// Read a session block file by name (e.g. "20260223172500").
-    /// @TRACE: MEMORY
-    pub fn read_session_block(&self, name: &str) -> Result<String> {
-        let path = self.sessions_dir.join(format!("{}.jsonl", name));
-        if !path.exists() {
-            return Ok(String::new());
-        }
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read session block: {}", path.display()))
-    }
-
-    /// Append JSONL lines to a session block file.
-    /// @TRACE: MEMORY
-    pub fn append_session_block(&self, name: &str, lines: &str) -> Result<()> {
-        let path = self.sessions_dir.join(format!("{}.jsonl", name));
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .with_context(|| format!("Failed to open session block for append: {}", path.display()))?;
-        file.write_all(lines.as_bytes())
-            .with_context(|| format!("Failed to append to session block: {}", path.display()))?;
-        file.flush()?;
-        file.sync_all()
-            .with_context(|| format!("Failed to fsync session block: {}", path.display()))?;
-        Ok(())
-    }
-
-    /// Write a session block file (overwrite).
-    /// @TRACE: MEMORY
-    pub fn write_session_block(&self, name: &str, content: &str) -> Result<()> {
-        let path = self.sessions_dir.join(format!("{}.jsonl", name));
-        crate::atomic_write(&path, content)
-            .with_context(|| format!("Failed to write session block: {}", path.display()))
-    }
-
-    /// Delete a session block file.
-    /// @TRACE: MEMORY
-    pub fn delete_session_block(&self, name: &str) -> Result<()> {
-        let path = self.sessions_dir.join(format!("{}.jsonl", name));
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("Failed to delete session block: {}", path.display()))?;
-        }
-        Ok(())
-    }
-
-    /// Get the size of a session block file in bytes.
-    /// Returns 0 if file doesn't exist.
-    /// @TRACE: MEMORY
-    pub fn session_block_size(&self, name: &str) -> u64 {
-        let path = self.sessions_dir.join(format!("{}.jsonl", name));
-        std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
-    }
-
-    /// List session block files sorted by name/timestamp (oldest first).
-    /// Returns block names like ["20260223150000", "20260223172500"].
-    /// @TRACE: MEMORY
-    pub fn list_session_blocks(&self) -> Result<Vec<String>> {
-        let mut names = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&self.sessions_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.ends_with(".jsonl") {
-                    let block_name = name.trim_end_matches(".jsonl").to_string();
-                    names.push(block_name);
-                }
-            }
-        }
-        names.sort();
-        Ok(names)
-    }
 
     // ─── History Rolling ────────────────────────────────────────
 
@@ -723,7 +589,7 @@ impl Alice {
 
 
     pub fn prepare_roll(&mut self) -> anyhow::Result<Option<RollTask>> {
-        let blocks = self.list_session_blocks()?;
+        let blocks = self.memory.list_session_blocks()?;
         if (blocks.len() as u32) < self.session_blocks_limit {
             return Ok(None);
         }
@@ -731,14 +597,14 @@ impl Alice {
         let oldest_block = &blocks[0];
 
         // Idempotency check
-        let last_rolled_path = self.sessions_dir.join(".last_rolled");
+        let last_rolled_path = self.memory.sessions_dir().join(".last_rolled");
         if last_rolled_path.exists() {
             if let Ok(last_rolled) = std::fs::read_to_string(&last_rolled_path) {
                 let last_rolled = last_rolled.trim();
                 if last_rolled == oldest_block.as_str() {
                     info!("[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
                         self.instance_id, oldest_block);
-                    self.delete_session_block(oldest_block)?;
+                    self.memory.delete_session_block(oldest_block)?;
                     let _ = std::fs::remove_file(&last_rolled_path);
                     return Ok(None);
                 }
@@ -750,16 +616,16 @@ impl Alice {
             self.instance_id, blocks.len(), self.session_blocks_limit, oldest_block);
 
         // Read and render the oldest block
-        let block_content = self.read_session_block(oldest_block)?;
+        let block_content = self.memory.read_session_block(oldest_block)?;
         if block_content.trim().is_empty() {
-            self.delete_session_block(oldest_block)?;
+            self.memory.delete_session_block(oldest_block)?;
             return Ok(None);
         }
 
         let rendered_block = crate::prompt::render_session_block(&block_content, self);
 
         // Read current history
-        let current_history = self.read_history().unwrap_or_default();
+        let current_history = self.memory.history.get().to_string();
 
         // Build LLM prompt
         let history_kb = self.history_kb;
@@ -782,7 +648,7 @@ impl Alice {
         let llm_config = self.llm_client.config.clone();
 
         Ok(Some(RollTask {
-            sessions_dir: self.sessions_dir.clone(),
+            sessions_dir: self.memory.sessions_dir().to_path_buf(),
             oldest_block: oldest_block.clone(),
             messages,
             instance_id: self.instance_id.clone(),
@@ -798,7 +664,7 @@ impl Alice {
     ///
     /// @TRACE: MEMORY
     pub fn check_and_roll_history(&mut self) -> Result<Option<String>> {
-        let blocks = self.list_session_blocks()?;
+        let blocks = self.memory.list_session_blocks()?;
         if (blocks.len() as u32) < self.session_blocks_limit {
             return Ok(None);
         }
@@ -808,14 +674,14 @@ impl Alice {
         // Idempotency check: if this block was already compressed but not deleted
         // (e.g., process killed between history write and block deletion),
         // just delete it and skip re-compression.
-        let last_rolled_path = self.sessions_dir.join(".last_rolled");
+        let last_rolled_path = self.memory.sessions_dir().join(".last_rolled");
         if last_rolled_path.exists() {
             if let Ok(last_rolled) = std::fs::read_to_string(&last_rolled_path) {
                 let last_rolled = last_rolled.trim();
                 if last_rolled == oldest_block {
                     info!("[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
                         self.instance_id, oldest_block);
-                    self.delete_session_block(oldest_block)?;
+                    self.memory.delete_session_block(oldest_block)?;
                     let _ = std::fs::remove_file(&last_rolled_path);
                     return Ok(Some(format!("deleted residual block {} (already compressed)", oldest_block)));
                 }
@@ -828,17 +694,17 @@ impl Alice {
             self.instance_id, blocks.len(), self.session_blocks_limit, oldest_block);
 
         // 1. Read and render the oldest block
-        let block_content = self.read_session_block(oldest_block)?;
+        let block_content = self.memory.read_session_block(oldest_block)?;
         if block_content.trim().is_empty() {
             // Empty block, just delete it
-            self.delete_session_block(oldest_block)?;
+            self.memory.delete_session_block(oldest_block)?;
             return Ok(Some(format!("deleted empty block {}", oldest_block)));
         }
 
         let rendered_block = crate::prompt::render_session_block(&block_content, self);
 
-        // 2. Read current history
-        let current_history = self.read_history().unwrap_or_default();
+        // 2. Read current history (from memory handle)
+        let current_history = self.memory.history.get().to_string();
 
         // 3. Build LLM prompt for compression
         let history_kb = self.history_kb;
@@ -869,30 +735,14 @@ impl Alice {
             return Ok(Some("LLM returned empty, roll aborted".to_string()));
         }
 
-        // 5. Atomic write: history.txt.tmp → rename → delete block
-        let history_path = self.sessions_dir.join("history.txt");
-        let tmp_path = self.sessions_dir.join("history.txt.tmp");
-
-        {
-            use std::io::Write;
-            let mut f = std::fs::File::create(&tmp_path)
-                .with_context(|| "Failed to create history.txt.tmp")?;
-            f.write_all(new_history.trim().as_bytes())
-                .with_context(|| "Failed to write history.txt.tmp")?;
-            f.sync_all()
-                .with_context(|| "Failed to fsync history.txt.tmp")?;
-        }
-        std::fs::rename(&tmp_path, &history_path)
-            .with_context(|| "Failed to rename history.txt.tmp to history.txt")?;
-
-        // Write idempotency marker before deleting block.
-        // If killed between here and delete, next run will skip re-compression.
-        let last_rolled_path = self.sessions_dir.join(".last_rolled");
+        // 5. Commit history: atomic write history + delete oldest block
+        // Write idempotency marker before commit.
+        let last_rolled_path = self.memory.sessions_dir().join(".last_rolled");
         let _ = std::fs::write(&last_rolled_path, oldest_block.as_bytes());
 
-        self.delete_session_block(oldest_block)?;
+        self.memory.commit_history(new_history.trim(), oldest_block)?;
 
-        // Clean up marker after successful deletion
+        // Clean up marker after successful commit
         let _ = std::fs::remove_file(&last_rolled_path);
 
         let usage_info = if let Some(u) = usage {
@@ -908,23 +758,6 @@ impl Alice {
         info!("[ROLL-{}] {}", self.instance_id, result);
 
         Ok(Some(result))
-    }
-
-    // ─── Legacy compatibility (temporary, for engine.rs transition) ──
-
-    /// Read session memory (delegates to read_current for backward compat).
-    pub fn read_session(&self) -> Result<String> {
-        self.read_current()
-    }
-
-    /// Write session memory (delegates to write_current for backward compat).
-    pub fn write_session(&self, content: &str) -> Result<()> {
-        self.write_current(content)
-    }
-
-    /// Append to session memory (delegates to append_current for backward compat).
-    pub fn append_session(&self, content: &str) -> Result<()> {
-        self.append_current(content)
     }
 
     // ─── Other ──────────────────────────────────────────────────
@@ -953,7 +786,7 @@ impl Alice {
             "---------系统异常通知---------\n{}\n",
             message
         );
-        self.append_current(&marker).ok();
+        self.memory.append_current(&marker).ok();
 
         let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
         self.chat_history.write_agent_reply(
@@ -1017,7 +850,7 @@ impl Alice {
                     record.done_text.as_deref().unwrap_or(""),
                     record.action_id,
                 );
-                self.append_current(&action_text).ok();
+                self.memory.append_current(&action_text).ok();
             }
 
             self.last_was_idle = false;
@@ -1129,7 +962,7 @@ impl Alice {
                 std::fs::remove_file(&interrupt_file).ok();
                 warn!("[INTERRUPT-{}] Interrupt signal detected, aborting inference", self.instance_id);
                 let interrupt_text = "---------推理被用户中断---------\n".to_string();
-                self.append_current(&interrupt_text).ok();
+                self.memory.append_current(&interrupt_text).ok();
                 break;
             }
 
@@ -1155,7 +988,7 @@ impl Alice {
                                     "---------序列防御中断---------\n{}\n",
                                     reason
                                 );
-                                self.append_current(&reject_text).ok();
+                                self.memory.append_current(&reject_text).ok();
                                 break;
                             }
                         }
@@ -1202,7 +1035,7 @@ impl Alice {
                                 record.done_text.as_deref().unwrap_or(""),
                                 record.action_id,
                             );
-                            self.append_current(&action_text).ok();
+                            self.memory.append_current(&action_text).ok();
                         }
 
                         // Blocking action: end inference after execution
@@ -1211,7 +1044,7 @@ impl Alice {
                             break;
                         }
                     }
-                    StreamItem::Done(text, usage) => {
+                    StreamItem::Done(text, _usage) => {
                         // Reset inference backoff on success
                         if self.inference_failures > 0 {
                             info!("[BACKOFF-{}] Inference succeeded, resetting backoff (was {} failures)",
@@ -1371,6 +1204,8 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     Ok(result)
 }
 
+pub mod memory;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1401,85 +1236,75 @@ mod tests {
         assert_eq!(alice.instance_id, "test");
         assert_eq!(alice.user_id, "user1");
         assert!(alice.current_infer_log_path.is_none());
-        assert_eq!(alice.memory_dir, tmp.path().join("memory"));
-        assert_eq!(alice.sessions_dir, tmp.path().join("memory").join("sessions"));
+        assert_eq!(alice.memory.memory_dir(), tmp.path().join("memory"));
+        assert_eq!(alice.memory.sessions_dir(), tmp.path().join("memory").join("sessions"));
         assert_eq!(alice.workspace, tmp.path().join("workspace"));
         // Verify directories were created
-        assert!(alice.sessions_dir.exists());
+        assert!(alice.memory.sessions_dir().exists());
     }
 
     #[test]
     fn test_history_read_write() {
-        let (alice, _tmp) = create_test_alice();
-        assert_eq!(alice.read_history().unwrap(), "");
-        alice.write_history("hello history").unwrap();
-        assert_eq!(alice.read_history().unwrap(), "hello history");
+        let (mut alice, _tmp) = create_test_alice();
+        assert_eq!(alice.memory.history.get(), "");
+        alice.memory.history.set("hello history");
+        alice.memory.history.flush().unwrap();
+        assert_eq!(alice.memory.history.get(), "hello history");
     }
 
     #[test]
     fn test_current_read_write_append() {
-        let (alice, _tmp) = create_test_alice();
-        assert_eq!(alice.read_current().unwrap(), "");
-        alice.write_current("line1").unwrap();
-        assert_eq!(alice.read_current().unwrap(), "line1");
-        alice.append_current("line2").unwrap();
-        assert_eq!(alice.read_current().unwrap(), "line1\nline2");
+        let (mut alice, _tmp) = create_test_alice();
+        assert_eq!(alice.memory.current.get(), "");
+        alice.memory.write_current("line1").unwrap();
+        assert_eq!(alice.memory.current.get(), "line1");
+        alice.memory.append_current("line2").unwrap();
+        assert_eq!(alice.memory.current.get(), "line1\nline2");
     }
 
     #[test]
     fn test_session_block_append_and_read() {
         let (alice, _tmp) = create_test_alice();
-        assert_eq!(alice.read_session_block("20260223172500").unwrap(), "");
-        alice.append_session_block("20260223172500", "{\"first_msg\":\"a\",\"last_msg\":\"b\",\"summary\":\"test\"}\n").unwrap();
-        let content = alice.read_session_block("20260223172500").unwrap();
+        assert_eq!(alice.memory.read_session_block("20260223172500").unwrap(), "");
+        alice.memory.append_session_block("20260223172500", "{\"first_msg\":\"a\",\"last_msg\":\"b\",\"summary\":\"test\"}\n").unwrap();
+        let content = alice.memory.read_session_block("20260223172500").unwrap();
         assert!(content.contains("summary"));
     }
 
     #[test]
     fn test_session_block_size() {
         let (alice, _tmp) = create_test_alice();
-        assert_eq!(alice.session_block_size("20260223172500"), 0);
-        alice.append_session_block("20260223172500", "some content\n").unwrap();
-        assert!(alice.session_block_size("20260223172500") > 0);
+        assert_eq!(alice.memory.session_block_size("20260223172500"), 0);
+        alice.memory.append_session_block("20260223172500", "some content\n").unwrap();
+        assert!(alice.memory.session_block_size("20260223172500") > 0);
     }
 
     #[test]
     fn test_list_session_blocks() {
         let (alice, _tmp) = create_test_alice();
-        alice.append_session_block("20260223172500", "line\n").unwrap();
-        alice.append_session_block("20260221150000", "line\n").unwrap();
-        alice.append_session_block("20260222100000", "line\n").unwrap();
-        let blocks = alice.list_session_blocks().unwrap();
+        alice.memory.append_session_block("20260223172500", "line\n").unwrap();
+        alice.memory.append_session_block("20260221150000", "line\n").unwrap();
+        alice.memory.append_session_block("20260222100000", "line\n").unwrap();
+        let blocks = alice.memory.list_session_blocks().unwrap();
         assert_eq!(blocks, vec!["20260221150000", "20260222100000", "20260223172500"]);
     }
 
     #[test]
     fn test_delete_session_block() {
         let (alice, _tmp) = create_test_alice();
-        alice.append_session_block("20260223172500", "line\n").unwrap();
-        assert!(!alice.read_session_block("20260223172500").unwrap().is_empty());
-        alice.delete_session_block("20260223172500").unwrap();
-        assert_eq!(alice.read_session_block("20260223172500").unwrap(), "");
+        alice.memory.append_session_block("20260223172500", "line\n").unwrap();
+        assert!(!alice.memory.read_session_block("20260223172500").unwrap().is_empty());
+        alice.memory.delete_session_block("20260223172500").unwrap();
+        assert_eq!(alice.memory.read_session_block("20260223172500").unwrap(), "");
     }
 
 
-
-    #[test]
-    fn test_legacy_session_compat() {
-        let (alice, _tmp) = create_test_alice();
-        // Legacy methods should delegate to current
-        alice.write_session("test").unwrap();
-        assert_eq!(alice.read_session().unwrap(), "test");
-        assert_eq!(alice.read_current().unwrap(), "test");
-        alice.append_session("more").unwrap();
-        assert_eq!(alice.read_current().unwrap(), "test\nmore");
-    }
 
     #[test]
     fn test_session_files_in_sessions_dir() {
-        let (alice, _tmp) = create_test_alice();
-        alice.write_current("test content").unwrap();
-        let current_file = alice.sessions_dir.join("current.txt");
+        let (mut alice, _tmp) = create_test_alice();
+        alice.memory.write_current("test content").unwrap();
+        let current_file = alice.memory.sessions_dir().join("current.txt");
         assert!(current_file.exists());
     }
 

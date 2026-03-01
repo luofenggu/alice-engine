@@ -388,7 +388,7 @@ fn execute_replace_in_file(
 fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) -> Result<String> {
     info!("[ACTION-{}] summary", tx.instance_id);
 
-    let current = alice.read_current().unwrap_or_default();
+    let current = alice.memory.current.get().to_string();
     if current.trim().is_empty() {
         return Ok("current is empty, nothing to summarize\n".to_string());
     }
@@ -417,9 +417,9 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     let jsonl_line = serde_json::to_string(&entry).unwrap_or_default() + "\n";
 
     // Determine target session block
-    let blocks = alice.list_session_blocks()?;
+    let blocks = alice.memory.list_session_blocks()?;
     let block_name = if let Some(latest) = blocks.last() {
-        let size = alice.session_block_size(latest);
+        let size = alice.memory.session_block_size(latest);
         if size < (alice.session_block_kb as u64 * 1024) {
             latest.clone()
         } else {
@@ -433,8 +433,8 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     let knowledge_info;
     if !knowledge_text.trim().is_empty() {
         snapshot_knowledge(alice);
-        let knowledge_path = alice.memory_dir.join(crate::prompt::KNOWLEDGE_FILE);
-        crate::atomic_write(&knowledge_path, knowledge_text.trim())?;
+        alice.memory.knowledge.set(knowledge_text.trim());
+        alice.memory.knowledge.flush()?;
         knowledge_info = format!("\nknowledge: rewritten {} chars", knowledge_text.trim().len());
         info!("[ACTION-{}] knowledge rewritten ({} chars)", tx.instance_id, knowledge_text.trim().len());
     } else {
@@ -442,8 +442,8 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
         knowledge_info = "\nknowledge: no knowledge marker found, skipped".to_string();
     }
 
-    alice.append_session_block(&block_name, &jsonl_line)?;
-    alice.write_current("")?;
+    alice.memory.append_session_block(&block_name, &jsonl_line)?;
+    alice.memory.write_current("")?;
 
     let msg_count = msg_ids.len();
     let stats = format!(
@@ -460,7 +460,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
 /// On success, returns empty string (silent execution - caller skips append_current).
 /// On failure, returns error (caller records it so agent sees what went wrong).
 fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &str, summary: &str) -> Result<String> {
-    let current = alice.read_current().unwrap_or_default();
+    let current = alice.memory.current.get().to_string();
     if current.is_empty() {
         anyhow::bail!("current is empty, nothing to forget");
     }
@@ -490,7 +490,7 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
     );
 
     let new_current = format!("{}{}{}", &current[..start_pos], replacement, &current[end_pos..]);
-    alice.write_current(&new_current)?;
+    alice.memory.write_current(&new_current)?;
 
     let old_len = end_pos - start_pos;
     let new_len = replacement.len();
@@ -809,7 +809,7 @@ mod tests {
         let (mut alice, mut tx, _tmp) = setup();
 
         // Write content to current with MSG markers
-        alice.write_current(
+        alice.memory.write_current(
             "---------行为编号[20260223160000_aaaaaa]开始---------\n\
              你打开了收件箱，开始阅读来信。\n\
              ---action executing, result pending---\n\n\
@@ -832,13 +832,13 @@ mod tests {
         assert!(result.contains("2个消息ID"));
 
         // current should be cleared
-        let current = alice.read_current().unwrap();
+        let current = alice.memory.current.get();
         assert!(current.is_empty());
 
         // session block should exist with JSONL content
-        let blocks = alice.list_session_blocks().unwrap();
+        let blocks = alice.memory.list_session_blocks().unwrap();
         assert_eq!(blocks.len(), 1);
-        let block_content = alice.read_session_block(&blocks[0]).unwrap();
+        let block_content = alice.memory.read_session_block(&blocks[0]).unwrap();
         assert!(block_content.contains("first_msg"));
         assert!(block_content.contains("20260223155500"));
         assert!(block_content.contains("20260223160100"));
@@ -952,10 +952,10 @@ random [MSG:20260219120000] in output\n\
             "{{\"first_msg\":\"20260223100000\",\"last_msg\":\"20260223110000\",\"summary\":\"{}\"}}\n",
             "x".repeat(alice.session_block_kb as usize * 1024)
         );
-        alice.append_session_block("20260223100000", &large_content).unwrap();
+        alice.memory.append_session_block("20260223100000", &large_content).unwrap();
 
         // Write current with MSG markers
-        alice.write_current(
+        alice.memory.write_current(
             "---------行为编号[20260223160000_aaaaaa]开始---------\n\
              send success [MSG:20260223160000]\n\
              ---------行为编号[20260223160000_aaaaaa]结束---------\n"
@@ -968,7 +968,7 @@ random [MSG:20260219120000] in output\n\
         assert!(result.contains("小结完成"));
 
         // Should have 2 blocks now (old full one + new one)
-        let blocks = alice.list_session_blocks().unwrap();
+        let blocks = alice.memory.list_session_blocks().unwrap();
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0], "20260223100000");
         // Second block should be a new timestamp
@@ -1123,16 +1123,16 @@ Summary content
 /// Snapshot knowledge.md before overwriting (safety backup).
 fn snapshot_knowledge(alice: &Alice) {
     let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
-    let snapshot_dir = alice.memory_dir.join("snapshots").join(&timestamp);
+    let snapshot_dir = alice.memory.memory_dir().join("snapshots").join(&timestamp);
 
     if let Err(e) = fs::create_dir_all(&snapshot_dir) {
         warn!("[CAPTURE-{}] Failed to create snapshot dir: {}", alice.instance_id, e);
         return;
     }
 
-    let knowledge_path = alice.memory_dir.join(crate::prompt::KNOWLEDGE_FILE);
+    let knowledge_path = alice.memory.knowledge.path();
     if knowledge_path.exists() {
-        if let Err(e) = fs::copy(&knowledge_path, snapshot_dir.join(crate::prompt::KNOWLEDGE_FILE)) {
+        if let Err(e) = fs::copy(knowledge_path, snapshot_dir.join(crate::prompt::KNOWLEDGE_FILE)) {
             warn!("[CAPTURE-{}] Failed to snapshot knowledge.md: {}", alice.instance_id, e);
         }
     }

@@ -442,7 +442,7 @@ impl AliceEngine {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).ok();
             };
             set_perm(instance_dir, 0o711);
-            set_perm(&alice.memory_dir, 0o700);
+            set_perm(alice.memory.memory_dir(), 0o700);
             set_perm(&instance_dir.join("data"), 0o700);
             set_perm(&alice.workspace, 0o750);
             set_perm(&instance_dir.join(SETTINGS_FILE), 0o600);
@@ -478,8 +478,9 @@ impl AliceEngine {
         }
 
         // Write initial memory (imprint learning) on first creation
-        if alice.read_history().unwrap_or_default().is_empty() {
-            alice.write_history(crate::prompt::INITIAL_HISTORY).ok();
+        if alice.memory.history.get().is_empty() {
+            alice.memory.history.set(crate::prompt::INITIAL_HISTORY);
+            alice.memory.history.flush().ok();
             info!("[INSTANCE] Initial history written for {}", name);
         }
 
