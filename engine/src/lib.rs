@@ -218,3 +218,5 @@ pub mod engine;
 pub mod chat;
 pub mod web;
 pub mod rpc;
+pub mod model;
+pub mod persist;
