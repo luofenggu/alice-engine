@@ -1,0 +1,720 @@
+//! # LLM Inference Module
+//!
+//! Handles communication with LLM providers (OpenRouter) via SSE streaming.
+//! Implements the streaming action execution pipeline:
+//! SSE chunks → text accumulation → action detection → channel dispatch
+//!
+//! @TRACE: INFER, STREAM
+//!
+//! ## Architecture
+//!
+//! ```text
+//! [Inference Thread]              [Consumer Thread (React)]
+//!   HTTP POST → SSE stream
+//!   accumulate text
+//!   detect action separator  ──→  channel.recv() → StreamItem
+//!   parse action             ──→  execute action
+//!   append to out.log
+//!   ...until stream ends     ──→  StreamItem::Done
+//! ```
+//!
+//! ## Key Types
+//!
+//! - [`LlmClient`] — HTTP client for OpenRouter API
+//! - [`InferenceStream`] — Consumer handle for streaming actions
+//! - [`StreamItem`] — Items flowing through the channel (Action/Done/Error)
+
+pub mod stream;
+
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use anyhow::{Result, Context};
+use tracing::{info, warn, error};
+use serde::{Deserialize, Serialize};
+
+use crate::action::parse_actions;
+/// Token usage info from LLM response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageInfo {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_cost: Option<f64>,
+}
+
+// Re-export key types
+pub use stream::{InferenceStream, StreamItem, RecvResult};
+
+// ---------------------------------------------------------------------------
+// LLM Client Configuration
+// ---------------------------------------------------------------------------
+
+/// Configuration for the LLM provider.
+///
+/// @TRACE: INFER
+#[derive(Debug, Clone)]
+pub struct LlmConfig {
+    /// API endpoint (e.g. "https://openrouter.ai/api/v1/chat/completions")
+    pub api_url: String,
+    /// API key for authentication
+    pub api_key: String,
+    /// Model identifier (e.g. "anthropic/claude-sonnet-4")
+    pub model: String,
+    /// Maximum tokens to generate
+    pub max_tokens: u32,
+    /// Temperature (0.0 - 1.0)
+    pub temperature: f64,
+}
+
+// ---------------------------------------------------------------------------
+// SSE Message Types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct SseChoice {
+    delta: SseDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SseDelta {
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SseResponse {
+    choices: Vec<SseChoice>,
+    usage: Option<SseUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SseUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Chat Message
+// ---------------------------------------------------------------------------
+
+/// A message in the chat conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl ChatMessage {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self { role: "system".to_string(), content: content.into() }
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Self { role: "user".to_string(), content: content.into() }
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self { role: "assistant".to_string(), content: content.into() }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LLM Client
+// ---------------------------------------------------------------------------
+
+/// HTTP client for LLM inference via OpenRouter.
+///
+/// @TRACE: INFER — `[INFER-{id}] Starting inference`
+pub struct LlmClient {
+    pub(crate) config: LlmConfig,
+    http_client: reqwest::Client,
+}
+
+impl LlmClient {
+    pub fn new(config: LlmConfig) -> Self {
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("Failed to build HTTP client");
+        Self { config, http_client }
+    }
+
+    /// Synchronous (non-streaming) LLM inference. Returns plain text response.
+    ///
+    /// Used for background tasks like history rolling where streaming/action
+    /// parsing is not needed. Blocks the calling thread.
+    ///
+    /// @TRACE: INFER
+    pub fn infer_sync(
+        &self,
+        messages: Vec<ChatMessage>,
+        max_tokens: u32,
+        instance_id: &str,
+    ) -> Result<(String, Option<UsageInfo>)> {
+        let config = self.config.clone();
+        let http_client = self.http_client.clone();
+        let instance_id = instance_id.to_string();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        rt.block_on(async {
+            // Total sync inference timeout: 5 minutes (aligned with streaming inference)
+            match tokio::time::timeout(
+                tokio::time::Duration::from_secs(300),
+                run_sync_inference(&config, &http_client, messages, max_tokens, &instance_id)
+            ).await {
+                Ok(result) => result,
+                Err(_) => {
+                    error!("[INFER-SYNC-{}] Inference timeout (300s)", instance_id);
+                    anyhow::bail!("Sync inference timeout (300s)")
+                }
+            }
+        })
+    }
+
+    /// Streaming LLM inference that collects full output synchronously.
+    ///
+    /// Like infer_sync but uses SSE streaming internally — real-time log writing,
+    /// chunk-level timeout (60s), no total timeout limit. Ideal for long-running
+    /// tasks like knowledge capture where output is large.
+    ///
+    /// @TRACE: INFER
+    pub fn infer_sync_streaming(
+        &self,
+        messages: Vec<ChatMessage>,
+        max_tokens: u32,
+        instance_id: &str,
+        log_path: Option<&Path>,
+    ) -> Result<(String, Option<UsageInfo>)> {
+        let config = self.config.clone();
+        let http_client = self.http_client.clone();
+        let instance_id = instance_id.to_string();
+        let log_path = log_path.map(|p| p.to_path_buf());
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        rt.block_on(async {
+            run_streaming_collect(&config, &http_client, messages, max_tokens, &instance_id, log_path.as_deref()).await
+        })
+    }
+
+    /// Start an async inference, returning a stream for consuming actions.
+    ///
+    /// This spawns a background thread that:
+    /// 1. Sends HTTP POST to OpenRouter
+    /// 2. Reads SSE stream
+    /// 3. Detects action separators and parses actions
+    /// 4. Sends parsed actions through a channel
+    /// 5. Appends raw output to the log file
+    ///
+    /// @TRACE: INFER, STREAM
+    pub fn infer_async(
+        &self,
+        messages: Vec<ChatMessage>,
+        separator_token: &str,
+        log_path: PathBuf,
+        instance_id: String,
+    ) -> InferenceStream {
+        let (tx, rx) = mpsc::channel();
+
+        let config = self.config.clone();
+        let http_client = self.http_client.clone();
+        let separator = format!("###ACTION_{}###-", separator_token);
+        let separator_for_parse = format!("###ACTION_{}", separator_token);
+        let separator_token_owned = separator_token.to_string();
+        let log_path_clone = log_path.clone();
+
+        // Spawn inference thread
+        std::thread::spawn(move || {
+            // Create a tokio runtime for this thread (HTTP + SSE are async)
+            let _rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create tokio runtime");
+
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    error!("[INFER-{}] Failed to create tokio runtime: {}", instance_id, e);
+                    let _ = tx.send(StreamItem::Error(format!("Failed to create tokio runtime: {}", e)));
+                    return;
+                }
+            };
+
+            rt.block_on(async {
+                // Total inference timeout: 5 minutes
+                let timeout_duration = tokio::time::Duration::from_secs(300);
+                let result = tokio::time::timeout(timeout_duration, run_inference(
+                    &config,
+                    &http_client,
+                    messages,
+                    &separator,
+                    &separator_for_parse,
+                    &separator_token_owned,
+                    &log_path_clone,
+                    &instance_id,
+                    &tx,
+                )).await;
+
+                match result {
+                    Ok(Err(e)) => {
+                        error!("[INFER-{}] Inference error: {}", instance_id, e);
+                        let _ = tx.send(StreamItem::Error(format!("{}", e)));
+                    }
+                    Err(_) => {
+                        error!("[INFER-{}] Inference timeout ({}s)", instance_id, timeout_duration.as_secs());
+                        let _ = tx.send(StreamItem::Error("Inference timeout".to_string()));
+                    }
+                    Ok(Ok(())) => {}
+                }
+            });
+        });
+
+        InferenceStream::new(rx, log_path)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sync inference (non-streaming, for background tasks)
+// ---------------------------------------------------------------------------
+
+/// Non-streaming response types.
+#[derive(Debug, Deserialize)]
+struct SyncChoice {
+    message: SyncMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct SyncMessage {
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SyncResponse {
+    choices: Vec<SyncChoice>,
+    usage: Option<SseUsage>,
+}
+
+/// Run a non-streaming inference call. Returns (text, usage).
+pub(crate) async fn run_sync_inference(
+    config: &LlmConfig,
+    http_client: &reqwest::Client,
+    messages: Vec<ChatMessage>,
+    max_tokens: u32,
+    instance_id: &str,
+) -> Result<(String, Option<UsageInfo>)> {
+    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+
+    info!("[INFER-SYNC-{}] Starting sync inference, model={}", instance_id, config.model);
+
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": config.temperature,
+        "stream": false,
+    });
+
+    let response = http_client
+        .post(&config.api_url)
+        .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
+        .header(CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to send sync inference request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("LLM API error {}: {}", status, body);
+    }
+
+    let resp: SyncResponse = response.json().await
+        .context("Failed to parse sync inference response")?;
+
+    let text = resp.choices.first()
+        .and_then(|c| c.message.content.clone())
+        .unwrap_or_default();
+
+    let usage = resp.usage.map(|u| UsageInfo {
+        input_tokens: u.prompt_tokens.unwrap_or(0),
+        output_tokens: u.completion_tokens.unwrap_or(0),
+        total_cost: None,
+    });
+
+    info!("[INFER-SYNC-{}] Complete, {} chars output", instance_id, text.len());
+
+    Ok((text, usage))
+}
+
+// ---------------------------------------------------------------------------
+// Streaming collect inference (for capture and other long-running tasks)
+// ---------------------------------------------------------------------------
+
+/// Streaming inference that collects full output. Real-time log writing,
+/// chunk-level timeout (60s no data), no total timeout.
+///
+/// @TRACE: INFER — `[INFER-STREAM-COLLECT-{id}]`
+async fn run_streaming_collect(
+    config: &LlmConfig,
+    http_client: &reqwest::Client,
+    messages: Vec<ChatMessage>,
+    max_tokens: u32,
+    instance_id: &str,
+    log_path: Option<&Path>,
+) -> Result<(String, Option<UsageInfo>)> {
+    use std::io::Write;
+    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+
+    info!("[INFER-STREAM-COLLECT-{}] Starting streaming collect, model={}", instance_id, config.model);
+
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": config.temperature,
+        "stream": true,
+    });
+
+    let response = http_client
+        .post(&config.api_url)
+        .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
+        .header(CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to send streaming collect request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("LLM API error {}: {}", status, body);
+    }
+
+    // Open log file if provided
+    let mut log_file = log_path.and_then(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .ok()
+    });
+
+    let mut full_text = String::new();
+    let mut sse_buffer = String::new();
+    let mut collected_usage: Option<UsageInfo> = None;
+
+    use futures_util::StreamExt;
+    let mut byte_stream = response.bytes_stream();
+
+    while let Some(chunk_result) = {
+        // Per-chunk timeout: 60 seconds without any data
+        match tokio::time::timeout(
+            tokio::time::Duration::from_secs(60),
+            byte_stream.next()
+        ).await {
+            Ok(item) => item,
+            Err(_) => {
+                warn!("[INFER-STREAM-COLLECT-{}] Stream timeout (60s no data)", instance_id);
+                anyhow::bail!("Streaming collect timeout: no data received for 60 seconds");
+            }
+        }
+    } {
+        let chunk = chunk_result.context("SSE stream read error")?;
+        let chunk_str = String::from_utf8_lossy(&chunk);
+
+        sse_buffer.push_str(&chunk_str);
+
+        // Process complete SSE lines
+        while let Some(line_end) = sse_buffer.find('\n') {
+            let line = sse_buffer[..line_end].trim().to_string();
+            sse_buffer = sse_buffer[line_end + 1..].to_string();
+
+            if line.is_empty() || line == "data: [DONE]" || line == "data:[DONE]" {
+                if line == "data: [DONE]" || line == "data:[DONE]" {
+                    info!("[INFER-STREAM-COLLECT-{}] SSE stream complete", instance_id);
+                }
+                continue;
+            }
+
+            if let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+                match serde_json::from_str::<SseResponse>(data) {
+                    Ok(sse) => {
+                        for choice in &sse.choices {
+                            if let Some(content) = &choice.delta.content {
+                                full_text.push_str(content);
+
+                                // Real-time log writing
+                                if let Some(ref mut f) = log_file {
+                                    let _ = f.write_all(content.as_bytes());
+                                    let _ = f.flush();
+                                }
+                            }
+                        }
+                        if let Some(usage) = &sse.usage {
+                            collected_usage = Some(UsageInfo {
+                                input_tokens: usage.prompt_tokens.unwrap_or(0),
+                                output_tokens: usage.completion_tokens.unwrap_or(0),
+                                total_cost: None,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[INFER-STREAM-COLLECT-{}] SSE parse warning: {} for data: {}", instance_id, e, data);
+                    }
+                }
+            }
+        }
+    }
+
+    let usage_info = if let Some(ref u) = collected_usage {
+        format!(" (tokens: {}+{})", u.input_tokens, u.output_tokens)
+    } else {
+        String::new()
+    };
+
+    info!("[INFER-STREAM-COLLECT-{}] Complete, {} chars{}", instance_id, full_text.len(), usage_info);
+
+    Ok((full_text, collected_usage))
+}
+
+// ---------------------------------------------------------------------------
+// Inference execution (runs in background thread)
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+async fn run_inference(
+    config: &LlmConfig,
+    http_client: &reqwest::Client,
+    messages: Vec<ChatMessage>,
+    separator: &str,
+    separator_for_parse: &str,
+    separator_token: &str,
+    log_path: &Path,
+    instance_id: &str,
+    tx: &mpsc::Sender<StreamItem>,
+) -> Result<()> {
+    use std::io::Write;
+    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+
+    info!("[INFER-{}] Starting inference, model={}", instance_id, config.model);
+
+    // Build request body
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": messages,
+        "max_tokens": config.max_tokens,
+        "temperature": config.temperature,
+        "stream": true,
+    });
+
+    // Send request
+    let response = http_client
+        .post(&config.api_url)
+        .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
+        .header(CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to send inference request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("LLM API error {}: {}", status, body);
+    }
+
+    // Open log file for append
+    let mut log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .context("Failed to open inference log file")?;
+
+    // Read SSE stream
+    let mut full_text = String::new();
+    let mut last_parsed_pos = 0;
+    let mut sse_buffer = String::new();
+    let mut collected_usage: Option<UsageInfo> = None;
+
+    use futures_util::StreamExt;
+    let mut byte_stream = response.bytes_stream();
+
+    while let Some(chunk_result) = {
+        // Per-chunk timeout: 60 seconds without any data = stale connection
+        match tokio::time::timeout(
+            tokio::time::Duration::from_secs(60),
+            byte_stream.next()
+        ).await {
+            Ok(item) => item,
+            Err(_) => {
+                warn!("[INFER-{}] SSE stream timeout (60s no data)", instance_id);
+                anyhow::bail!("SSE stream timeout: no data received for 60 seconds");
+            }
+        }
+    } {
+        let chunk = chunk_result.context("SSE stream read error")?;
+        let chunk_str = String::from_utf8_lossy(&chunk);
+
+        sse_buffer.push_str(&chunk_str);
+
+        // Process complete SSE lines
+        while let Some(line_end) = sse_buffer.find('\n') {
+            let line = sse_buffer[..line_end].trim().to_string(); // safe: line_end from find newline
+            sse_buffer = sse_buffer[line_end + 1..].to_string();
+
+            if line.is_empty() || line == "data: [DONE]" || line == "data:[DONE]" {
+                if line == "data: [DONE]" || line == "data:[DONE]" {
+                    info!("[INFER-{}] SSE stream complete", instance_id);
+                }
+                continue;
+            }
+
+            if let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+                match serde_json::from_str::<SseResponse>(data) {
+                    Ok(sse) => {
+                        for choice in &sse.choices {
+                            if let Some(content) = &choice.delta.content {
+                                // Append to full text
+                                full_text.push_str(content);
+
+                                // Append to log file (streaming)
+                                let _ = log_file.write_all(content.as_bytes());
+                                let _ = log_file.flush();
+                            }
+                        }
+                        // Collect usage info (typically in last SSE chunk)
+                        if let Some(usage) = &sse.usage {
+                            collected_usage = Some(UsageInfo {
+                                input_tokens: usage.prompt_tokens.unwrap_or(0),
+                                output_tokens: usage.completion_tokens.unwrap_or(0),
+                                total_cost: None, // OpenRouter doesn't report cost in SSE
+                            });
+                            info!("[INFER-{}] Usage: input={} output={}",
+                                instance_id,
+                                usage.prompt_tokens.unwrap_or(0),
+                                usage.completion_tokens.unwrap_or(0));
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[INFER-{}] SSE parse warning: {} for data: {}", instance_id, e, data);
+                    }
+                }
+            }
+
+            // Check for complete actions in accumulated text
+            // Look for separator patterns from last_parsed_pos
+            while let Some(action_start) = full_text[last_parsed_pos..].find(separator) {
+                let abs_start = last_parsed_pos + action_start;
+
+                // Find the next separator or end of text
+                let after_start = abs_start + separator.len();
+                let next_sep = full_text[after_start..].find(separator);
+
+                if let Some(next_offset) = next_sep {
+                    // Complete action found between two separators
+                    let action_text = &full_text[abs_start..after_start + next_offset];
+                    info!("[INFER-{}] Stream action detected: {:?}", instance_id, crate::safe_truncate(action_text, 80));
+                    let actions = parse_actions(action_text, separator_for_parse, separator_token).unwrap_or_default();
+                    info!("[INFER-{}] Parsed {} actions from stream chunk", instance_id, actions.len());
+                    for action in actions {
+                        let _ = tx.send(StreamItem::Action(action));
+                    }
+                    last_parsed_pos = after_start + next_offset;
+                } else {
+                    // No next separator yet — wait for more data
+                    break;
+                }
+            }
+        }
+    }
+
+    // Parse any remaining actions after stream ends
+    if last_parsed_pos < full_text.len() {
+        let remaining = &full_text[last_parsed_pos..];
+        info!("[INFER-{}] Remaining text ({} chars): {:?}", instance_id, remaining.len(), crate::safe_truncate(remaining, 100));
+        if remaining.contains(separator) {
+            info!("[INFER-{}] Parsing remaining actions", instance_id);
+            let actions = parse_actions(remaining, separator_for_parse, separator_token).unwrap_or_default();
+            info!("[INFER-{}] Parsed {} remaining actions", instance_id, actions.len());
+            for action in actions {
+                let _ = tx.send(StreamItem::Action(action));
+            }
+        } else {
+            info!("[INFER-{}] No separator in remaining text", instance_id);
+        }
+    } else {
+        info!("[INFER-{}] No remaining text (last_parsed_pos={}, full_text.len={})", instance_id, last_parsed_pos, full_text.len());
+    }
+
+    // Signal completion with usage info
+    let _ = tx.send(StreamItem::Done(full_text, collected_usage));
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chat_message_constructors() {
+        let sys = ChatMessage::system("You are helpful");
+        assert_eq!(sys.role, "system");
+        assert_eq!(sys.content, "You are helpful");
+
+        let user = ChatMessage::user("Hello");
+        assert_eq!(user.role, "user");
+
+        let asst = ChatMessage::assistant("Hi there");
+        assert_eq!(asst.role, "assistant");
+    }
+
+    #[test]
+    fn test_llm_config() {
+        let config = LlmConfig {
+            api_url: "https://example.com/v1/chat/completions".to_string(),
+            api_key: "test-key".to_string(),
+            model: "test-model".to_string(),
+            max_tokens: 4096,
+            temperature: 0.7,
+        };
+        assert_eq!(config.model, "test-model");
+        assert_eq!(config.max_tokens, 4096);
+    }
+
+    #[test]
+    fn test_sse_response_parse() {
+        let json = r#"{"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}"#;
+        let resp: SseResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices.len(), 1);
+        assert_eq!(resp.choices[0].delta.content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_sse_response_empty_delta() {
+        let json = r#"{"choices":[{"delta":{},"finish_reason":null}]}"#;
+        let resp: SseResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.choices[0].delta.content.is_none());
+    }
+
+    #[test]
+    fn test_sse_response_finish() {
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#;
+        let resp: SseResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
+    }
+}

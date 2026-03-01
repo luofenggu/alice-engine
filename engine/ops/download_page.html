@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alice Engine</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; line-height: 1.6; }
+.container { max-width: 720px; margin: 0 auto; padding: 60px 24px; }
+h1 { font-size: 2.2em; font-weight: 700; margin-bottom: 8px; }
+h1 span { background: linear-gradient(135deg, #7c8aff, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.tagline { color: #8b949e; font-size: 1.1em; margin-bottom: 48px; }
+.install-section { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 28px; margin-bottom: 36px; }
+.install-section h2 { font-size: 1.1em; color: #e6edf3; margin-bottom: 16px; }
+.install-cmd { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 14px 18px; font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 0.9em; color: #7ee787; cursor: pointer; position: relative; word-break: break-all; }
+.install-cmd:hover { border-color: #7c8aff; }
+.install-cmd .copy-hint { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: #8b949e; font-size: 0.8em; }
+.install-cmd.copied .copy-hint { color: #7ee787; }
+.note { color: #8b949e; font-size: 0.85em; margin-top: 12px; }
+.downloads { margin-bottom: 36px; }
+.downloads h2 { font-size: 1.1em; color: #e6edf3; margin-bottom: 16px; }
+.dl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.dl-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; text-decoration: none; color: #c9d1d9; transition: border-color 0.2s; }
+.dl-card:hover { border-color: #7c8aff; }
+.dl-card .platform { font-weight: 600; margin-bottom: 4px; }
+.dl-card .arch { color: #8b949e; font-size: 0.85em; }
+.release-info { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 28px; margin-bottom: 36px; }
+.release-info h2 { font-size: 1.1em; color: #e6edf3; margin-bottom: 12px; }
+#releaseContent { color: #8b949e; font-size: 0.9em; }
+.footer { color: #484f58; font-size: 0.8em; margin-top: 60px; padding-top: 24px; border-top: 1px solid #21262d; }
+.footer a { color: #8b949e; text-decoration: none; }
+.footer a:hover { color: #c9d1d9; }
+.config-table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-bottom: 8px; }
+.config-table th { text-align: left; color: #8b949e; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #30363d; }
+.config-table td { padding: 5px 8px; border-bottom: 1px solid #21262d; color: #c9d1d9; }
+.config-table code { background: #0d1117; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #7ee787; }
+h3 code { background: #0d1117; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<div class="container">
+    <h1><span>Alice Engine</span></h1>
+    <p class="tagline">A self-evolving AI agent engine. Run locally, own your data.</p>
+
+    <div class="install-section">
+        <h2>Quick Start</h2>
+        <div class="install-cmd" onclick="copyInstall(this)">
+            curl -fsSL http://8.149.243.230:8080/download/install.sh | bash
+            <span class="copy-hint">click to copy</span>
+        </div>
+        <p class="note">Supports macOS (Apple Silicon & Intel) and Linux (x86_64). Downloads ~4MB, starts instantly.</p>
+    </div>
+
+    <div class="downloads">
+        <h2>Manual Download</h2>
+        <div class="dl-grid">
+            <a class="dl-card" href="alice-local-macos-arm64.tar.gz">
+                <div class="platform">🍎 macOS</div>
+                <div class="arch">Apple Silicon (arm64)</div>
+            </a>
+            <a class="dl-card" href="alice-local-macos-x86_64.tar.gz">
+                <div class="platform">🍎 macOS</div>
+                <div class="arch">Intel (x86_64)</div>
+            </a>
+            <a class="dl-card" href="alice-local-linux-x86_64.tar.gz">
+                <div class="platform">🐧 Linux</div>
+                <div class="arch">x86_64</div>
+            </a>
+        </div>
+    </div>
+
+    <div class="release-info">
+        <h2>Release Info</h2>
+        <div id="releaseContent">Loading...</div>
+    </div>
+
+    <div class="install-section">
+        <h2>Configuration</h2>
+        <p class="note" style="margin-bottom:16px;">Alice uses environment variables for global config and <code>settings.json</code> per instance.</p>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:16px 0 8px;">Environment Variables</h3>
+        <table class="config-table">
+            <tr><th>Variable</th><th>Description</th></tr>
+            <tr><td><code>ALICE_DEFAULT_API_KEY</code></td><td>LLM API key (shared across instances)</td></tr>
+            <tr><td><code>ALICE_DEFAULT_MODEL</code></td><td>Default model, e.g. <code>openrouter@anthropic/claude-opus-4.6</code></td></tr>
+            <tr><td><code>ALICE_USER_ID</code></td><td>User ID (single-user mode)</td></tr>
+            <tr><td><code>ALICE_AUTH_SECRET</code></td><td>Login authentication secret</td></tr>
+            <tr><td><code>ALICE_HOST</code></td><td>Host address, e.g. <code>IP:8081</code></td></tr>
+            <tr><td><code>ALICE_BASE_DIR</code></td><td>Base directory (auto-set for local install)</td></tr>
+            <tr><td><code>ALICE_BIND_ADDR</code></td><td>Bind address (default: <code>0.0.0.0</code>, local: <code>127.0.0.1</code>)</td></tr>
+            <tr><td><code>ALICE_PORT</code></td><td>Listen port (default: <code>8081</code>)</td></tr>
+            <tr><td><code>ALICE_SKIP_AUTH</code></td><td>Skip authentication (<code>true</code> for local)</td></tr>
+            <tr><td><code>ALICE_SETUP_ENABLED</code></td><td>Enable first-run setup page</td></tr>
+            <tr><td><code>ALICE_AUTO_BROWSER</code></td><td>Auto-open browser on start</td></tr>
+            <tr><td><code>ALICE_PID_FILE</code></td><td>Custom PID file path</td></tr>
+            <tr><td><code>ALICE_SHELL_ENV</code></td><td>Shell environment description (injected into prompt)</td></tr>
+            <tr><td><code>ALICE_INFER_LOG_IN</code></td><td>Log inference inputs (debug)</td></tr>
+            <tr><td><code>ALICE_INFER_LOG_RETENTION_DAYS</code></td><td>Inference log retention days</td></tr>
+        </table>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:20px 0 8px;">Instance Settings <span style="color:#8b949e;font-weight:normal;font-size:0.85em;">(settings.json)</span></h3>
+        <p class="note" style="margin-bottom:10px;">Per-instance config. Values here override environment variables.</p>
+        <table class="config-table">
+            <tr><th>Key</th><th>Type</th><th>Description</th></tr>
+            <tr><td><code>api_key</code></td><td>string</td><td>LLM API key (overrides env)</td></tr>
+            <tr><td><code>model</code></td><td>string</td><td>Model identifier (see format below)</td></tr>
+            <tr><td><code>user_id</code></td><td>string</td><td>Owner user ID</td></tr>
+            <tr><td><code>privileged</code></td><td>bool</td><td>Enable script execution &amp; file access</td></tr>
+            <tr><td><code>name</code></td><td>string</td><td>Agent display name</td></tr>
+            <tr><td><code>avatar</code></td><td>string</td><td>Avatar emoji</td></tr>
+            <tr><td><code>color</code></td><td>string</td><td>Theme color, e.g. <code>#5B5EA6</code></td></tr>
+            <tr><td><code>max_beats</code></td><td>number</td><td>Max heartbeats per inference</td></tr>
+            <tr><td><code>history_kb</code></td><td>number</td><td>History compression target size (KB)</td></tr>
+            <tr><td><code>session_blocks_limit</code></td><td>number</td><td>Max session blocks (recent memory)</td></tr>
+            <tr><td><code>session_block_kb</code></td><td>number</td><td>Max size per session block (KB)</td></tr>
+            <tr><td><code>safety_max_consecutive_beats</code></td><td>number</td><td>Safety valve: max consecutive beats</td></tr>
+            <tr><td><code>safety_cooldown_secs</code></td><td>number</td><td>Safety valve: cooldown seconds</td></tr>
+            <tr><td><code>billing_url</code></td><td>string</td><td>Billing API URL</td></tr>
+            <tr><td><code>billing_api_key</code></td><td>string</td><td>Billing API key</td></tr>
+        </table>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:20px 0 8px;">Model Format</h3>
+        <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:14px 18px;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:0.85em;color:#c9d1d9;line-height:1.8;">
+            openrouter@anthropic/claude-opus-4.6 &nbsp;<span style="color:#8b949e;">→ openrouter.ai</span><br>
+            zenmux@anthropic/claude-opus-4.6 &nbsp;<span style="color:#8b949e;">→ zenmux.ai</span><br>
+            openai@gpt-4o &nbsp;<span style="color:#8b949e;">→ api.openai.com</span><br>
+            https://your-server/v1/chat/completions@model-id &nbsp;<span style="color:#8b949e;">→ custom endpoint</span>
+        </div>
+    </div>
+
+    <div class="install-section">
+        <h2>HTTP API Reference</h2>
+        <p class="note" style="margin-bottom:16px;">All <code>/api/*</code> routes (except auth) require authentication via <code>alice_session</code> cookie.</p>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:16px 0 8px;">Authentication</h3>
+        <table class="config-table">
+            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+            <tr><td>POST</td><td><code>/api/auth</code></td><td>Login — body: <code>{"secret":"..."}</code>, sets HttpOnly cookie</td></tr>
+            <tr><td>GET</td><td><code>/api/auth/check</code></td><td>Check if authenticated</td></tr>
+            <tr><td>POST</td><td><code>/api/logout</code></td><td>Clear session cookie</td></tr>
+        </table>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:20px 0 8px;">Instance Management</h3>
+        <table class="config-table">
+            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+            <tr><td>GET</td><td><code>/api/instances</code></td><td>List all instances (with status, knowledge size, etc.)</td></tr>
+            <tr><td>POST</td><td><code>/api/instances</code></td><td>Create a new instance</td></tr>
+            <tr><td>DELETE</td><td><code>/api/instances/{name}</code></td><td>Delete an instance</td></tr>
+            <tr><td>POST</td><td><code>/api/instances/{name}/settings</code></td><td>Update instance settings (partial JSON merge)</td></tr>
+        </table>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:20px 0 8px;">Messaging</h3>
+        <table class="config-table">
+            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+            <tr><td>POST</td><td><code>/api/instances/{name}/messages</code></td><td>Send message to agent — body: <code>{"content":"..."}</code></td></tr>
+            <tr><td>GET</td><td><code>/api/instances/{name}/replies?after_id={id}</code></td><td>Poll agent replies (long-polling with after_id cursor)</td></tr>
+            <tr><td>GET</td><td><code>/api/instances/{name}/history?before_id={id}&limit={n}</code></td><td>Load older messages (pagination)</td></tr>
+        </table>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:20px 0 8px;">Observation & Control</h3>
+        <table class="config-table">
+            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+            <tr><td>GET</td><td><code>/api/instances/{name}/observe</code></td><td>Agent status: engine state, inference output, current action</td></tr>
+            <tr><td>GET</td><td><code>/api/instances/{name}/inference</code></td><td>Inference status and streaming output</td></tr>
+            <tr><td>GET</td><td><code>/api/instances/{name}/actions</code></td><td>List recent actions</td></tr>
+            <tr><td>POST</td><td><code>/api/instances/{name}/interrupt</code></td><td>Interrupt agent (cancel current inference)</td></tr>
+        </table>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:20px 0 8px;">Files & Knowledge</h3>
+        <table class="config-table">
+            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+            <tr><td>GET</td><td><code>/api/instances/{name}/files/list</code></td><td>List workspace files</td></tr>
+            <tr><td>GET</td><td><code>/api/instances/{name}/files/read?path={path}</code></td><td>Read file content from workspace</td></tr>
+            <tr><td>GET</td><td><code>/api/instances/{name}/knowledge</code></td><td>Get instance knowledge (knowledge.md)</td></tr>
+        </table>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:20px 0 8px;">Fission (Instance Split)</h3>
+        <table class="config-table">
+            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+            <tr><td>POST</td><td><code>/api/fission/suggest/{name}</code></td><td>LLM-powered knowledge split suggestion (SSE stream)</td></tr>
+            <tr><td>POST</td><td><code>/api/fission/generate-words</code></td><td>Generate fission name and letters</td></tr>
+            <tr><td>POST</td><td><code>/api/fission/execute</code></td><td>Execute fission: create child instance</td></tr>
+        </table>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:20px 0 8px;">Static Files & Proxy</h3>
+        <table class="config-table">
+            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+            <tr><td>GET</td><td><code>/serve/{name}/{path}</code></td><td>Serve workspace file (requires auth)</td></tr>
+            <tr><td>GET</td><td><code>/public/{name}/{path}</code></td><td>Serve public file from <code>apps/</code> dir (no auth)</td></tr>
+            <tr><td>ANY</td><td><code>/proxy/{port}/{path}</code></td><td>Reverse proxy to <code>localhost:{port}</code> (ports 1024-65535)</td></tr>
+        </table>
+
+        <h3 style="font-size:0.95em;color:#e6edf3;margin:20px 0 8px;">Setup & Misc</h3>
+        <table class="config-table">
+            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+            <tr><td>POST</td><td><code>/api/setup</code></td><td>First-run setup (create instance + configure)</td></tr>
+            <tr><td>POST</td><td><code>/api/frontend-log</code></td><td>Frontend error logging</td></tr>
+        </table>
+    </div>
+
+    <div class="footer">
+        <p>An independent open-source project · <a href="mailto:luofenggu@sina.com">luofenggu@sina.com</a></p>
+    </div>
+</div>
+
+<script>
+function copyInstall(el) {
+    const text = 'curl -fsSL http://8.149.243.230:8080/download/install.sh | bash';
+    navigator.clipboard.writeText(text).then(() => {
+        el.classList.add('copied');
+        el.querySelector('.copy-hint').textContent = 'copied!';
+        setTimeout(() => {
+            el.classList.remove('copied');
+            el.querySelector('.copy-hint').textContent = 'click to copy';
+        }, 2000);
+    });
+}
+
+fetch('release-info.json').then(r => r.json()).then(info => {
+    const el = document.getElementById('releaseContent');
+    const date = info.date ? new Date(info.date).toLocaleDateString('en-US', {year:'numeric',month:'short',day:'numeric'}) : '';
+    el.innerHTML = '<strong>Version:</strong> ' + (info.version || 'unknown') +
+        (date ? ' &nbsp;·&nbsp; <strong>Date:</strong> ' + date : '') +
+        (info.commit ? '<br><strong>Commit:</strong> ' + info.commit : '');
+}).catch(() => {
+    document.getElementById('releaseContent').textContent = 'Version info unavailable';
+});
+</script>
+</body>
+</html>

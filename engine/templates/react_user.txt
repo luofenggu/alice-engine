@@ -1,0 +1,24 @@
+### 知识 ###
+{{KNOWLEDGE}}
+
+### 经历 ###
+{{HISTORY_MEMORY}}
+
+### 近况 ###
+{{DAILY_MEMORY}}
+
+### 环境信息 ###
+实例名：{{INSTANCE_ID}}
+脚本环境：{{SHELL_ENV}}
+{{HOST_INFO}}
+
+### current ###
+{{CURRENT_MEMORY}}
+
+### 当前状态 ###
+现在时刻：[{{CURRENT_TIME}}]
+系统启动时刻：[{{SYSTEM_START_TIME}}]
+收件箱未读来信：[{{UNREAD_COUNT}}] 条
+{{MEMORY_STATUS}}
+
+请输出你的下一个行为：
