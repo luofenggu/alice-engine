@@ -427,12 +427,208 @@ fn rewrite_cookie_path(cookie: &str, proxy_prefix: &str) -> String {
     cookie.to_string()
 }
 
+// ── Instances ──
+
+async fn handle_get_instances(State(state): State<Arc<ApiState>>) -> Response {
+    let client = match rpc_client(&state).await {
+        Ok(c) => c,
+        Err(s) => return json_error(s, "RPC connection failed"),
+    };
+
+    match client.get_instances(rpc_ctx()).await {
+        Ok(instances) => json_ok(&instances),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CreateInstanceBody {
+    name: Option<String>,
+}
+
+async fn handle_create_instance(
+    State(state): State<Arc<ApiState>>,
+    axum::Json(body): axum::Json<CreateInstanceBody>,
+) -> Response {
+    let client = match rpc_client(&state).await {
+        Ok(c) => c,
+        Err(s) => return json_error(s, "RPC connection failed"),
+    };
+
+    let name = body.name.unwrap_or_default();
+    match client.create_instance(rpc_ctx(), name).await {
+        Ok(result) => json_ok(&result),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+async fn handle_delete_instance(
+    State(state): State<Arc<ApiState>>,
+    AxumPath(instance_id): AxumPath<String>,
+) -> Response {
+    let client = match rpc_client(&state).await {
+        Ok(c) => c,
+        Err(s) => return json_error(s, "RPC connection failed"),
+    };
+
+    match client.delete_instance(rpc_ctx(), instance_id).await {
+        Ok(result) => json_ok(&result),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+// ── Messages ──
+
+#[derive(serde::Deserialize)]
+struct MessagesQuery {
+    before_id: Option<i64>,
+    after_id: Option<i64>,
+    limit: Option<i64>,
+}
+
+async fn handle_get_messages(
+    State(state): State<Arc<ApiState>>,
+    AxumPath(instance_id): AxumPath<String>,
+    Query(query): Query<MessagesQuery>,
+) -> Response {
+    let client = match rpc_client(&state).await {
+        Ok(c) => c,
+        Err(s) => return json_error(s, "RPC connection failed"),
+    };
+
+    let limit = query.limit.unwrap_or(50);
+    match client
+        .get_messages(rpc_ctx(), instance_id, query.before_id, query.after_id, limit)
+        .await
+    {
+        Ok(result) => json_ok(&result),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SendMessageBody {
+    content: String,
+}
+
+async fn handle_send_message(
+    State(state): State<Arc<ApiState>>,
+    AxumPath(instance_id): AxumPath<String>,
+    axum::Json(body): axum::Json<SendMessageBody>,
+) -> Response {
+    let client = match rpc_client(&state).await {
+        Ok(c) => c,
+        Err(s) => return json_error(s, "RPC connection failed"),
+    };
+
+    match client.send_message(rpc_ctx(), instance_id, body.content).await {
+        Ok(result) => json_ok(&result),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RepliesQuery {
+    after_id: i64,
+}
+
+async fn handle_get_replies(
+    State(state): State<Arc<ApiState>>,
+    AxumPath(instance_id): AxumPath<String>,
+    Query(query): Query<RepliesQuery>,
+) -> Response {
+    let client = match rpc_client(&state).await {
+        Ok(c) => c,
+        Err(s) => return json_error(s, "RPC connection failed"),
+    };
+
+    match client
+        .get_replies_after(rpc_ctx(), instance_id, query.after_id)
+        .await
+    {
+        Ok(replies) => json_ok(&replies),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+// ── Observe & Control ──
+
+async fn handle_observe(
+    State(state): State<Arc<ApiState>>,
+    AxumPath(instance_id): AxumPath<String>,
+) -> Response {
+    let client = match rpc_client(&state).await {
+        Ok(c) => c,
+        Err(s) => return json_error(s, "RPC connection failed"),
+    };
+
+    match client.observe(rpc_ctx(), instance_id).await {
+        Ok(result) => json_ok(&result),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+async fn handle_interrupt(
+    State(state): State<Arc<ApiState>>,
+    AxumPath(instance_id): AxumPath<String>,
+) -> Response {
+    let client = match rpc_client(&state).await {
+        Ok(c) => c,
+        Err(s) => return json_error(s, "RPC connection failed"),
+    };
+
+    match client.interrupt(rpc_ctx(), instance_id).await {
+        Ok(result) => json_ok(&result),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SwitchModelBody {
+    model_index: u32,
+}
+
+async fn handle_switch_model(
+    State(state): State<Arc<ApiState>>,
+    AxumPath(instance_id): AxumPath<String>,
+    axum::Json(body): axum::Json<SwitchModelBody>,
+) -> Response {
+    let client = match rpc_client(&state).await {
+        Ok(c) => c,
+        Err(s) => return json_error(s, "RPC connection failed"),
+    };
+
+    match client
+        .switch_model(rpc_ctx(), instance_id, body.model_index)
+        .await
+    {
+        Ok(result) => json_ok(&result),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
 // ── Router Builder ──
 
 /// Build API routes that require authentication.
 /// These should be mounted inside the auth middleware.
 pub fn authenticated_api_routes() -> Router<Arc<ApiState>> {
     Router::new()
+        // Instance management
+        .route(
+            "/api/instances",
+            get(handle_get_instances).post(handle_create_instance),
+        )
+        .route("/api/instances/{id}", axum::routing::delete(handle_delete_instance))
+        // Messages
+        .route(
+            "/api/instances/{id}/messages",
+            get(handle_get_messages).post(handle_send_message),
+        )
+        .route("/api/instances/{id}/replies", get(handle_get_replies))
+        // Observe & control
+        .route("/api/instances/{id}/observe", get(handle_observe))
+        .route("/api/instances/{id}/interrupt", post(handle_interrupt))
+        .route("/api/instances/{id}/switch_model", post(handle_switch_model))
         // Instance settings
         .route(
             "/api/instances/{id}/settings",
