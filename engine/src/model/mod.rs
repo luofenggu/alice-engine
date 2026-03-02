@@ -1,12 +1,7 @@
-//! # Concept Model — the .proto of Alice Engine
+//! # Model — data structure definitions
 //!
-//! All domain concepts live here as declarative definitions.
-//! This is the single source of truth for the engine's vocabulary.
-//!
-//! Rules:
-//! - Literals are legal here (this is the contract definition layer)
-//! - Business code imports types from here, never defines its own
-//! - Changes here = schema migration (treat with care)
+//! Shared data structures used across the engine.
+//! Strong types with compile-time guarantees — no implicit contracts needed.
 
 use alice_persist::{Persist, Column, Value};
 use anyhow::Result;
