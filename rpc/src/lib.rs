@@ -15,6 +15,88 @@ pub const RPC_SOCKET_PATH: &str = "/opt/alice/engine/alice-rpc.sock";
 // 共享类型 — 改了字段两边编译不过
 // ============================================================
 
+/// A model entry in extra_models array.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ExtraModel {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+/// Per-instance settings loaded from instance root settings.json.
+///
+/// This is the declarative contract for settings.json structure.
+/// All fields use serde for serialization — no manual JSON parsing.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct InstanceSettings {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub privileged: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_beats: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_separator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_blocks_limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_block_kb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_kb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_max_consecutive_beats: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_cooldown_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_models: Vec<ExtraModel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+}
+
+/// Settings update request — all fields Optional for merge-update semantics.
+/// Only Some fields will be applied to the current settings.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SettingsUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privileged: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_beats: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_separator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_blocks_limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_block_kb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_kb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_max_consecutive_beats: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_cooldown_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_models: Option<Vec<ExtraModel>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+}
+
 /// 实例基本信息
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstanceInfo {
@@ -78,6 +160,18 @@ pub struct ActionResult {
     pub message: Option<String>,
 }
 
+impl ActionResult {
+    pub fn ok(message: impl Into<String>) -> Self {
+        Self { success: true, message: Some(message.into()) }
+    }
+    pub fn ok_empty() -> Self {
+        Self { success: true, message: None }
+    }
+    pub fn err(message: impl Into<String>) -> Self {
+        Self { success: false, message: Some(message.into()) }
+    }
+}
+
 /// 文件信息
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileInfo {
@@ -95,6 +189,18 @@ pub struct FileReadResult {
     pub size: u64,
     /// 是否为二进制文件
     pub is_binary: bool,
+}
+
+impl FileReadResult {
+    pub fn text(content: String, size: u64) -> Self {
+        Self { content, size, is_binary: false }
+    }
+    pub fn binary(description: String, size: u64) -> Self {
+        Self { content: description, size, is_binary: true }
+    }
+    pub fn error(message: String) -> Self {
+        Self { content: message, size: 0, is_binary: false }
+    }
 }
 
 // ============================================================
@@ -139,11 +245,11 @@ pub trait AliceEngine {
     async fn switch_model(instance_id: String, model_index: u32) -> ActionResult;
 
     // --- 设置 ---
-    /// 获取实例设置（JSON字符串，调用方负责解析和mask敏感字段）
-    async fn get_settings(instance_id: String) -> String;
+    /// 获取实例设置
+    async fn get_settings(instance_id: String) -> InstanceSettings;
 
-    /// 更新实例设置（JSON字符串，合并更新）
-    async fn update_settings(instance_id: String, settings_json: String) -> ActionResult;
+    /// 更新实例设置（合并更新，只有Some的字段会被更新）
+    async fn update_settings(instance_id: String, update: SettingsUpdate) -> ActionResult;
 
     // --- 文件与知识 ---
     /// 列出实例工作空间中的文件

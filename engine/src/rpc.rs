@@ -3,10 +3,10 @@
 //! 通过Unix socket暴露类型安全的RPC接口，供Leptos前端调用。
 //! 与HTTP API并行运行，逐步替代前端对HTTP的依赖。
 
-use std::sync::{Arc, Mutex};
-use chrono::TimeZone;
+use std::sync::Arc;
 
 use alice_rpc::{
+    InstanceSettings, SettingsUpdate,
     AliceEngine, ObserveResult, ActionResult,
     InstanceInfo, MessageInfo, MessagesResult,
     FileInfo, FileReadResult,
@@ -17,7 +17,7 @@ use tarpc::server::{self, Channel};
 use tokio::net::UnixListener;
 use tracing::{info, error};
 
-use std::collections::HashMap;
+
 use std::path::PathBuf;
 
 use crate::core::instance::InstanceStore;
@@ -125,7 +125,7 @@ impl AliceEngine for AliceEngineServer {
     async fn send_message(self, _: Context, instance_id: String, content: String) -> ActionResult {
         let content = content.trim().to_string();
         if content.is_empty() {
-            return ActionResult { success: false, message: Some("Empty message".to_string()) };
+            return ActionResult::err("Empty message");
         }
 
         let user_id = self.state.user_id.clone();
@@ -142,9 +142,9 @@ impl AliceEngine for AliceEngineServer {
         }).await;
 
         match result {
-            Ok(Ok(id)) => ActionResult { success: true, message: Some(id.to_string()) },
-            Ok(Err(e)) => ActionResult { success: false, message: Some(e.to_string()) },
-            Err(e) => ActionResult { success: false, message: Some(e.to_string()) },
+            Ok(Ok(id)) => ActionResult::ok(id.to_string()),
+            Ok(Err(e)) => ActionResult::err(e.to_string()),
+            Err(e) => ActionResult::err(e.to_string()),
         }
     }
 
@@ -175,30 +175,49 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn observe(self, _: Context, instance_id: String) -> ObserveResult {
-        let store = self.state.instance_store.clone();
+        match self.state.signal_hub.get_status(&instance_id) {
+            Some(status) => {
+                let engine_online = if status.inferring {
+                    true
+                } else {
+                    status.last_beat.elapsed() < std::time::Duration::from_secs(30)
+                };
 
-        let result = tokio::task::spawn_blocking(move || {
-            let ch = store.get_chat(&instance_id)?;
-            let ch = ch.lock().unwrap_or_else(|e| e.into_inner());
-            ch.read_status()
-        }).await;
+                let infer_output = if status.inferring {
+                    status.log_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok())
+                } else {
+                    None
+                };
 
-        match result {
-            Ok(Ok(Some(status_json))) => parse_observe_result(&status_json),
-            _ => ObserveResult::default(),
+                ObserveResult {
+                    engine_online,
+                    inferring: status.inferring,
+                    idle: !status.inferring,
+                    born: status.born,
+                    current_action: None,
+                    executing_script: None,
+                    infer_output,
+                    recent_actions: vec![],
+                    idle_timeout_secs: status.idle_timeout_secs.map(|v| v as i64),
+                    idle_since: status.idle_since.map(|v| v as i64),
+                    active_model: status.active_model as i64,
+                    model_count: status.model_count as i64,
+                }
+            }
+            None => ObserveResult::default(),
         }
     }
 
     async fn interrupt(self, _: Context, instance_id: String) -> ActionResult {
         self.state.signal_hub.set_interrupt(&instance_id);
         info!("[RPC] Interrupt signal set for {}", instance_id);
-        ActionResult { success: true, message: None }
+        ActionResult::ok_empty()
     }
 
     async fn switch_model(self, _: Context, instance_id: String, model_index: u32) -> ActionResult {
         self.state.signal_hub.set_switch_model(&instance_id, model_index as usize);
         info!("[RPC] Switch model signal set for {}: index={}", instance_id, model_index);
-        ActionResult { success: true, message: None }
+        ActionResult::ok_empty()
     }
 
     async fn create_instance(self, _: Context, display_name: String) -> ActionResult {
@@ -208,11 +227,11 @@ impl AliceEngine for AliceEngineServer {
         match self.state.instance_store.create(&self.state.user_id, name_opt, None) {
             Ok(instance) => {
                 info!("[RPC] Created instance: id={}, name={:?}", instance.id, name_opt);
-                ActionResult { success: true, message: Some(instance.id) }
+                ActionResult::ok(instance.id)
             }
             Err(e) => {
                 error!("[RPC] Create instance failed: {}", e);
-                ActionResult { success: false, message: Some(e.to_string()) }
+                ActionResult::err(e.to_string())
             }
         }
     }
@@ -221,93 +240,89 @@ impl AliceEngine for AliceEngineServer {
         match self.state.instance_store.delete(&instance_id) {
             Ok(trash_name) => {
                 info!("[RPC] Deleted instance: {} -> .trash/{}", instance_id, trash_name);
-                ActionResult { success: true, message: Some(format!("Deleted: {}", instance_id)) }
+                ActionResult::ok(format!("Deleted: {}", instance_id))
             }
             Err(e) => {
                 error!("[RPC] Delete instance failed: {}", e);
-                ActionResult { success: false, message: Some(e.to_string()) }
+                ActionResult::err(e.to_string())
             }
         }
     }
 
-    async fn get_settings(self, _: Context, instance_id: String) -> String {
+    async fn get_settings(self, _: Context, instance_id: String) -> InstanceSettings {
         let store = self.state.instance_store.clone();
         let id = instance_id.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&id)?;
-            let path = instance.settings.path().to_path_buf();
-            std::fs::read_to_string(&path).map_err(anyhow::Error::from)
+            instance.settings.load()
         }).await;
 
         match result {
-            Ok(Ok(content)) => content,
+            Ok(Ok(settings)) => settings,
             Ok(Err(e)) => {
                 error!("[RPC] get_settings error for {}: {}", instance_id, e);
-                String::new()
+                InstanceSettings::default()
             }
             Err(e) => {
                 error!("[RPC] get_settings join error: {}", e);
-                String::new()
+                InstanceSettings::default()
             }
         }
     }
 
-    async fn update_settings(self, _: Context, instance_id: String, settings_json: String) -> ActionResult {
+    async fn update_settings(self, _: Context, instance_id: String, update: SettingsUpdate) -> ActionResult {
         let store = self.state.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
-            let settings_path = instance.settings.path().to_path_buf();
-            // Read current settings
-            let content = std::fs::read_to_string(&settings_path)?;
-            let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-            let body: serde_json::Value = serde_json::from_str(&settings_json)?;
+            let mut settings = instance.settings.load()?;
 
-            // Update allowed fields
             let mut updated = Vec::new();
-            let string_fields = ["name", "avatar", "color", "api_key", "model"];
-            for field in &string_fields {
-                if let Some(val) = body.get(*field).and_then(|v| v.as_str()) {
-                    let val = val.trim();
-                    if !val.is_empty() {
-                        settings[*field] = serde_json::json!(val);
-                        if *field == "api_key" {
-                            updated.push(format!("{}: ...{}", field, &val[val.len().saturating_sub(4)..]));
-                        } else {
-                            updated.push(format!("{}: {}", field, val));
-                        }
-                    }
-                }
+
+            if let Some(ref name) = update.name {
+                settings.name = Some(name.clone());
+                updated.push(format!("name: {}", name));
             }
-            if let Some(val) = body.get("privileged") {
-                if let Some(b) = val.as_bool() {
-                    settings["privileged"] = serde_json::json!(b);
-                    updated.push(format!("privileged: {}", b));
-                }
+            if let Some(ref avatar) = update.avatar {
+                settings.avatar = Some(avatar.clone());
+                updated.push(format!("avatar: {}", avatar));
             }
-            if let Some(val) = body.get("extra_models") {
-                if let Some(arr) = val.as_array() {
-                    settings["extra_models"] = serde_json::json!(arr);
-                    updated.push(format!("extra_models: {} items", arr.len()));
-                }
+            if let Some(ref color) = update.color {
+                settings.color = Some(color.clone());
+                updated.push(format!("color: {}", color));
+            }
+            if let Some(ref api_key) = update.api_key {
+                settings.api_key = api_key.clone();
+                updated.push(format!("api_key: ...{}", &api_key[api_key.len().saturating_sub(4)..]));
+            }
+            if let Some(ref model) = update.model {
+                settings.model = model.clone();
+                updated.push(format!("model: {}", model));
+            }
+            if let Some(privileged) = update.privileged {
+                settings.privileged = privileged;
+                updated.push(format!("privileged: {}", privileged));
+            }
+            if let Some(ref extra_models) = update.extra_models {
+                settings.extra_models = extra_models.clone();
+                updated.push(format!("extra_models: {} items", extra_models.len()));
             }
 
             if updated.is_empty() {
-                return Ok(ActionResult { success: false, message: Some("No valid fields to update".to_string()) });
+                return Ok(ActionResult::err("No valid fields to update"));
             }
 
-            let new_content = serde_json::to_string_pretty(&settings)?;
-            std::fs::write(&settings_path, &new_content)?;
+            instance.settings.save(&settings)?;
 
             info!("[RPC] Settings updated for {}: {}", instance_id, updated.join(", "));
-            Ok::<_, anyhow::Error>(ActionResult { success: true, message: Some(updated.join(", ")) })
+            Ok::<_, anyhow::Error>(ActionResult::ok(updated.join(", ")))
         }).await;
 
         match result {
             Ok(Ok(r)) => r,
-            Ok(Err(e)) => ActionResult { success: false, message: Some(e.to_string()) },
-            Err(e) => ActionResult { success: false, message: Some(e.to_string()) },
+            Ok(Err(e)) => ActionResult::err(e.to_string()),
+            Err(e) => ActionResult::err(e.to_string()),
         }
     }
 
@@ -332,7 +347,8 @@ impl AliceEngine for AliceEngineServer {
             for entry in std::fs::read_dir(&target)? {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') || name == "target" || name == "node_modules" {
+                const HIDDEN_DIRS: &[&str] = &["target", "node_modules"];
+                if name.starts_with('.') || HIDDEN_DIRS.contains(&name.as_str()) {
                     continue;
                 }
                 let metadata = entry.metadata()?;
@@ -368,7 +384,7 @@ impl AliceEngine for AliceEngineServer {
 
     async fn read_file(self, _: Context, instance_id: String, path: String) -> FileReadResult {
         let store = self.state.instance_store.clone();
-        let empty = FileReadResult { content: String::new(), size: 0, is_binary: false };
+        let empty = FileReadResult::error(String::new());
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
@@ -393,22 +409,18 @@ impl AliceEngine for AliceEngineServer {
                 .to_string();
 
             if is_binary_file(&file_name) {
-                return Ok(FileReadResult {
-                    content: format!("[Binary file: {}, {} bytes]", file_name, size),
-                    size,
-                    is_binary: true,
-                });
+                return Ok(FileReadResult::binary(format!("[Binary file: {}, {} bytes]", file_name, size), size));
             }
 
             let content = std::fs::read_to_string(&target)?;
-            Ok::<_, anyhow::Error>(FileReadResult { content, size, is_binary: false })
+            Ok::<_, anyhow::Error>(FileReadResult::text(content, size))
         }).await;
 
         match result {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
                 error!("[RPC] read_file error: {}", e);
-                FileReadResult { content: e.to_string(), size: 0, is_binary: false }
+                FileReadResult::error(e.to_string())
             }
             Err(e) => {
                 error!("[RPC] read_file join error: {}", e);
@@ -433,46 +445,7 @@ impl AliceEngine for AliceEngineServer {
 
 }
 
-// ObserveResult::default() 由 alice-rpc 的 #[derive(Default)] 提供
 
-/// 从engine_status JSON解析ObserveResult
-fn parse_observe_result(status_json: &str) -> ObserveResult {
-    let (engine_online, idle, inferring, infer_log_path, born) = parse_engine_status(status_json);
-
-    let current_action = extract_json_string_simple(status_json, "currentDoing");
-    let executing_script = extract_json_string_simple(status_json, "executingScript");
-
-    let infer_output = if let Some(ref path) = infer_log_path {
-        std::fs::read_to_string(path).ok()
-    } else {
-        None
-    };
-
-    let recent_actions_raw = extract_json_array_raw(status_json, "recentDoings")
-        .unwrap_or_else(|| "[]".to_string());
-    // Parse JSON array of strings
-    let recent_actions: Vec<String> = serde_json::from_str(&recent_actions_raw).unwrap_or_default();
-
-    let idle_timeout_secs = extract_json_i64_simple(status_json, "idleTimeoutSecs");
-    let idle_since = extract_json_i64_simple(status_json, "idleSince");
-    let active_model = extract_json_i64_simple(status_json, "activeModel").unwrap_or(0);
-    let model_count = extract_json_i64_simple(status_json, "modelCount").unwrap_or(1);
-
-    ObserveResult {
-        engine_online,
-        inferring,
-        idle,
-        born,
-        current_action,
-        executing_script,
-        infer_output,
-        recent_actions,
-        idle_timeout_secs,
-        idle_since,
-        active_model,
-        model_count,
-    }
-}
 
 /// 收集所有实例信息
 fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>> {
@@ -511,103 +484,20 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
 }
 
 
+/// 二进制文件扩展名列表
+const BINARY_EXTENSIONS: &[&str] = &[
+    ".jar", ".class", ".zip", ".gz", ".png", ".jpg",
+    ".jpeg", ".gif", ".ico", ".pdf", ".exe", ".so", ".wasm",
+];
+
 /// 判断文件是否为二进制格式（基于扩展名）
 fn is_binary_file(name: &str) -> bool {
     let name = name.to_lowercase();
-    name.ends_with(".jar") || name.ends_with(".class") || name.ends_with(".zip")
-        || name.ends_with(".gz") || name.ends_with(".png") || name.ends_with(".jpg")
-        || name.ends_with(".jpeg") || name.ends_with(".gif") || name.ends_with(".ico")
-        || name.ends_with(".pdf") || name.ends_with(".exe") || name.ends_with(".so")
-        || name.ends_with(".wasm")
+    BINARY_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
 }
 
 
-// ─── JSON辅助函数（从web层迁移）────────────────────────────────
 
-fn extract_json_bool_simple(json: &str, key: &str) -> Option<bool> {
-    let pattern = format!("\"{}\":", key);
-    let idx = json.find(&pattern)?;
-    let rest = json[idx + pattern.len()..].trim_start();
-    if rest.starts_with("true") { Some(true) }
-    else if rest.starts_with("false") { Some(false) }
-    else { None }
-}
-
-fn extract_json_i64_simple(json: &str, key: &str) -> Option<i64> {
-    let pattern = format!("\"{}\":", key);
-    let idx = json.find(&pattern)?;
-    let rest = json[idx + pattern.len()..].trim_start();
-    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
-    rest[..end].parse().ok()
-}
-
-fn extract_json_string_simple(json: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\":", key);
-    let idx = json.find(&pattern)?;
-    let rest = json[idx + pattern.len()..].trim_start();
-    if rest.starts_with("null") { return None; }
-    let rest = rest.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-fn extract_json_array_raw(json: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\":", key);
-    let idx = json.find(&pattern)?;
-    let rest = json[idx + pattern.len()..].trim_start();
-    if !rest.starts_with('[') {
-        return None;
-    }
-    let mut depth = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (i, c) in rest.char_indices() {
-        if escaped { escaped = false; continue; }
-        if c == '\\' && in_string { escaped = true; continue; }
-        if c == '"' { in_string = !in_string; continue; }
-        if in_string { continue; }
-        if c == '[' { depth += 1; }
-        if c == ']' {
-            depth -= 1;
-            if depth == 0 {
-                return Some(rest[..=i].to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Parse engine status JSON to determine if engine is online and idle.
-fn parse_engine_status(status_json: &str) -> (bool, bool, bool, Option<String>, bool) {
-    let status_str = extract_json_string_simple(status_json, "status")
-        .unwrap_or_default();
-    let is_inferring = status_str == "inferring";
-    let idle = !is_inferring;
-
-    let last_beat_ms = extract_json_string_simple(status_json, "lastBeat")
-        .and_then(|s| parse_timestamp_to_millis(&s))
-        .unwrap_or(0);
-
-    let engine_online = if is_inferring {
-        true
-    } else {
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        (now_ms - last_beat_ms) < 30000
-    };
-
-    let infer_log_path = extract_json_string_simple(status_json, "logPath");
-    let born = extract_json_bool_simple(status_json, "born").unwrap_or(false);
-
-    (engine_online, idle, is_inferring, infer_log_path, born)
-}
-
-/// Parse "20260222083246" format to milliseconds since epoch.
-fn parse_timestamp_to_millis(s: &str) -> Option<i64> {
-    if s.len() < 14 { return None; }
-    let dt = chrono::NaiveDateTime::parse_from_str(s, "%Y%m%d%H%M%S").ok()?;
-    let local = chrono::Local.from_local_datetime(&dt).single()?;
-    Some(local.timestamp_millis())
-}
 
 /// 启动RPC server（Unix socket）
 pub async fn start_rpc_server(state: Arc<EngineState>) {

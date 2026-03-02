@@ -842,16 +842,19 @@ impl Alice {
         }
 
         // Update engine status: inferring
-        let model_count = 1 + self.extra_configs.len();
-        let status_json = format!(
-            r#"{{"status":"inferring","instance":"{}","logPath":"{}","born":{},"activeModel":{},"modelCount":{}}}"#,
-            self.instance.id,
-            log_path.display(),
-            self.born,
-            self.active_config_index,
-            model_count,
-        );
-        self.instance.chat.update_status(&status_json).ok();
+        if let Some(ref signals) = self.signals {
+            let log_path_str = log_path.display().to_string();
+            let model_count = 1 + self.extra_configs.len();
+            let active_model = self.active_config_index;
+            let born = self.born;
+            signals.update_status(|s| {
+                s.inferring = true;
+                s.born = born;
+                s.log_path = Some(log_path_str.clone());
+                s.active_model = active_model;
+                s.model_count = model_count;
+            });
+        }
 
         // 6. LLM inference (or mock stream for testing)
         let stream: InferenceStream = if let Some(ref mut streams) = self.mock_streams {

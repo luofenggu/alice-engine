@@ -35,7 +35,7 @@ use anyhow::{Result, Context};
 use tracing::{info, warn, error};
 
 use crate::core::{Alice, AliceConfig};
-use crate::core::instance::InstanceStore;
+use crate::core::instance::{InstanceStore, InstanceSettingsExt, parse_model_str};
 use crate::core::signal::SignalHub;
 /// Graceful shutdown signal file path.
 /// Written by engine.sh stop / self-deploy.sh to request graceful shutdown.
@@ -44,7 +44,8 @@ const SHUTDOWN_SIGNAL_FILE: &str = "/var/run/alice-engine-shutdown.signal";
 
 
 
-use crate::core::instance::InstanceSettings;
+
+// InstanceSettingsExt imported above with InstanceStore
 
 // ─── Free function: sandbox user management ──────────────────────
 
@@ -261,7 +262,7 @@ impl AliceEngine {
 
         // Build extra model configs for failover
         let extra_configs: Vec<crate::llm::LlmConfig> = settings.extra_models.iter().map(|em| {
-            let (url, model_id) = InstanceSettings::parse_model_str(&em.model);
+            let (url, model_id) = parse_model_str(&em.model);
             crate::llm::LlmConfig {
                 api_url: url,
                 api_key: em.api_key.clone(),
@@ -526,7 +527,7 @@ impl AliceEngine {
 
                     // Hot-reload model and api_key
                     if !s.model.is_empty() {
-                        let (new_api_url, new_model_id) = InstanceSettings::parse_model_str(&s.model);
+                        let (new_api_url, new_model_id) = parse_model_str(&s.model);
                         if new_model_id != alice.config.model || new_api_url != alice.config.api_url {
                             info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.config.model, new_model_id);
                             alice.config.model = new_model_id;
@@ -543,7 +544,7 @@ impl AliceEngine {
 
                     // Hot-reload extra_models
                     let new_extra_configs: Vec<crate::llm::LlmConfig> = s.extra_models.iter().map(|em| {
-                        let (api_url, model_id) = InstanceSettings::parse_model_str(&em.model);
+                        let (api_url, model_id) = parse_model_str(&em.model);
                         crate::llm::LlmConfig {
                             api_url,
                             api_key: em.api_key.clone(),
@@ -582,26 +583,22 @@ impl AliceEngine {
             if alice.last_was_idle && alice.count_unread_messages() == 0 {
                 // Write idle status here (not in beat()) so observe never sees
                 // a false "idle" between consecutive beats in a reasoning chain.
-                let idle_timeout_str = match alice.idle_timeout_secs {
-                    Some(t) => t.to_string(),
-                    None => "null".to_string(),
-                };
-                let idle_since_str = match alice.idle_since {
-                    Some(s) => s.to_string(),
-                    None => "null".to_string(),
-                };
-                let model_count = 1 + alice.extra_configs.len();
-                let status_json = format!(
-                    r#"{{"status":"idle","instance":"{}","lastBeat":"{}","duration":0.0,"born":{},"idleTimeoutSecs":{},"idleSince":{},"activeModel":{},"modelCount":{}}}"#,
-                    instance_id,
-                    chrono::Local::now().format("%Y%m%d%H%M%S"),
-                    alice.born,
-                    idle_timeout_str,
-                    idle_since_str,
-                    alice.active_config_index,
-                    model_count,
-                );
-                alice.instance.chat.update_status(&status_json).ok();
+                if let Some(ref signals) = alice.signals {
+                    let model_count = 1 + alice.extra_configs.len();
+                    let active_model = alice.active_config_index;
+                    let born = alice.born;
+                    let idle_timeout = alice.idle_timeout_secs;
+                    let idle_since = alice.idle_since;
+                    signals.update_status(|s| {
+                        s.inferring = false;
+                        s.born = born;
+                        s.last_beat = std::time::Instant::now();
+                        s.active_model = active_model;
+                        s.model_count = model_count;
+                        s.idle_timeout_secs = idle_timeout;
+                        s.idle_since = idle_since;
+                    });
+                }
 
                 consecutive_beats = 0;
                 std::thread::sleep(Duration::from_secs(alice.config.beat_interval_secs));
@@ -618,13 +615,15 @@ impl AliceEngine {
                     alice.idle_since = None;
                     idle_elapsed = 0;
                     // Update status to reflect cancelled timeout
-                    let status_json = format!(
-                        r#"{{"status":"idle","instance":"{}","lastBeat":"{}","duration":0.0,"born":{}}}"#,
-                        instance_id,
-                        chrono::Local::now().format("%Y%m%d%H%M%S"),
-                        alice.born,
-                    );
-                    alice.instance.chat.update_status(&status_json).ok();
+                    if let Some(ref signals) = alice.signals {
+                        signals.update_status(|s| {
+                            s.inferring = false;
+                            s.last_beat = std::time::Instant::now();
+                            s.born = alice.born;
+                            s.idle_timeout_secs = None;
+                            s.idle_since = None;
+                        });
+                    }
                     continue;
                 }
 
@@ -749,13 +748,16 @@ impl AliceEngine {
                     error!("[BEAT-{}] Error: {} — backing off {}s",
                         instance_id, e, ERROR_BACKOFF_SECS);
                     alice.current_infer_log_path = None;
-                    let status_json = format!(
-                        r#"{{"status":"idle","instance":"{}","lastBeat":"{}","duration":0.0,"born":{}}}"#,
-                        instance_id,
-                        chrono::Local::now().format("%Y%m%d%H%M%S"),
-                        alice.born,
-                    );
-                    alice.instance.chat.update_status(&status_json).ok();
+                    if let Some(ref signals) = alice.signals {
+                        signals.update_status(|s| {
+                            s.inferring = false;
+                            s.born = alice.born;
+                            s.last_beat = std::time::Instant::now();
+                            s.log_path = None;
+                            s.idle_timeout_secs = None;
+                            s.idle_since = None;
+                        });
+                    }
                     alice.notify_anomaly(&format!("{}", e));
                     alice.last_was_idle = true;
                     consecutive_beats = 0;
@@ -791,6 +793,7 @@ impl AliceEngine {
 mod tests {
     use super::*;
     use alice_persist::Document;
+    use crate::core::instance::InstanceSettings;
     use tempfile::TempDir;
 
 

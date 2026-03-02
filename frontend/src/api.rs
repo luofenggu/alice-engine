@@ -74,18 +74,12 @@ async fn handle_get_settings(
     };
 
     match client.get_settings(rpc_ctx(), instance_id).await {
-        Ok(json_str) => {
-            // Mask sensitive fields (api_key)
-            if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+        Ok(settings) => {
+            if let Ok(mut val) = serde_json::to_value(&settings) {
                 mask_api_keys(&mut val);
                 json_ok(&val)
             } else {
-                (
-                    StatusCode::OK,
-                    [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
-                    json_str,
-                )
-                    .into_response()
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to serialize settings")
             }
         }
         Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -133,8 +127,11 @@ async fn handle_update_settings(
         Err(s) => return json_error(s, "RPC connection failed"),
     };
 
-    let json_str = body.to_string();
-    match client.update_settings(rpc_ctx(), instance_id, json_str).await {
+    let update: alice_rpc::SettingsUpdate = match serde_json::from_value(body) {
+        Ok(u) => u,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, &format!("Invalid settings: {}", e)),
+    };
+    match client.update_settings(rpc_ctx(), instance_id, update).await {
         Ok(result) => json_ok(&result),
         Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }

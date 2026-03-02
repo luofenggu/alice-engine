@@ -146,10 +146,7 @@ impl ChatHistory {
                 read_status TEXT NOT NULL DEFAULT '',
                 msg_type TEXT NOT NULL DEFAULT ''
             );
-            CREATE TABLE IF NOT EXISTS engine_status (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );"
+"
         ).context("failed to create chat tables")?;
 
         let count: i64 = conn.query_row(
@@ -365,26 +362,7 @@ impl ChatHistory {
 
     // ==================== Engine Status ====================
 
-    /// Update engine status (JSON string stored under "status" key).
-    ///
-    /// @TRACE: MSG
-    pub fn update_status(&mut self, status_json: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO engine_status (key, value) VALUES (?, ?)",
-            rusqlite::params!["status", status_json],
-        ).context("failed to update engine status")?;
-        Ok(())
-    }
 
-    /// Read engine status JSON.
-    pub fn read_status(&self) -> Result<Option<String>> {
-        let result: Option<String> = self.conn.query_row(
-            "SELECT value FROM engine_status WHERE key = ?",
-            rusqlite::params!["status"],
-            |row| row.get(0),
-        ).ok();
-        Ok(result)
-    }
 
     // ==================== Private helpers ====================
 
@@ -505,20 +483,7 @@ mod tests {
         assert!(replies2.is_empty());
     }
 
-    #[test]
-    fn test_engine_status() {
-        let mut ch = setup();
 
-        assert!(ch.read_status().unwrap().is_none());
-
-        ch.update_status(r#"{"inferring": true, "log": "/tmp/out.log"}"#).unwrap();
-        let status = ch.read_status().unwrap().unwrap();
-        assert!(status.contains("inferring"));
-
-        ch.update_status(r#"{"inferring": false}"#).unwrap();
-        let status2 = ch.read_status().unwrap().unwrap();
-        assert!(status2.contains("false"));
-    }
 
     #[test]
     fn test_get_last_message_time() {
