@@ -20,11 +20,12 @@ use std::sync::Arc;
 
 use alice_engine::engine::AliceEngine;
 use alice_engine::core::signal::SignalHub;
+use alice_engine::persist::EnvConfig;
 use alice_engine::rpc::EngineState;
 
-/// Read a config value: env var > CLI arg > None.
-fn env_or_arg(env_key: &str, arg: Option<&String>) -> Option<String> {
-    std::env::var(env_key).ok().or_else(|| arg.cloned())
+/// Resolve a path: env value > CLI arg > None.
+fn env_or_arg(env_val: Option<&str>, arg: Option<&String>) -> Option<String> {
+    env_val.map(|s| s.to_string()).or_else(|| arg.cloned())
 }
 
 #[tokio::main]
@@ -34,10 +35,13 @@ async fn main() -> anyhow::Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // Load all environment variables once
+    let env_config = Arc::new(EnvConfig::from_env());
+
     // Base directory: all relative paths resolve from here
-    let base_dir = std::env::var("ALICE_BASE_DIR")
+    let base_dir = env_config.base_dir.as_deref()
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+        .unwrap_or_else(|| {
             if args.len() > 1 {
                 PathBuf::from(&args[1])
                     .parent()
@@ -52,16 +56,13 @@ async fn main() -> anyhow::Result<()> {
         });
 
     // Derive paths: env > CLI arg > base_dir default
-    let instances_dir = env_or_arg("ALICE_INSTANCES_DIR", args.get(1))
+    let instances_dir = env_or_arg(env_config.instances_dir.as_deref(), args.get(1))
         .map(PathBuf::from)
         .unwrap_or_else(|| base_dir.join("instances"));
 
-    let logs_dir = env_or_arg("ALICE_LOGS_DIR", args.get(2))
+    let logs_dir = env_or_arg(env_config.logs_dir.as_deref(), args.get(2))
         .map(PathBuf::from)
         .unwrap_or_else(|| base_dir.join("logs"));
-
-    let user_id = std::env::var("ALICE_USER_ID")
-        .unwrap_or_else(|_| "user".to_string());
 
     // Ensure directories exist
     std::fs::create_dir_all(&instances_dir).ok();
@@ -83,9 +84,10 @@ async fn main() -> anyhow::Result<()> {
     let engine_state = Arc::new(EngineState::new(
         instances_dir.clone(),
         logs_dir.clone(),
-        user_id,
+        env_config.user_id.clone(),
         signal_hub.clone(),
         api_config,
+        env_config.clone(),
     ));
 
     // Start RPC server (Unix socket, for Leptos frontend)
@@ -97,8 +99,9 @@ async fn main() -> anyhow::Result<()> {
     // Start Engine in a dedicated OS thread
     let engine_instances_dir = instances_dir.clone();
     let engine_logs_dir = logs_dir.clone();
+    let engine_env_config = env_config.clone();
     let engine_handle = std::thread::spawn(move || {
-        let mut engine = AliceEngine::new(engine_instances_dir, engine_logs_dir, signal_hub);
+        let mut engine = AliceEngine::new(engine_instances_dir, engine_logs_dir, signal_hub, engine_env_config);
         if let Err(e) = engine.run() {
             tracing::error!("Engine error: {}", e);
         }
@@ -112,3 +115,4 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Alice Engine shut down.");
     Ok(())
 }
+

@@ -38,6 +38,7 @@
 //! ```
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::path::PathBuf;
 use std::time::Instant;
 use anyhow::Result;
@@ -344,6 +345,8 @@ pub struct Alice {
     pub user_id: String,
     /// Instance configuration
     pub config: AliceConfig,
+    /// Environment configuration (shared, read-only after startup).
+    pub env_config: Arc<crate::persist::EnvConfig>,
     /// Current inference log path (Some = inferring, None = idle)
     /// @TRACE: INFER
     pub current_infer_log_path: Option<PathBuf>,
@@ -406,7 +409,7 @@ impl Alice {
     /// Create a new Alice instance from an instance directory.
     ///
     /// @TRACE: INSTANCE
-    pub fn new(instance: instance::Instance, config: AliceConfig) -> Result<Self> {
+    pub fn new(instance: instance::Instance, config: AliceConfig, env_config: Arc<crate::persist::EnvConfig>) -> Result<Self> {
         let user_id = instance.user_id().to_string();
         let action_separator = config.action_separator.clone();
 
@@ -449,6 +452,7 @@ impl Alice {
             history_kb: 2,
             safety_max_consecutive_beats: 10,
             safety_cooldown_secs: 30,
+            env_config,
         })
     }
 
@@ -828,12 +832,14 @@ impl Alice {
         );
         self.current_infer_log_path = Some(log_path.clone());
 
-        // Write input log (only if ALICE_INFER_LOG_IN=true)
-        crate::logging::write_infer_input_log(
-            &self.config.log_dir, &self.instance.id, &log_timestamp,
-            &self.config.model, &self.config.api_url,
-            &system_prompt, &user_prompt,
-        );
+        // Write input log (only if enabled via env config)
+        if self.env_config.infer_log_enabled {
+            crate::logging::write_infer_input_log(
+                &self.config.log_dir, &self.instance.id, &log_timestamp,
+                &self.config.model, &self.config.api_url,
+                &system_prompt, &user_prompt,
+            );
+        }
 
         // Mark born on first inference start (not just first idle)
         if !self.born {
@@ -1145,7 +1151,8 @@ mod tests {
             log_dir: tmp.path().join("logs"),
             ..Default::default()
         };
-        let alice = Alice::new(instance, config).unwrap();
+        let env_config = Arc::new(crate::persist::EnvConfig::from_env());
+        let alice = Alice::new(instance, config, env_config).unwrap();
         (alice, tmp)
     }
 

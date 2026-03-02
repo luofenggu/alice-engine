@@ -178,12 +178,7 @@ pub fn write_infer_input_log(
     system_prompt: &str,
     user_prompt: &str,
 ) {
-    let enabled = std::env::var("ALICE_INFER_LOG_IN")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
-    if !enabled {
-        return;
-    }
+
 
     let infer_log_dir = logs_dir.join("infer").join(instance_id);
     let in_log_path = infer_log_dir.join(format!("{}.in.log", timestamp));

@@ -592,7 +592,7 @@ pub const DEFAULT_MODEL: &str = "openrouter@anthropic/claude-opus-4.6";
 
 /// Extension trait for InstanceSettings — engine-specific logic.
 pub trait InstanceSettingsExt {
-    fn apply_env_fallbacks(&mut self);
+    fn apply_env_fallbacks(&mut self, env_config: &crate::persist::EnvConfig);
     fn validate(&self) -> anyhow::Result<()>;
     fn parse_model(&self) -> (String, String);
 }
@@ -623,17 +623,16 @@ pub fn parse_model_str(model: &str) -> (String, String) {
 impl InstanceSettingsExt for InstanceSettings {
     /// Apply environment variable fallbacks for api_key, model, and user_id.
     /// Call this after loading from file to fill in missing values.
-    fn apply_env_fallbacks(&mut self) {
+    fn apply_env_fallbacks(&mut self, env_config: &crate::persist::EnvConfig) {
         if self.api_key.is_empty() {
-            self.api_key = std::env::var("ALICE_DEFAULT_API_KEY").ok().unwrap_or_default();
+            self.api_key = env_config.default_api_key.clone();
         }
         if self.model.is_empty() {
-            self.model = std::env::var("ALICE_DEFAULT_MODEL").ok()
+            self.model = env_config.default_model.clone()
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string());
         }
         if self.user_id.is_empty() {
-            self.user_id = std::env::var("ALICE_USER_ID").ok()
-                .unwrap_or_else(|| "default".to_string());
+            self.user_id = env_config.user_id.clone();
         }
     }
 

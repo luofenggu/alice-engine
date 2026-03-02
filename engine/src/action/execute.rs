@@ -682,7 +682,8 @@ mod tests {
         let instance = crate::core::instance::Instance::open(tmp.path()).unwrap();
 
         let config = AliceConfig::default();
-        let mut alice = Alice::new(instance, config).unwrap();
+        let env_config = std::sync::Arc::new(crate::persist::EnvConfig::from_env());
+        let mut alice = Alice::new(instance, config, env_config).unwrap();
         alice.privileged = true;
         let tx = Transaction::new("test", "abc123");
         (alice, tx, tmp)

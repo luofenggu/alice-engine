@@ -35,16 +35,19 @@ pub struct EngineState {
     pub signal_hub: SignalHub,
     /// API configuration (file browse rules, etc.)
     pub api_config: crate::persist::ApiConfig,
+    /// Environment configuration (all ALICE_* env vars).
+    pub env_config: Arc<crate::persist::EnvConfig>,
 }
 
 impl EngineState {
-    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String, signal_hub: SignalHub, api_config: crate::persist::ApiConfig) -> Self {
+    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String, signal_hub: SignalHub, api_config: crate::persist::ApiConfig, env_config: Arc<crate::persist::EnvConfig>) -> Self {
         Self {
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
             user_id,
             signal_hub,
             api_config,
+            env_config,
         }
     }
 
@@ -467,9 +470,9 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
 
 /// 启动RPC server（Unix socket）
 pub async fn start_rpc_server(state: Arc<EngineState>) {
-    // RPC socket路径：环境变量 > 默认常量
-    let socket_path = std::env::var("ALICE_RPC_SOCKET")
-        .unwrap_or_else(|_| RPC_SOCKET_PATH.to_string());
+    // RPC socket路径：env_config > 默认常量
+    let socket_path = state.env_config.rpc_socket.clone()
+        .unwrap_or_else(|| RPC_SOCKET_PATH.to_string());
 
     // 清理旧socket文件
     let _ = std::fs::remove_file(&socket_path);

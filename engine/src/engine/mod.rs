@@ -132,22 +132,23 @@ pub struct AliceEngine {
     instances_base: PathBuf,
     /// Log directory.
     logs_dir: PathBuf,
-    /// PID file path (local mode: base_dir/alice-engine.pid, cloud: /var/run/alice-engine.pid).
+    /// PID file path.
     pid_file: PathBuf,
     /// Instance store for managing instance lifecycle.
     instance_store: InstanceStore,
     /// Signal hub for inter-thread communication (interrupt, switch-model).
     signal_hub: SignalHub,
+    /// Environment configuration.
+    env_config: Arc<crate::persist::EnvConfig>,
     /// Temporary buffer for instances during restore (drained to threads in run()).
     instances: Vec<(String, Alice)>,
 }
 
 impl AliceEngine {
     /// Create a new engine.
-    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub) -> Self {
-        let pid_file = std::env::var("ALICE_PID_FILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| instances_base.parent().unwrap_or(&instances_base).join("alice-engine.pid"));
+    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub, env_config: Arc<crate::persist::EnvConfig>) -> Self {
+        let pid_file = env_config.pid_file.clone()
+            .unwrap_or_else(|| instances_base.parent().unwrap_or(&instances_base).join("alice-engine.pid"));
         let instance_store = InstanceStore::new(instances_base.clone());
         Self {
             instances_base,
@@ -155,6 +156,7 @@ impl AliceEngine {
             pid_file,
             instance_store,
             signal_hub,
+            env_config,
             instances: Vec::new(),
         }
     }
@@ -242,7 +244,7 @@ impl AliceEngine {
     fn create_instance(&mut self, name: &str, instance_dir: &Path) -> Result<()> {
         let instance = crate::core::instance::Instance::open(instance_dir)?;
         let mut settings = instance.settings.load()?;
-        settings.apply_env_fallbacks();
+        settings.apply_env_fallbacks(&self.env_config);
         settings.validate()?;
 
         let (api_url, model) = settings.parse_model();
@@ -258,7 +260,7 @@ impl AliceEngine {
             action_separator: settings.action_separator.clone(),
         };
 
-        let mut alice = Alice::new(instance, config)?;
+        let mut alice = Alice::new(instance, config, self.env_config.clone())?;
 
         // Build extra model configs for failover
         let extra_configs: Vec<crate::llm::LlmConfig> = settings.extra_models.iter().map(|em| {
@@ -277,7 +279,7 @@ impl AliceEngine {
         alice.privileged = settings.privileged;
         if let Some(v) = settings.safety_max_consecutive_beats { alice.safety_max_consecutive_beats = v; }
         if let Some(v) = settings.safety_cooldown_secs { alice.safety_cooldown_secs = v; }
-        alice.host = std::env::var("ALICE_HOST").ok().filter(|s| !s.is_empty());
+        alice.host = self.env_config.host.clone();
 
 
         // Auto-create sandbox user (紧箍咒) for non-privileged instances
@@ -364,10 +366,7 @@ impl AliceEngine {
         self.cleanup_tmp_files();
 
         // 1.6. Clean up old logs
-        let retention_days = std::env::var("ALICE_INFER_LOG_RETENTION_DAYS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(7);
+        let retention_days = self.env_config.infer_log_retention_days;
         crate::logging::cleanup_old_infer_logs(&self.logs_dir, retention_days);
         crate::logging::rotate_engine_log(&self.logs_dir, 50);
 
@@ -897,6 +896,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
+            std::sync::Arc::new(crate::persist::EnvConfig::from_env()),
         );
         assert!(engine.instances.is_empty());
     }
@@ -919,6 +919,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
+            std::sync::Arc::new(crate::persist::EnvConfig::from_env()),
         );
         engine.restore_instances().unwrap();
 
@@ -947,6 +948,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
+            std::sync::Arc::new(crate::persist::EnvConfig::from_env()),
         );
         engine.restore_instances().unwrap();
 
@@ -1006,6 +1008,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
+            std::sync::Arc::new(crate::persist::EnvConfig::from_env()),
         );
         engine.restore_instances().unwrap();
 
