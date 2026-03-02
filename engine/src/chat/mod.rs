@@ -334,13 +334,13 @@ impl ChatHistory {
         Ok(replies)
     }
 
-    /// Get all messages (any role) after a given id, for multi-client sync
-    pub fn get_messages_after(&self, after_id: i64) -> Result<Vec<(i64, String, String, String)>> {
+    /// Get messages (any role) after a given id, with limit for pagination
+    pub fn get_messages_after(&self, after_id: i64, limit: i64) -> Result<Vec<(i64, String, String, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, role, content, timestamp FROM messages WHERE id > ? ORDER BY id"
+            "SELECT id, role, content, timestamp FROM messages WHERE id > ? ORDER BY id LIMIT ?"
         )?;
         let rows: Vec<(i64, String, String, String)> = stmt.query_map(
-            rusqlite::params![after_id],
+            rusqlite::params![after_id, limit],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?.filter_map(|r| r.ok()).collect();
         Ok(rows)
@@ -512,7 +512,7 @@ mod tests {
         ch.append("agent", "agent", "msg2", "20260220120001").unwrap();
         ch.append("user", "user", "msg3", "20260220120002").unwrap();
 
-        let after = ch.get_messages_after(1).unwrap();
+        let after = ch.get_messages_after(1, 100).unwrap();
         assert_eq!(after.len(), 2);
         assert_eq!(after[0].2, "msg2");
         assert_eq!(after[1].2, "msg3");

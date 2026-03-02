@@ -92,11 +92,12 @@ impl AliceEngine for AliceEngineServer {
             let ch = ch.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(after) = after_id {
                 // 轮询新消息（包含所有角色，支持多端同步）
-                let rows = ch.get_messages_after(after)?;
+                let rows = ch.get_messages_after(after, limit)?;
                 let messages: Vec<MessageInfo> = rows.into_iter().map(|(id, role, content, timestamp)| {
                     MessageInfo { id, role, content, timestamp }
                 }).collect();
-                Ok::<_, anyhow::Error>(MessagesResult { messages, has_more: false })
+                let has_more = messages.len() >= limit as usize;
+                Ok::<_, anyhow::Error>(MessagesResult { messages, has_more })
             } else {
                 // 分页查询
                 let qr = ch.query(limit, before_id)?;
@@ -153,11 +154,12 @@ impl AliceEngine for AliceEngineServer {
 
     async fn get_replies_after(self, _: Context, instance_id: String, after_id: i64) -> Vec<MessageInfo> {
         let store = self.state.instance_store.clone();
+        let max_page = self.state.api_config.rpc.max_page_size;
 
         let result = tokio::task::spawn_blocking(move || {
             let ch = store.get_chat(&instance_id)?;
             let ch = ch.lock().unwrap_or_else(|e| e.into_inner());
-            ch.get_messages_after(after_id)
+            ch.get_messages_after(after_id, max_page)
         }).await;
 
         match result {
