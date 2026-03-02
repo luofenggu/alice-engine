@@ -650,10 +650,10 @@ fn execute_create_instance(
     let instances_dir = alice.instance.instance_dir.parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine instances directory"))?;
 
-    // Create instance atomically (all directories + settings + knowledge)
+    // Create instance atomically via InstanceStore
     let knowledge_opt = if knowledge.is_empty() { None } else { Some(knowledge) };
-    let instance = crate::core::instance::Instance::create(
-        instances_dir,
+    let store = crate::core::instance::InstanceStore::new(instances_dir.to_path_buf());
+    let instance = store.create(
         &alice.user_id,
         Some(name),
         knowledge_opt,

@@ -384,10 +384,9 @@ async fn handle_create_instance(
         return json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
     }
 
-    // Create instance atomically
-    let instance = match crate::core::instance::Instance::create(
-        &state.instances_dir, &state.user_id, None, None,
-    ) {
+    // Create instance atomically via InstanceStore
+    let store = crate::core::instance::InstanceStore::new(state.instances_dir.clone());
+    let instance = match store.create(&state.user_id, None, None) {
         Ok(inst) => inst,
         Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
@@ -1596,33 +1595,14 @@ async fn handle_delete_instance(
         return json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
     }
 
-    let instance_dir = state.instances_dir.join(&name);
-    if !instance_dir.exists() {
-        return json_error(StatusCode::NOT_FOUND, "Instance not found");
-    }
-
-    // Safety: refuse to delete if name looks suspicious (path traversal)
-    if name.contains('/') || name.contains("..") || name.is_empty() {
-        return json_error(StatusCode::BAD_REQUEST, "Invalid instance name");
-    }
-
-    // Move to trash instead of deleting (recycle bin)
-    let trash_dir = state.instances_dir.join(".trash");
-    if let Err(e) = std::fs::create_dir_all(&trash_dir) {
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to create trash dir: {}", e));
-    }
-
-    let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
-    let trash_name = format!("{}_{}", name, timestamp);
-    let trash_path = trash_dir.join(&trash_name);
-
-    match std::fs::rename(&instance_dir, &trash_path) {
-        Ok(()) => {
-            info!("[WEB] Moved instance to trash: {} -> .trash/{}", name, trash_name);
+    let store = crate::core::instance::InstanceStore::new(state.instances_dir.clone());
+    match store.delete(&name) {
+        Ok(trash_name) => {
+            info!("[WEB] Deleted instance: {} -> .trash/{}", name, trash_name);
             Json(serde_json::json!({"status": "deleted", "name": name, "trash": trash_name})).into_response()
         }
         Err(e) => {
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to move to trash: {}", e))
+            json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
         }
     }
 }

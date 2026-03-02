@@ -212,12 +212,8 @@ impl AliceEngine for AliceEngineServer {
         let display_name = display_name.trim().to_string();
         let name_opt = if display_name.is_empty() { None } else { Some(display_name.as_str()) };
 
-        match crate::core::instance::Instance::create(
-            &self.state.instances_dir,
-            &self.state.user_id,
-            name_opt,
-            None,
-        ) {
+        let store = crate::core::instance::InstanceStore::new(self.state.instances_dir.clone());
+        match store.create(&self.state.user_id, name_opt, None) {
             Ok(instance) => {
                 info!("[RPC] Created instance: id={}, name={:?}", instance.id, name_opt);
                 ActionResult { success: true, message: Some(instance.id) }
@@ -230,31 +226,16 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn delete_instance(self, _: Context, instance_id: String) -> ActionResult {
-        // Safety: refuse suspicious names
-        if instance_id.contains('/') || instance_id.contains("..") || instance_id.is_empty() {
-            return ActionResult { success: false, message: Some("Invalid instance id".to_string()) };
-        }
-
-        let instance_dir = self.state.instances_dir.join(&instance_id);
-        if !instance_dir.exists() {
-            return ActionResult { success: false, message: Some("Instance not found".to_string()) };
-        }
-
-        let trash_dir = self.state.instances_dir.join(".trash");
-        if let Err(e) = std::fs::create_dir_all(&trash_dir) {
-            return ActionResult { success: false, message: Some(format!("Failed to create trash dir: {}", e)) };
-        }
-
-        let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
-        let trash_name = format!("{}_{}", instance_id, timestamp);
-        let trash_path = trash_dir.join(&trash_name);
-
-        match std::fs::rename(&instance_dir, &trash_path) {
-            Ok(()) => {
-                info!("[RPC] Moved instance to trash: {} -> .trash/{}", instance_id, trash_name);
+        let store = crate::core::instance::InstanceStore::new(self.state.instances_dir.clone());
+        match store.delete(&instance_id) {
+            Ok(trash_name) => {
+                info!("[RPC] Deleted instance: {} -> .trash/{}", instance_id, trash_name);
                 ActionResult { success: true, message: Some(format!("Deleted: {}", instance_id)) }
             }
-            Err(e) => ActionResult { success: false, message: Some(format!("Failed to move to trash: {}", e)) },
+            Err(e) => {
+                error!("[RPC] Delete instance failed: {}", e);
+                ActionResult { success: false, message: Some(e.to_string()) }
+            }
         }
     }
 

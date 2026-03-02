@@ -233,6 +233,105 @@ impl Instance {
     }
 }
 
+// ─── InstanceStore (grandparent) ─────────────────────────────────
+
+/// Manages the lifecycle of all instances under a directory.
+///
+/// Three generations:
+///   InstanceStore (grandparent) — create / delete / list / open
+///   Instance (parent) — manages all persistence for one instance
+///   Memory (child) — manages memory files
+pub struct InstanceStore {
+    instances_dir: PathBuf,
+}
+
+impl InstanceStore {
+    /// Create a new store rooted at the given instances directory.
+    pub fn new(instances_dir: PathBuf) -> Self {
+        Self { instances_dir }
+    }
+
+    /// The root directory containing all instances.
+    pub fn instances_dir(&self) -> &Path {
+        &self.instances_dir
+    }
+
+    /// Create a new instance atomically.
+    pub fn create(
+        &self,
+        user_id: &str,
+        display_name: Option<&str>,
+        knowledge: Option<&str>,
+    ) -> Result<Instance> {
+        Instance::create(&self.instances_dir, user_id, display_name, knowledge)
+    }
+
+    /// Open an existing instance by ID.
+    pub fn open(&self, id: &str) -> Result<Instance> {
+        let instance_dir = self.instances_dir.join(id);
+        if !instance_dir.exists() {
+            anyhow::bail!("Instance not found: {}", id);
+        }
+        Instance::open(&instance_dir)
+    }
+
+    /// Delete an instance by moving it to .trash directory.
+    ///
+    /// Returns the trash path name for logging.
+    pub fn delete(&self, id: &str) -> Result<String> {
+        // Safety: refuse suspicious names
+        if id.contains('/') || id.contains("..") || id.is_empty() {
+            anyhow::bail!("Invalid instance id: {}", id);
+        }
+
+        let instance_dir = self.instances_dir.join(id);
+        if !instance_dir.exists() {
+            anyhow::bail!("Instance not found: {}", id);
+        }
+
+        let trash_dir = self.instances_dir.join(".trash");
+        std::fs::create_dir_all(&trash_dir)
+            .with_context(|| format!("Failed to create trash dir: {}", trash_dir.display()))?;
+
+        let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+        let trash_name = format!("{}_{}", id, timestamp);
+        let trash_path = trash_dir.join(&trash_name);
+
+        std::fs::rename(&instance_dir, &trash_path)
+            .with_context(|| format!("Failed to move {} to trash", id))?;
+
+        info!("[INSTANCE-STORE] Deleted instance: {} -> .trash/{}", id, trash_name);
+        Ok(trash_name)
+    }
+
+    /// List all valid instance IDs (directories with settings.json, excluding hidden dirs).
+    pub fn list_ids(&self) -> Result<Vec<String>> {
+        let mut ids = Vec::new();
+
+        let entries = std::fs::read_dir(&self.instances_dir)
+            .with_context(|| format!("Failed to read instances dir: {}", self.instances_dir.display()))?;
+
+        for entry in entries {
+            let entry = entry?;
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden directories (e.g. .trash)
+            if name.starts_with('.') {
+                continue;
+            }
+            // Only include directories with settings.json
+            if entry.path().join("settings.json").exists() {
+                ids.push(name);
+            }
+        }
+
+        Ok(ids)
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,5 +458,80 @@ mod tests {
         assert!(knowledge.contains("Keypoints"));
         assert!(knowledge.contains("Basics"));
     }
-}
 
+    // ─── InstanceStore tests ─────────────────────────────────
+
+    #[test]
+    fn test_store_create_and_list() {
+        let tmp = TempDir::new().unwrap();
+        let store = InstanceStore::new(tmp.path().to_path_buf());
+
+        // Empty store
+        let ids = store.list_ids().unwrap();
+        assert!(ids.is_empty());
+
+        // Create an instance
+        let instance = store.create("user1", Some("Test Agent"), None).unwrap();
+        assert_eq!(instance.id.len(), 6);
+
+        // List should return it
+        let ids = store.list_ids().unwrap();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], instance.id);
+    }
+
+    #[test]
+    fn test_store_open() {
+        let tmp = TempDir::new().unwrap();
+        let store = InstanceStore::new(tmp.path().to_path_buf());
+
+        let created = store.create("user1", None, Some("test knowledge")).unwrap();
+        let id = created.id.clone();
+        drop(created);
+
+        let opened = store.open(&id).unwrap();
+        assert_eq!(opened.id, id);
+        assert!(opened.memory.knowledge.get().contains("test knowledge"));
+    }
+
+    #[test]
+    fn test_store_delete() {
+        let tmp = TempDir::new().unwrap();
+        let store = InstanceStore::new(tmp.path().to_path_buf());
+
+        let instance = store.create("user1", Some("Doomed"), None).unwrap();
+        let id = instance.id.clone();
+        drop(instance);
+
+        // Delete moves to .trash
+        let trash_name = store.delete(&id).unwrap();
+        assert!(trash_name.starts_with(&id));
+
+        // No longer listed
+        let ids = store.list_ids().unwrap();
+        assert!(ids.is_empty());
+
+        // .trash directory exists with the moved instance
+        assert!(tmp.path().join(".trash").join(&trash_name).exists());
+    }
+
+    #[test]
+    fn test_store_delete_nonexistent() {
+        let tmp = TempDir::new().unwrap();
+        let store = InstanceStore::new(tmp.path().to_path_buf());
+
+        let result = store.delete("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_store_delete_invalid_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = InstanceStore::new(tmp.path().to_path_buf());
+
+        assert!(store.delete("../escape").is_err());
+        assert!(store.delete("path/traversal").is_err());
+        assert!(store.delete("").is_err());
+    }
+
+}
