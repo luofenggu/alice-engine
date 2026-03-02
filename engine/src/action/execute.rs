@@ -12,7 +12,6 @@ use chrono::Local;
 use super::strip_remember_markers;
 
 use std::path::PathBuf;
-use std::fs;
 
 use crate::core::{Alice, Transaction};
 use crate::shell::Shell;
@@ -432,7 +431,6 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     // === Atomic: snapshot + knowledge update + session block + clear current ===
     let knowledge_info;
     if !knowledge_text.trim().is_empty() {
-        snapshot_knowledge(alice);
         alice.instance.memory.knowledge.set(knowledge_text.trim());
         alice.instance.memory.knowledge.flush()?;
         knowledge_info = format!("\nknowledge: rewritten {} chars", knowledge_text.trim().len());
@@ -1113,22 +1111,4 @@ Summary content
 
 }
 
-/// Snapshot knowledge.md before overwriting (safety backup).
-fn snapshot_knowledge(alice: &Alice) {
-    let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
-    let snapshot_dir = alice.instance.memory.memory_dir().join("snapshots").join(&timestamp);
 
-    if let Err(e) = fs::create_dir_all(&snapshot_dir) {
-        warn!("[CAPTURE-{}] Failed to create snapshot dir: {}", alice.instance.id, e);
-        return;
-    }
-
-    let knowledge_path = alice.instance.memory.knowledge.path();
-    if knowledge_path.exists() {
-        if let Err(e) = fs::copy(knowledge_path, snapshot_dir.join(crate::prompt::KNOWLEDGE_FILE)) {
-            warn!("[CAPTURE-{}] Failed to snapshot knowledge.md: {}", alice.instance.id, e);
-        }
-    }
-
-    info!("[CAPTURE-{}] Knowledge snapshot saved to {}", alice.instance.id, snapshot_dir.display());
-}

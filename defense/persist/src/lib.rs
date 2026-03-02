@@ -545,6 +545,11 @@ where
             .with_context(|| format!("failed to write document: {}", self.path.display()))?;
         Ok(())
     }
+
+    /// Get the file path.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 // ─── TextFile: plain text file storage ───

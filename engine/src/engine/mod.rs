@@ -33,23 +33,15 @@ use std::collections::HashMap;
 use std::thread::JoinHandle;
 use anyhow::{Result, Context};
 use tracing::{info, warn, error};
-use chrono::Local;
 
 use crate::core::{Alice, AliceConfig};
+use crate::core::instance::InstanceStore;
 /// Graceful shutdown signal file path.
 /// Written by engine.sh stop / self-deploy.sh to request graceful shutdown.
 /// Engine checks this every 3s in main loop; instance threads check after each beat.
 const SHUTDOWN_SIGNAL_FILE: &str = "/var/run/alice-engine-shutdown.signal";
 
 
-/// Memory paths for backup (relative to memory_dir).
-const MEMORY_BACKUP_PATHS: &[(&str, &str)] = &[
-    ("sessions/history.txt", "history"),
-    ("sessions/current.txt", "current"),
-];
-
-/// Settings file name in instance root directory.
-const SETTINGS_FILE: &str = "settings.json";
 
 use crate::model::InstanceSettings;
 
@@ -218,6 +210,8 @@ pub struct AliceEngine {
     logs_dir: PathBuf,
     /// PID file path (local mode: base_dir/alice-engine.pid, cloud: /var/run/alice-engine.pid).
     pid_file: PathBuf,
+    /// Instance store for managing instance lifecycle.
+    instance_store: InstanceStore,
     /// Temporary buffer for instances during restore (drained to threads in run()).
     instances: Vec<(String, Alice)>,
 }
@@ -228,65 +222,13 @@ impl AliceEngine {
         let pid_file = std::env::var("ALICE_PID_FILE")
             .map(PathBuf::from)
             .unwrap_or_else(|_| instances_base.parent().unwrap_or(&instances_base).join("alice-engine.pid"));
+        let instance_store = InstanceStore::new(instances_base.clone());
         Self {
             instances_base,
             logs_dir,
             pid_file,
+            instance_store,
             instances: Vec::new(),
-        }
-    }
-
-    /// Backup all instances' memory files before starting.
-    ///
-    /// @TRACE: INSTANCE
-    fn backup_all_memory(&self) {
-        let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
-
-        for entry in std::fs::read_dir(&self.instances_base).into_iter().flatten() {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if !entry.path().is_dir() {
-                continue;
-            }
-
-            let memory_dir = entry.path().join("memory");
-            if !memory_dir.exists() {
-                continue;
-            }
-
-            let snapshots_dir = memory_dir.join("snapshots");
-            std::fs::create_dir_all(&snapshots_dir).ok();
-
-            for (rel_path, label) in MEMORY_BACKUP_PATHS {
-                let src = memory_dir.join(rel_path);
-                if !src.exists() || std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0) == 0 {
-                    continue;
-                }
-
-                let snapshot_name = format!("{}_boot_{}.snapshot", label, timestamp);
-                let dest = snapshots_dir.join(snapshot_name);
-                std::fs::copy(&src, &dest).ok();
-            }
-
-            // Also backup daily files
-            let sessions_dir = memory_dir.join("sessions");
-            if sessions_dir.exists() {
-                if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
-                    for entry in entries.filter_map(|e| e.ok()) {
-                        let fname = entry.file_name().to_string_lossy().to_string();
-                        if fname.ends_with(".jsonl") {
-                            let snapshot_name = format!("{}_boot_{}.snapshot", fname.trim_end_matches(".jsonl"), timestamp);
-                            let dest = snapshots_dir.join(snapshot_name);
-                            std::fs::copy(&entry.path(), &dest).ok();
-                        }
-                    }
-                }
-            }
-
-            info!("[INSTANCE] boot-backup name={} ts={}",
-                entry.file_name().to_string_lossy(), timestamp);
         }
     }
 
@@ -346,30 +288,19 @@ impl AliceEngine {
     ///
     /// @TRACE: INSTANCE
     fn restore_instances(&mut self) -> Result<()> {
-        let entries: Vec<_> = std::fs::read_dir(&self.instances_base)
-            .with_context(|| format!("Failed to read instances dir: {}",
-                self.instances_base.display()))?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-            .collect();
+        let ids = self.instance_store.list_ids()
+            .with_context(|| format!("Failed to list instances in: {}",
+                self.instances_base.display()))?;
 
-        for entry in entries {
-            let instance_dir = entry.path();
-            let settings_path = instance_dir.join(SETTINGS_FILE);
+        for id in ids {
+            let instance_dir = self.instances_base.join(&id);
 
-            if !settings_path.exists() {
-                continue;
-            }
-
-            let name = entry.file_name().to_string_lossy().to_string();
-
-            match self.create_instance(&name, &instance_dir) {
+            match self.create_instance(&id, &instance_dir) {
                 Ok(()) => {
-                    info!("[INSTANCE] restored name={}", name);
+                    info!("[INSTANCE] restored id={}", id);
                 }
                 Err(e) => {
-                    error!("[INSTANCE] failed to restore {}: {}", name, e);
+                    error!("[INSTANCE] failed to restore {}: {}", id, e);
                 }
             }
         }
@@ -441,7 +372,7 @@ impl AliceEngine {
             set_perm(alice.instance.memory.memory_dir(), 0o700);
             set_perm(&instance_dir.join("data"), 0o700);
             set_perm(&alice.instance.workspace, 0o750);
-            set_perm(&instance_dir.join(SETTINGS_FILE), 0o600);
+            set_perm(alice.instance.settings.path(), 0o600);
         }
 
         // Session blocks limit and history KB from settings
@@ -501,10 +432,7 @@ impl AliceEngine {
         info!("Instances dir: {}", self.instances_base.display());
         info!("Logs dir: {}", self.logs_dir.display());
 
-        // 1. Backup all memory before start
-        self.backup_all_memory();
-
-        // 1.5. Clean up .tmp residual files from previous crash
+        // 1. Clean up .tmp residual files from previous crash
         self.cleanup_tmp_files();
 
         // 1.6. Clean up old logs
@@ -570,21 +498,13 @@ impl AliceEngine {
             });
 
             // Hot-scan: discover new instances
-            if let Ok(entries) = std::fs::read_dir(&self.instances_base) {
-                let new_dirs: Vec<_> = entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().is_dir())
-                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-                    .filter(|e| {
-                        let name = e.file_name().to_string_lossy().to_string();
-                        !threads.contains_key(&name)
-                            && e.path().join(SETTINGS_FILE).exists()
-                    })
+            if let Ok(ids) = self.instance_store.list_ids() {
+                let new_ids: Vec<_> = ids.into_iter()
+                    .filter(|id| !threads.contains_key(id))
                     .collect();
 
-                for entry in new_dirs {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    let instance_dir = entry.path();
+                for name in new_ids {
+                    let instance_dir = self.instances_base.join(&name);
                     match self.create_instance(&name, &instance_dir) {
                         Ok(()) => {
                             // Pop the instance we just pushed to self.instances
@@ -1117,32 +1037,6 @@ mod tests {
 
         assert_eq!(engine.instances.len(), 1);
         assert_eq!(engine.instances[0].0, "valid");
-    }
-
-    #[test]
-    fn test_engine_backup_memory() {
-        let tmp = TempDir::new().unwrap();
-
-        let instance_dir = tmp.path().join("test");
-        let memory_dir = instance_dir.join("memory");
-        let sessions_dir = memory_dir.join("sessions");
-        std::fs::create_dir_all(&sessions_dir).unwrap();
-        std::fs::write(sessions_dir.join("history.txt"), "history data").unwrap();
-        std::fs::write(sessions_dir.join("current.txt"), "current data").unwrap();
-
-        let engine = AliceEngine::new(
-            tmp.path().to_path_buf(),
-            tmp.path().join("logs"),
-        );
-        engine.backup_all_memory();
-
-        let snapshots_dir = memory_dir.join("snapshots");
-        assert!(snapshots_dir.exists());
-        let snapshots: Vec<_> = std::fs::read_dir(&snapshots_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
-        assert_eq!(snapshots.len(), 2);
     }
 
     #[test]
