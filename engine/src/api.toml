@@ -1,3 +1,8 @@
+[rpc]
+min_page_size = 1
+max_page_size = 500
+heartbeat_timeout_secs = 30
+
 [file_browse]
 binary_extensions = [".jar", ".class", ".zip", ".gz", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".exe", ".so", ".wasm"]
 hidden_dirs = ["target", "node_modules"]

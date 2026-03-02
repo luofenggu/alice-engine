@@ -5,7 +5,15 @@ use serde::Deserialize;
 /// API configuration loaded from embedded api.toml.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiConfig {
+    pub rpc: RpcConfig,
     pub file_browse: FileBrowseConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RpcConfig {
+    pub min_page_size: i64,
+    pub max_page_size: i64,
+    pub heartbeat_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

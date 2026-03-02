@@ -83,7 +83,8 @@ impl AliceEngine for AliceEngineServer {
         after_id: Option<i64>,
         limit: i64,
     ) -> MessagesResult {
-        let limit = limit.max(1).min(500);
+        let rpc_config = &self.state.api_config.rpc;
+        let limit = limit.max(rpc_config.min_page_size).min(rpc_config.max_page_size);
         let store = self.state.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
@@ -182,7 +183,7 @@ impl AliceEngine for AliceEngineServer {
                 let engine_online = if status.inferring {
                     true
                 } else {
-                    status.last_beat.elapsed() < std::time::Duration::from_secs(30)
+                    status.last_beat.elapsed() < std::time::Duration::from_secs(self.state.api_config.rpc.heartbeat_timeout_secs)
                 };
 
                 let infer_output = if status.inferring {
