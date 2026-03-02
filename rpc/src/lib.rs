@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 
 /// Unix socket 路径（引擎启动时监听，前端连接）
 pub const RPC_SOCKET_PATH: &str = "/opt/alice/engine/alice-rpc.sock";
-pub const RPC_SOCKET_ENV: &str = "ALICE_RPC_SOCKET";
 
 // ============================================================
 // 共享类型 — 改了字段两边编译不过

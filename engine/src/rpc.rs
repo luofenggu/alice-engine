@@ -463,7 +463,7 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
 /// 启动RPC server（Unix socket）
 pub async fn start_rpc_server(state: Arc<EngineState>) {
     // RPC socket路径：环境变量 > 默认常量
-    let socket_path = std::env::var(RPC_SOCKET_ENV)
+    let socket_path = std::env::var("ALICE_RPC_SOCKET")
         .unwrap_or_else(|_| RPC_SOCKET_PATH.to_string());
 
     // 清理旧socket文件
