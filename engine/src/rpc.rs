@@ -98,8 +98,7 @@ impl AliceEngine for AliceEngineServer {
                 Ok::<_, anyhow::Error>(MessagesResult { messages, has_more: false })
             } else {
                 // 分页查询
-                let before = before_id.unwrap_or(0).max(0);
-                let qr = ch.query(limit, before)?;
+                let qr = ch.query(limit, before_id)?;
                 let messages: Vec<MessageInfo> = qr.messages.iter().map(|m| {
                     MessageInfo {
                         id: m.id,

@@ -170,43 +170,46 @@ impl ChatHistory {
     /// Query messages with pagination.
     ///
     /// @TRACE: MSG
-    pub fn query(&self, limit: i64, before: i64) -> Result<QueryResult> {
+    pub fn query(&self, limit: i64, before: Option<i64>) -> Result<QueryResult> {
         let total: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM messages", [], |row| row.get(0)
         ).unwrap_or(0);
 
-        let rows = if before <= 0 {
-            // Last N messages
-            let mut stmt = self.conn.prepare(
-                "SELECT id, role, content, timestamp FROM messages ORDER BY id DESC LIMIT ?"
-            )?;
-            let rows: Vec<ChatMessage> = stmt.query_map([limit], |row| {
-                Ok(ChatMessage {
-                    id: row.get(0)?,
-                    role: row.get(1)?,
-                    content: row.get(2)?,
-                    timestamp: row.get(3)?,
-                })
-            })?.filter_map(|r| r.ok()).collect();
-            let mut rows = rows;
-            rows.reverse(); // Back to ascending order
-            rows
-        } else {
-            // Messages with id < before, last N
-            let mut stmt = self.conn.prepare(
-                "SELECT id, role, content, timestamp FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?"
-            )?;
-            let rows: Vec<ChatMessage> = stmt.query_map(rusqlite::params![before, limit], |row| {
-                Ok(ChatMessage {
-                    id: row.get(0)?,
-                    role: row.get(1)?,
-                    content: row.get(2)?,
-                    timestamp: row.get(3)?,
-                })
-            })?.filter_map(|r| r.ok()).collect();
-            let mut rows = rows;
-            rows.reverse();
-            rows
+        let rows = match before {
+            None => {
+                // Last N messages
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, role, content, timestamp FROM messages ORDER BY id DESC LIMIT ?"
+                )?;
+                let rows: Vec<ChatMessage> = stmt.query_map([limit], |row| {
+                    Ok(ChatMessage {
+                        id: row.get(0)?,
+                        role: row.get(1)?,
+                        content: row.get(2)?,
+                        timestamp: row.get(3)?,
+                    })
+                })?.filter_map(|r| r.ok()).collect();
+                let mut rows = rows;
+                rows.reverse(); // Back to ascending order
+                rows
+            }
+            Some(id) => {
+                // Messages with id < before, last N
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, role, content, timestamp FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?"
+                )?;
+                let rows: Vec<ChatMessage> = stmt.query_map(rusqlite::params![id, limit], |row| {
+                    Ok(ChatMessage {
+                        id: row.get(0)?,
+                        role: row.get(1)?,
+                        content: row.get(2)?,
+                        timestamp: row.get(3)?,
+                    })
+                })?.filter_map(|r| r.ok()).collect();
+                let mut rows = rows;
+                rows.reverse();
+                rows
+            }
         };
 
         let start_id = rows.first().map(|m| m.id).unwrap_or(0);
@@ -429,7 +432,7 @@ mod tests {
         ch.append("user1", "user", "hello", "20260220120000").unwrap();
         ch.append("agent", "assistant", "hi there", "20260220120001").unwrap();
 
-        let result = ch.query(10, 0).unwrap();
+        let result = ch.query(10, None).unwrap();
         assert_eq!(result.total, 2);
         assert_eq!(result.messages.len(), 2);
         assert_eq!(result.messages[0].role, "user");
@@ -444,13 +447,13 @@ mod tests {
         }
 
         // Get last 3
-        let result = ch.query(3, 0).unwrap();
+        let result = ch.query(3, None).unwrap();
         assert_eq!(result.messages.len(), 3);
         assert_eq!(result.total, 10);
         assert!(result.has_more);
 
         // Get 3 before the start_id
-        let result2 = ch.query(3, result.start_id).unwrap();
+        let result2 = ch.query(3, Some(result.start_id)).unwrap();
         assert_eq!(result2.messages.len(), 3);
     }
 
