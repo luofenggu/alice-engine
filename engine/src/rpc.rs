@@ -20,9 +20,8 @@ use tracing::{info, error};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::chat::ChatHistory;
 use crate::core::instance::InstanceStore;
-use tokio::sync::RwLock;
+use crate::core::signal::SignalHub;
 
 /// 引擎状态（替代原web层的AppState，只保留引擎需要的字段）
 pub struct EngineState {
@@ -32,41 +31,20 @@ pub struct EngineState {
     pub logs_dir: PathBuf,
     /// User ID for messages.
     pub user_id: String,
-    /// Cached ChatHistory connections per instance (connection reuse).
-    chat_connections: RwLock<HashMap<String, Arc<Mutex<ChatHistory>>>>,
+    /// Signal hub for inter-thread communication (interrupt, switch-model).
+    pub signal_hub: SignalHub,
 }
 
 impl EngineState {
-    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String) -> Self {
+    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String, signal_hub: SignalHub) -> Self {
         Self {
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
             user_id,
-            chat_connections: RwLock::new(HashMap::new()),
+            signal_hub,
         }
     }
 
-    /// Get or create a cached ChatHistory connection for an instance.
-    pub async fn get_chat(&self, name: &str) -> anyhow::Result<Arc<Mutex<ChatHistory>>> {
-        // Fast path: read lock
-        {
-            let cache = self.chat_connections.read().await;
-            if let Some(ch) = cache.get(name) {
-                return Ok(ch.clone());
-            }
-        }
-        // Slow path: write lock, open connection
-        let mut cache = self.chat_connections.write().await;
-        // Double-check after acquiring write lock
-        if let Some(ch) = cache.get(name) {
-            return Ok(ch.clone());
-        }
-        let db_path = self.instance_store.chat_db_path(name);
-        let ch = ChatHistory::open(&db_path)?;
-        let arc = Arc::new(Mutex::new(ch));
-        cache.insert(name.to_string(), arc.clone());
-        Ok(arc)
-    }
 }
 
 /// RPC服务实现，持有引擎状态
@@ -103,15 +81,10 @@ impl AliceEngine for AliceEngineServer {
         limit: i64,
     ) -> MessagesResult {
         let limit = limit.max(1).min(500);
-        let ch = match self.state.get_chat(&instance_id).await {
-            Ok(c) => c,
-            Err(e) => {
-                error!("[RPC] get_messages: chat open error: {}", e);
-                return MessagesResult { messages: vec![], has_more: false };
-            }
-        };
+        let store = self.state.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
+            let ch = store.get_chat(&instance_id)?;
             let ch = ch.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(after) = after_id {
                 // 轮询新消息（包含所有角色，支持多端同步）
@@ -155,19 +128,12 @@ impl AliceEngine for AliceEngineServer {
             return ActionResult { success: false, message: Some("Empty message".to_string()) };
         }
 
-        let instance_dir = self.state.instance_store.instance_dir(&instance_id);
-        if !instance_dir.exists() {
-            return ActionResult { success: false, message: Some("Instance not found".to_string()) };
-        }
-
         let user_id = self.state.user_id.clone();
-        let ch = match self.state.get_chat(&instance_id).await {
-            Ok(c) => c,
-            Err(e) => return ActionResult { success: false, message: Some(e.to_string()) },
-        };
-
+        let store = self.state.instance_store.clone();
         let name = instance_id.clone();
+
         let result = tokio::task::spawn_blocking(move || {
+            let ch = store.get_chat(&name)?;
             let mut ch = ch.lock().unwrap_or_else(|e| e.into_inner());
             let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
             let id = ch.write_user_message(&user_id, &content, &timestamp, "chat")?;
@@ -183,15 +149,10 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn get_replies_after(self, _: Context, instance_id: String, after_id: i64) -> Vec<MessageInfo> {
-        let ch = match self.state.get_chat(&instance_id).await {
-            Ok(c) => c,
-            Err(e) => {
-                error!("[RPC] get_replies_after error: {}", e);
-                return vec![];
-            }
-        };
+        let store = self.state.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
+            let ch = store.get_chat(&instance_id)?;
             let ch = ch.lock().unwrap_or_else(|e| e.into_inner());
             ch.get_messages_after(after_id)
         }).await;
@@ -214,12 +175,10 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn observe(self, _: Context, instance_id: String) -> ObserveResult {
-        let ch = match self.state.get_chat(&instance_id).await {
-            Ok(c) => c,
-            Err(_) => return ObserveResult::default(),
-        };
+        let store = self.state.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
+            let ch = store.get_chat(&instance_id)?;
             let ch = ch.lock().unwrap_or_else(|e| e.into_inner());
             ch.read_status()
         }).await;
@@ -231,27 +190,15 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn interrupt(self, _: Context, instance_id: String) -> ActionResult {
-        let signal_path = self.state.instance_store.interrupt_signal_path(&instance_id);
-
-        match std::fs::write(&signal_path, "interrupt") {
-            Ok(_) => {
-                info!("[RPC] Interrupt signal written for {}", instance_id);
-                ActionResult { success: true, message: None }
-            }
-            Err(e) => ActionResult { success: false, message: Some(e.to_string()) },
-        }
+        self.state.signal_hub.set_interrupt(&instance_id);
+        info!("[RPC] Interrupt signal set for {}", instance_id);
+        ActionResult { success: true, message: None }
     }
 
     async fn switch_model(self, _: Context, instance_id: String, model_index: u32) -> ActionResult {
-        let signal_path = self.state.instance_store.switch_model_signal_path(&instance_id);
-
-        match std::fs::write(&signal_path, model_index.to_string()) {
-            Ok(_) => {
-                info!("[RPC] Switch model signal written for {}: index={}", instance_id, model_index);
-                ActionResult { success: true, message: None }
-            }
-            Err(e) => ActionResult { success: false, message: Some(e.to_string()) },
-        }
+        self.state.signal_hub.set_switch_model(&instance_id, model_index as usize);
+        info!("[RPC] Switch model signal set for {}: index={}", instance_id, model_index);
+        ActionResult { success: true, message: None }
     }
 
     async fn create_instance(self, _: Context, display_name: String) -> ActionResult {
@@ -284,25 +231,34 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn get_settings(self, _: Context, instance_id: String) -> String {
-        let settings_path = self.state.instance_store.settings_path(&instance_id);
+        let store = self.state.instance_store.clone();
+        let id = instance_id.clone();
 
-        match std::fs::read_to_string(&settings_path) {
-            Ok(content) => content,
-            Err(e) => {
+        let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&id)?;
+            let path = instance.settings.path().to_path_buf();
+            std::fs::read_to_string(&path).map_err(anyhow::Error::from)
+        }).await;
+
+        match result {
+            Ok(Ok(content)) => content,
+            Ok(Err(e)) => {
                 error!("[RPC] get_settings error for {}: {}", instance_id, e);
+                String::new()
+            }
+            Err(e) => {
+                error!("[RPC] get_settings join error: {}", e);
                 String::new()
             }
         }
     }
 
     async fn update_settings(self, _: Context, instance_id: String, settings_json: String) -> ActionResult {
-        let settings_path = self.state.instance_store.settings_path(&instance_id);
-
-        if !settings_path.exists() {
-            return ActionResult { success: false, message: Some("Instance not found".to_string()) };
-        }
+        let store = self.state.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&instance_id)?;
+            let settings_path = instance.settings.path().to_path_buf();
             // Read current settings
             let content = std::fs::read_to_string(&settings_path)?;
             let mut settings: serde_json::Value = serde_json::from_str(&content)?;
@@ -356,9 +312,11 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn list_files(self, _: Context, instance_id: String, path: String) -> Vec<FileInfo> {
-        let workspace = self.state.instance_store.workspace_path(&instance_id);
+        let store = self.state.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&instance_id)?;
+            let workspace = instance.workspace.clone();
             let workspace_canonical = workspace.canonicalize()?;
             let target = if path.is_empty() {
                 workspace_canonical.clone()
@@ -409,10 +367,12 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn read_file(self, _: Context, instance_id: String, path: String) -> FileReadResult {
-        let workspace = self.state.instance_store.workspace_path(&instance_id);
+        let store = self.state.instance_store.clone();
         let empty = FileReadResult { content: String::new(), size: 0, is_binary: false };
 
         let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&instance_id)?;
+            let workspace = instance.workspace.clone();
             let workspace_canonical = workspace.canonicalize()?;
             let target = workspace.join(&path).canonicalize()?;
 
@@ -458,11 +418,16 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn get_knowledge(self, _: Context, instance_id: String) -> String {
-        let knowledge_path = self.state.instance_store.knowledge_path(&instance_id);
+        let store = self.state.instance_store.clone();
 
-        match std::fs::read_to_string(&knowledge_path) {
-            Ok(content) => content,
-            Err(_) => String::new(),
+        let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&instance_id)?;
+            instance.memory.knowledge.read().map_err(anyhow::Error::from)
+        }).await;
+
+        match result {
+            Ok(Ok(content)) => content,
+            _ => String::new(),
         }
     }
 
@@ -512,36 +477,26 @@ fn parse_observe_result(status_json: &str) -> ObserveResult {
 /// 收集所有实例信息
 fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>> {
     let mut instances = Vec::new();
-    let entries = std::fs::read_dir(store.instances_dir())?;
+    let ids = store.list_ids()?;
 
-    for entry in entries {
-        let entry = entry?;
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
-            continue;
-        }
-        let settings_path = store.settings_path(&name);
-        if !settings_path.exists() {
-            continue;
-        }
+    for name in ids {
+        let instance = match store.open(&name) {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
 
         let mut display_name = name.clone();
         let mut color = String::new();
         let mut avatar = String::new();
 
-        if let Ok(content) = std::fs::read_to_string(&settings_path) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(n) = v.get("name").and_then(|v| v.as_str()) {
-                    if !n.is_empty() {
-                        display_name = n.to_string();
-                    }
+        if let Ok(settings) = instance.settings.load() {
+            if let Some(n) = settings.name {
+                if !n.is_empty() {
+                    display_name = n;
                 }
-                color = v.get("color").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                avatar = v.get("avatar").and_then(|v| v.as_str()).unwrap_or("").to_string();
             }
+            color = settings.color.unwrap_or_default();
+            avatar = settings.avatar.unwrap_or_default();
         }
 
         instances.push(InstanceInfo {

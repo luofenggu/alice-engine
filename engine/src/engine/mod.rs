@@ -36,6 +36,7 @@ use tracing::{info, warn, error};
 
 use crate::core::{Alice, AliceConfig};
 use crate::core::instance::InstanceStore;
+use crate::core::signal::SignalHub;
 /// Graceful shutdown signal file path.
 /// Written by engine.sh stop / self-deploy.sh to request graceful shutdown.
 /// Engine checks this every 3s in main loop; instance threads check after each beat.
@@ -134,13 +135,15 @@ pub struct AliceEngine {
     pid_file: PathBuf,
     /// Instance store for managing instance lifecycle.
     instance_store: InstanceStore,
+    /// Signal hub for inter-thread communication (interrupt, switch-model).
+    signal_hub: SignalHub,
     /// Temporary buffer for instances during restore (drained to threads in run()).
     instances: Vec<(String, Alice)>,
 }
 
 impl AliceEngine {
     /// Create a new engine.
-    pub fn new(instances_base: PathBuf, logs_dir: PathBuf) -> Self {
+    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub) -> Self {
         let pid_file = std::env::var("ALICE_PID_FILE")
             .map(PathBuf::from)
             .unwrap_or_else(|_| instances_base.parent().unwrap_or(&instances_base).join("alice-engine.pid"));
@@ -150,6 +153,7 @@ impl AliceEngine {
             logs_dir,
             pid_file,
             instance_store,
+            signal_hub,
             instances: Vec::new(),
         }
     }
@@ -215,7 +219,7 @@ impl AliceEngine {
                 self.instances_base.display()))?;
 
         for id in ids {
-            let instance_dir = self.instance_store.instance_dir(&id);
+            let instance_dir = self.instances_base.join(&id);
 
             match self.create_instance(&id, &instance_dir) {
                 Ok(()) => {
@@ -292,7 +296,7 @@ impl AliceEngine {
             };
             set_perm(instance_dir, 0o711);
             set_perm(alice.instance.memory.memory_dir(), 0o700);
-            set_perm(&alice.instance.data_dir(), 0o700);
+            set_perm(&alice.instance.instance_dir.join("data"), 0o700);
             set_perm(&alice.instance.workspace, 0o750);
             set_perm(alice.instance.settings.path(), 0o600);
         }
@@ -331,6 +335,9 @@ impl AliceEngine {
             alice.instance.memory.history.write(crate::prompt::INITIAL_HISTORY).ok();
             info!("[INSTANCE] Initial history written for {}", name);
         }
+
+        // Register signals for inter-thread communication
+        alice.signals = Some(self.signal_hub.register(name));
 
         self.instances.push((name.to_string(), alice));
         Ok(())
@@ -425,7 +432,7 @@ impl AliceEngine {
                     .collect();
 
                 for name in new_ids {
-                    let instance_dir = self.instance_store.instance_dir(&name);
+                    let instance_dir = self.instances_base.join(&name);
                     match self.create_instance(&name, &instance_dir) {
                         Ok(()) => {
                             // Pop the instance we just pushed to self.instances
@@ -605,9 +612,7 @@ impl AliceEngine {
                 }
 
                 // Check interrupt signal during idle (cancel timeout → infinite idle)
-                let interrupt_file = alice.instance.interrupt_signal_path();
-                if interrupt_file.exists() {
-                    std::fs::remove_file(&interrupt_file).ok();
+                if alice.signals.as_ref().map_or(false, |s| s.check_interrupt()) {
                     info!("[INTERRUPT-{}] Interrupt during idle, cancelling timeout", instance_id);
                     alice.idle_timeout_secs = None;
                     alice.idle_since = None;
@@ -624,17 +629,9 @@ impl AliceEngine {
                 }
 
                 // Check switch-model signal (manual model switching from frontend)
-                let switch_file = alice.instance.switch_model_signal_path();
-                if switch_file.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&switch_file) {
-                        std::fs::remove_file(&switch_file).ok();
-                        if let Ok(index) = content.trim().parse::<usize>() {
-                            let _ = alice.switch_model(index);
-                            info!("[HOT-RELOAD-{}] Model switched to index {} via signal", instance_id, index);
-                        }
-                    } else {
-                        std::fs::remove_file(&switch_file).ok();
-                    }
+                if let Some(index) = alice.signals.as_ref().and_then(|s| s.take_switch_model()) {
+                    let _ = alice.switch_model(index);
+                    info!("[HOT-RELOAD-{}] Model switched to index {} via signal", instance_id, index);
                 }
 
                 // Check idle timeout (timed idle wakeup)
@@ -904,6 +901,7 @@ mod tests {
         let engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
+            SignalHub::new(),
         );
         assert!(engine.instances.is_empty());
     }
@@ -925,6 +923,7 @@ mod tests {
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
+            SignalHub::new(),
         );
         engine.restore_instances().unwrap();
 
@@ -952,6 +951,7 @@ mod tests {
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
+            SignalHub::new(),
         );
         engine.restore_instances().unwrap();
 
@@ -1010,6 +1010,7 @@ mod tests {
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
+            SignalHub::new(),
         );
         engine.restore_instances().unwrap();
 

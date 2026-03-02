@@ -5,6 +5,7 @@
 //!   Instance (parent) — manages all persistence for one instance
 //!   Memory (child) — manages memory files (knowledge, history, current, sessions)
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tracing::info;
@@ -183,21 +184,6 @@ impl Instance {
         self.settings.load().map(|s| s.user_id).unwrap_or_default()
     }
 
-    /// Path to the interrupt signal file.
-    pub fn interrupt_signal_path(&self) -> PathBuf {
-        self.instance_dir.join("interrupt.signal")
-    }
-
-    /// Path to the switch-model signal file.
-    pub fn switch_model_signal_path(&self) -> PathBuf {
-        self.instance_dir.join("switch-model.signal")
-    }
-
-    /// Path to the data directory (contains chat.db).
-    pub fn data_dir(&self) -> PathBuf {
-        self.instance_dir.join("data")
-    }
-
 
     /// One-time migration: keypoints.md + knowledge/*.md → knowledge.md
     fn migrate_knowledge(knowledge_dir: &Path, knowledge_file: &Path, instance_id: &str) -> Result<()> {
@@ -256,15 +242,28 @@ impl Instance {
 ///   InstanceStore (grandparent) — create / delete / list / open
 ///   Instance (parent) — manages all persistence for one instance
 ///   Memory (child) — manages memory files
-#[derive(Clone)]
 pub struct InstanceStore {
     instances_dir: PathBuf,
+    /// Cached ChatHistory connections per instance (connection reuse).
+    chat_cache: std::sync::Arc<std::sync::RwLock<HashMap<String, std::sync::Arc<std::sync::Mutex<ChatHistory>>>>>,
+}
+
+impl Clone for InstanceStore {
+    fn clone(&self) -> Self {
+        Self {
+            instances_dir: self.instances_dir.clone(),
+            chat_cache: self.chat_cache.clone(),
+        }
+    }
 }
 
 impl InstanceStore {
     /// Create a new store rooted at the given instances directory.
     pub fn new(instances_dir: PathBuf) -> Self {
-        Self { instances_dir }
+        Self {
+            instances_dir,
+            chat_cache: std::sync::Arc::new(std::sync::RwLock::new(HashMap::new())),
+        }
     }
 
     /// The root directory containing all instances.
@@ -291,6 +290,29 @@ impl InstanceStore {
         Instance::open(&instance_dir)
     }
 
+    /// Get or create a cached ChatHistory connection for an instance.
+    pub fn get_chat(&self, id: &str) -> Result<std::sync::Arc<std::sync::Mutex<ChatHistory>>> {
+        // Fast path: read lock
+        {
+            let cache = self.chat_cache.read().unwrap();
+            if let Some(ch) = cache.get(id) {
+                return Ok(ch.clone());
+            }
+        }
+        // Slow path: write lock, open connection
+        let mut cache = self.chat_cache.write().unwrap();
+        // Double-check after acquiring write lock
+        if let Some(ch) = cache.get(id) {
+            return Ok(ch.clone());
+        }
+        let instance_dir = self.instances_dir.join(id);
+        let chat_db_path = instance_dir.join("data").join("chat.db");
+        let ch = ChatHistory::open(&chat_db_path)?;
+        let arc = std::sync::Arc::new(std::sync::Mutex::new(ch));
+        cache.insert(id.to_string(), arc.clone());
+        Ok(arc)
+    }
+
     /// Delete an instance by moving it to .trash directory.
     ///
     /// Returns the trash path name for logging.
@@ -315,6 +337,11 @@ impl InstanceStore {
 
         std::fs::rename(&instance_dir, &trash_path)
             .with_context(|| format!("Failed to move {} to trash", id))?;
+
+        // Clear cached connection
+        if let Ok(mut cache) = self.chat_cache.write() {
+            cache.remove(id);
+        }
 
         info!("[INSTANCE-STORE] Deleted instance: {} -> .trash/{}", id, trash_name);
         Ok(trash_name)
@@ -346,40 +373,6 @@ impl InstanceStore {
         Ok(ids)
     }
 
-    /// Get the directory path for an instance by ID.
-    pub fn instance_dir(&self, id: &str) -> PathBuf {
-        self.instances_dir.join(id)
-    }
-
-    /// Get the chat database path for an instance.
-    pub fn chat_db_path(&self, id: &str) -> PathBuf {
-        self.instances_dir.join(id).join("data").join("chat.db")
-    }
-
-    /// Get the settings.json path for an instance.
-    pub fn settings_path(&self, id: &str) -> PathBuf {
-        self.instances_dir.join(id).join("settings.json")
-    }
-
-    /// Get the workspace path for an instance.
-    pub fn workspace_path(&self, id: &str) -> PathBuf {
-        self.instances_dir.join(id).join("workspace")
-    }
-
-    /// Get the knowledge.md path for an instance.
-    pub fn knowledge_path(&self, id: &str) -> PathBuf {
-        self.instances_dir.join(id).join("memory").join("knowledge.md")
-    }
-
-    /// Get the interrupt signal path for an instance.
-    pub fn interrupt_signal_path(&self, id: &str) -> PathBuf {
-        self.instances_dir.join(id).join("interrupt.signal")
-    }
-
-    /// Get the switch-model signal path for an instance.
-    pub fn switch_model_signal_path(&self, id: &str) -> PathBuf {
-        self.instances_dir.join(id).join("switch-model.signal")
-    }
 }
 
 

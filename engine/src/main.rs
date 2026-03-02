@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use alice_engine::engine::AliceEngine;
+use alice_engine::core::signal::SignalHub;
 use alice_engine::rpc::EngineState;
 
 /// Read a config value: env var > CLI arg > None.
@@ -74,11 +75,15 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("  Instances: {}", instances_dir.display());
     tracing::info!("  Logs: {}", logs_dir.display());
 
+    // Create shared signal hub (memory-based inter-thread signaling)
+    let signal_hub = SignalHub::new();
+
     // Create engine state (shared between RPC and engine)
     let engine_state = Arc::new(EngineState::new(
         instances_dir.clone(),
         logs_dir.clone(),
         user_id,
+        signal_hub.clone(),
     ));
 
     // Start RPC server (Unix socket, for Leptos frontend)
@@ -91,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     let engine_instances_dir = instances_dir.clone();
     let engine_logs_dir = logs_dir.clone();
     let engine_handle = std::thread::spawn(move || {
-        let mut engine = AliceEngine::new(engine_instances_dir, engine_logs_dir);
+        let mut engine = AliceEngine::new(engine_instances_dir, engine_logs_dir, signal_hub);
         if let Err(e) = engine.run() {
             tracing::error!("Engine error: {}", e);
         }

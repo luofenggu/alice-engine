@@ -386,6 +386,8 @@ pub struct Alice {
     pub active_config_index: usize,
     /// Display name from settings.json (e.g. "小白", "牧星").
     pub instance_name: Option<String>,
+    /// Signal handles for interrupt and switch-model (None in test mode).
+    pub signals: Option<signal::InstanceSignals>,
 
 
     /// Maximum number of session blocks before history rolling is triggered.
@@ -439,6 +441,7 @@ impl Alice {
             extra_configs: Vec::new(),
             active_config_index: 0,
             instance_name: None,
+            signals: None,
             inference_failures: 0,
             inference_backoff_until: None,
             session_blocks_limit: 4,
@@ -870,9 +873,7 @@ impl Alice {
 
         loop {
             // Check for interrupt signal before consuming next stream item
-            let interrupt_file = self.instance.interrupt_signal_path();
-            if interrupt_file.exists() {
-                std::fs::remove_file(&interrupt_file).ok();
+            if self.signals.as_ref().map_or(false, |s| s.check_interrupt()) {
                 warn!("[INTERRUPT-{}] Interrupt signal detected, aborting inference", self.instance.id);
                 let interrupt_text = "---------推理被用户中断---------\n".to_string();
                 self.instance.memory.append_current(&interrupt_text).ok();
@@ -1117,6 +1118,7 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     Ok(result)
 }
 
+pub mod signal;
 pub mod memory;
 pub mod instance;
 
