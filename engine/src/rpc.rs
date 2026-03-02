@@ -82,7 +82,7 @@ impl AliceEngine for AliceEngineServer {
         before_id: Option<i64>,
         after_id: Option<i64>,
         limit: i64,
-    ) -> MessagesResult {
+    ) -> Result<MessagesResult, String> {
         let rpc_config = &self.state.api_config.rpc;
         let limit = limit.max(rpc_config.min_page_size).min(rpc_config.max_page_size);
         let store = self.state.instance_store.clone();
@@ -114,14 +114,14 @@ impl AliceEngine for AliceEngineServer {
         }).await;
 
         match result {
-            Ok(Ok(r)) => r,
+            Ok(Ok(r)) => Ok(r),
             Ok(Err(e)) => {
                 error!("[RPC] get_messages error: {}", e);
-                MessagesResult { messages: vec![], has_more: false }
+                Err(e.to_string())
             }
             Err(e) => {
                 error!("[RPC] get_messages join error: {}", e);
-                MessagesResult { messages: vec![], has_more: false }
+                Err(e.to_string())
             }
         }
     }

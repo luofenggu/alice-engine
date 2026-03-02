@@ -246,7 +246,7 @@ pub trait AliceEngine {
         before_id: Option<i64>,
         after_id: Option<i64>,
         limit: i64,
-    ) -> MessagesResult;
+    ) -> Result<MessagesResult, String>;
 
     /// 发送消息到实例
     async fn send_message(instance_id: String, content: String) -> ActionResult;

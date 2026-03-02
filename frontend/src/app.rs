@@ -130,6 +130,7 @@ pub async fn get_messages(
     let rpc_before = if before_id > 0 { Some(before_id) } else { None };
     let rpc_after = if after_id > 0 { Some(after_id) } else { None };
     let result = client.get_messages(rpc_ctx(), instance_id.clone(), rpc_before, rpc_after, limit).await
+        .map_err(|e| ServerFnError::new(format!("[RPC] get_messages: {}", e)))?
         .map_err(|e| ServerFnError::new(format!("[RPC] get_messages: {}", e)))?;
     Ok(result.messages.into_iter().map(|m| ChatMessage {
         id: m.id,
