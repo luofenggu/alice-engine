@@ -142,11 +142,23 @@ pub struct MessagesResult {
     pub has_more: bool,
 }
 
+/// 引擎在线状态
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub enum EngineOnlineStatus {
+    /// 正在推理
+    Inferring,
+    /// 在线（心跳存活）
+    Online,
+    /// 离线（心跳超时或未知）
+    #[default]
+    Offline,
+}
+
 /// 实例推理状态
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ObserveResult {
-    /// 引擎是否在线（心跳是否存活）
-    pub engine_online: bool,
+    /// 引擎在线状态
+    pub engine_online: EngineOnlineStatus,
     /// 是否正在推理
     pub inferring: bool,
     /// 是否空闲

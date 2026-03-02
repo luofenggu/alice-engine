@@ -183,9 +183,11 @@ impl AliceEngine for AliceEngineServer {
         match self.state.signal_hub.get_status(&instance_id) {
             Some(status) => {
                 let engine_online = if status.inferring {
-                    true
+                    alice_rpc::EngineOnlineStatus::Inferring
+                } else if status.last_beat.elapsed() < std::time::Duration::from_secs(self.state.api_config.rpc.heartbeat_timeout_secs) {
+                    alice_rpc::EngineOnlineStatus::Online
                 } else {
-                    status.last_beat.elapsed() < std::time::Duration::from_secs(self.state.api_config.rpc.heartbeat_timeout_secs)
+                    alice_rpc::EngineOnlineStatus::Offline
                 };
 
                 let infer_output = if status.inferring {

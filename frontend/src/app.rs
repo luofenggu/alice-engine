@@ -25,9 +25,21 @@ pub struct ChatMessage {
     pub timestamp: String,
 }
 
+/// Engine online status enum (mirrors alice_rpc::EngineOnlineStatus)
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum EngineOnlineStatus {
+    Inferring,
+    Online,
+    Offline,
+}
+
+impl Default for EngineOnlineStatus {
+    fn default() -> Self { Self::Offline }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ObserveData {
-    pub engine_online: bool,
+    pub engine_online: EngineOnlineStatus,
     pub inferring: bool,
     pub idle: bool,
     pub current_action: Option<String>,
@@ -92,7 +104,11 @@ pub async fn observe_instance(instance_id: String) -> Result<ObserveData, Server
     let result = client.observe(rpc_ctx(), instance_id).await
         .map_err(|e| ServerFnError::new(format!("[RPC] observe: {}", e)))?;
     Ok(ObserveData {
-        engine_online: result.engine_online,
+        engine_online: match result.engine_online {
+            alice_rpc::EngineOnlineStatus::Inferring => EngineOnlineStatus::Inferring,
+            alice_rpc::EngineOnlineStatus::Online => EngineOnlineStatus::Online,
+            alice_rpc::EngineOnlineStatus::Offline => EngineOnlineStatus::Offline,
+        },
         inferring: result.inferring,
         idle: result.idle,
         current_action: result.current_action,
@@ -541,12 +557,10 @@ fn ChatPage() -> impl IntoView {
                         let mut statuses = std::collections::HashMap::new();
                         for inst in &list {
                             if let Ok(data) = observe_instance(inst.id.clone()).await {
-                                let status = if data.inferring {
-                                    "inferring"
-                                } else if data.engine_online {
-                                    "idle"
-                                } else {
-                                    "offline"
+                                let status = match data.engine_online {
+                                    EngineOnlineStatus::Inferring => "inferring",
+                                    EngineOnlineStatus::Online => "idle",
+                                    EngineOnlineStatus::Offline => "offline",
                                 };
                                 statuses.insert(inst.id.clone(), status.to_string());
                             } else {
@@ -982,7 +996,7 @@ fn ChatPage() -> impl IntoView {
                                                             "idle".to_string()
                                                         }
                                                     },
-                                                    Some(ref d) if !d.engine_online => "Engine offline".to_string(),
+                                                    Some(ref d) if d.engine_online == EngineOnlineStatus::Offline => "Engine offline".to_string(),
                                                     Some(_) => "Ready".to_string(),
                                                     None => "Connecting...".to_string(),
                                                 }
