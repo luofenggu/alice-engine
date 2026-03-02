@@ -32,7 +32,7 @@ fn resolve_action_path(alice: &Alice, path: &str) -> Result<PathBuf> {
                 bail!("Path traversal rejected: {}", path);
             }
         }
-        Ok(alice.workspace.join(p))
+        Ok(alice.instance.workspace.join(p))
     }
 }
 
@@ -43,9 +43,9 @@ const MAX_RESULT_SIZE: usize = 100 * 1024;
 /// In local mode (no sandbox user), runs without sandboxing.
 fn make_shell(alice: &Alice) -> Shell {
     if alice.privileged {
-        Shell::new(alice.workspace.clone())
+        Shell::new(alice.instance.workspace.clone())
     } else {
-        let user = format!("agent-{}", alice.instance_id);
+        let user = format!("agent-{}", alice.instance.id);
         // Check if sandbox user exists (skip on local mode / systems without it)
         let user_exists = std::process::Command::new("id")
             .arg(&user)
@@ -55,9 +55,9 @@ fn make_shell(alice: &Alice) -> Shell {
             .map(|s| s.success())
             .unwrap_or(false);
         if user_exists {
-            Shell::new(alice.workspace.clone()).with_sandbox(user)
+            Shell::new(alice.instance.workspace.clone()).with_sandbox(user)
         } else {
-            Shell::new(alice.workspace.clone())
+            Shell::new(alice.instance.workspace.clone())
         }
     }
 }
@@ -118,7 +118,7 @@ fn execute_idle(_alice: &mut Alice, tx: &mut Transaction, timeout_secs: Option<u
 fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
     info!("[ACTION-{}] read_msg", tx.instance_id);
 
-    let messages = alice.chat_history.read_unread_user_messages()
+    let messages = alice.instance.chat.read_unread_user_messages()
         .context("Failed to read unread messages")?;
 
     if messages.is_empty() {
@@ -149,7 +149,7 @@ fn execute_send_msg(alice: &mut Alice, tx: &mut Transaction, recipient: &str, co
     }
 
     let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
-    alice.chat_history.write_agent_reply(&alice.instance_id, content, &timestamp)
+    alice.instance.chat.write_agent_reply(&alice.instance.id, content, &timestamp)
         .context("Failed to write agent reply")?;
 
     Ok(format!("{}[MSG:{}]\n", MSG_SEND_CONTEXT, timestamp))
@@ -388,7 +388,7 @@ fn execute_replace_in_file(
 fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) -> Result<String> {
     info!("[ACTION-{}] summary", tx.instance_id);
 
-    let current = alice.memory.current.get().to_string();
+    let current = alice.instance.memory.current.get().to_string();
     if current.trim().is_empty() {
         return Ok("current is empty, nothing to summarize\n".to_string());
     }
@@ -417,9 +417,9 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     let jsonl_line = serde_json::to_string(&entry).unwrap_or_default() + "\n";
 
     // Determine target session block
-    let blocks = alice.memory.list_session_blocks()?;
+    let blocks = alice.instance.memory.list_session_blocks()?;
     let block_name = if let Some(latest) = blocks.last() {
-        let size = alice.memory.session_block_size(latest);
+        let size = alice.instance.memory.session_block_size(latest);
         if size < (alice.session_block_kb as u64 * 1024) {
             latest.clone()
         } else {
@@ -433,8 +433,8 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     let knowledge_info;
     if !knowledge_text.trim().is_empty() {
         snapshot_knowledge(alice);
-        alice.memory.knowledge.set(knowledge_text.trim());
-        alice.memory.knowledge.flush()?;
+        alice.instance.memory.knowledge.set(knowledge_text.trim());
+        alice.instance.memory.knowledge.flush()?;
         knowledge_info = format!("\nknowledge: rewritten {} chars", knowledge_text.trim().len());
         info!("[ACTION-{}] knowledge rewritten ({} chars)", tx.instance_id, knowledge_text.trim().len());
     } else {
@@ -442,8 +442,8 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
         knowledge_info = "\nknowledge: no knowledge marker found, skipped".to_string();
     }
 
-    alice.memory.append_session_block(&block_name, &jsonl_line)?;
-    alice.memory.write_current("")?;
+    alice.instance.memory.append_session_block(&block_name, &jsonl_line)?;
+    alice.instance.memory.write_current("")?;
 
     let msg_count = msg_ids.len();
     let stats = format!(
@@ -460,7 +460,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
 /// On success, returns empty string (silent execution - caller skips append_current).
 /// On failure, returns error (caller records it so agent sees what went wrong).
 fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &str, summary: &str) -> Result<String> {
-    let current = alice.memory.current.get().to_string();
+    let current = alice.instance.memory.current.get().to_string();
     if current.is_empty() {
         anyhow::bail!("current is empty, nothing to forget");
     }
@@ -490,12 +490,12 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
     );
 
     let new_current = format!("{}{}{}", &current[..start_pos], replacement, &current[end_pos..]);
-    alice.memory.write_current(&new_current)?;
+    alice.instance.memory.write_current(&new_current)?;
 
     let old_len = end_pos - start_pos;
     let new_len = replacement.len();
     info!("[FORGET-{}] Replaced action [{}]: {} -> {} chars (saved {})",
-        alice.instance_id, target_action_id, old_len, new_len, old_len as i64 - new_len as i64);
+        alice.instance.id, target_action_id, old_len, new_len, old_len as i64 - new_len as i64);
 
     Ok(String::new())
 }
@@ -616,7 +616,7 @@ fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, entries: &[(Stri
     }
 
     // Apply changes via Document::update (auto-saves to disk)
-    alice.settings_doc.update(|s| {
+    alice.instance.settings.update(|s| {
         for (key, value) in &entries_owned {
             let trimmed = value.trim();
             match key.as_str() {
@@ -630,8 +630,8 @@ fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, entries: &[(Stri
     })?;
 
     // Apply runtime effects
-    alice.privileged = alice.settings_doc.get().privileged;
-    alice.instance_name = alice.settings_doc.get().name.clone();
+    alice.privileged = alice.instance.settings.get().privileged;
+    alice.instance_name = alice.instance.settings.get().name.clone();
 
     let detail = applied.join(", ");
     Ok(format!("profile updated: {}\n", detail))
@@ -647,31 +647,24 @@ fn execute_create_instance(
     knowledge: &str,
 ) -> Result<String> {
     // Derive instances_dir from current instance's parent directory
-    let instances_dir = alice.instance_dir.parent()
+    let instances_dir = alice.instance.instance_dir.parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine instances directory"))?;
 
-    // Use shared creation logic (generates ID, creates dir, writes settings.json)
-    let (id, instance_dir) = crate::engine::create_instance_dir(
+    // Create instance atomically (all directories + settings + knowledge)
+    let knowledge_opt = if knowledge.is_empty() { None } else { Some(knowledge) };
+    let instance = crate::core::instance::Instance::create(
         instances_dir,
         &alice.user_id,
         Some(name),
-    ).map_err(|e| anyhow::anyhow!("Failed to create instance: {}", e))?;
-
-    // Write knowledge.md into memory/ directory
-    let memory_dir = instance_dir.join("memory");
-    std::fs::create_dir_all(&memory_dir)
-        .with_context(|| format!("Failed to create memory dir: {}", memory_dir.display()))?;
-
-    let knowledge_path = memory_dir.join("knowledge.md");
-    std::fs::write(&knowledge_path, knowledge)
-        .with_context(|| format!("Failed to write knowledge.md: {}", knowledge_path.display()))?;
+        knowledge_opt,
+    ).context("Failed to create instance")?;
 
     info!("[ACTION-{}] Created new instance: {} (name: {}, knowledge: {} bytes, awaiting hot-scan)",
-        alice.instance_id, id, name, knowledge.len());
+        alice.instance.id, instance.id, name, knowledge.len());
 
     Ok(format!(
         "instance created: {} (name: {}), knowledge: {} bytes written\nEngine hot-scan will start it automatically.\n",
-        id, name, knowledge.len()
+        instance.id, name, knowledge.len()
     ))
 }
 
@@ -683,16 +676,16 @@ mod tests {
 
     fn setup() -> (Alice, Transaction, TempDir) {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join("memory")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("memory/sessions")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("memory/knowledge")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("workspace")).unwrap();
-        // Create minimal settings.json for Document
+
+        // Create minimal settings.json for Instance::open
         let settings_path = tmp.path().join("settings.json");
-        std::fs::write(&settings_path, r#"{"api_key":"test","model":"test@test"}"#).unwrap();
-        let settings_doc = alice_persist::Document::open(&settings_path).unwrap();
+        std::fs::write(&settings_path, r#"{"user_id":"user1","api_key":"test","model":"test@test"}"#).unwrap();
+
+        // Instance::open creates all subdirectories automatically
+        let instance = crate::core::instance::Instance::open(tmp.path()).unwrap();
+
         let config = AliceConfig::default();
-        let mut alice = Alice::new("test", "user1", tmp.path().to_path_buf(), config, settings_doc).unwrap();
+        let mut alice = Alice::new(instance, config).unwrap();
         alice.privileged = true;
         let tx = Transaction::new("test", "abc123");
         (alice, tx, tmp)
@@ -733,14 +726,14 @@ mod tests {
         let result = execute_action(&write_action, &mut alice, &mut tx).unwrap();
         assert!(result.contains("write success"));
 
-        let content = std::fs::read_to_string(alice.workspace.join("test.txt")).unwrap();
+        let content = std::fs::read_to_string(alice.instance.workspace.join("test.txt")).unwrap();
         assert_eq!(content, "hello from rust");
     }
 
     #[test]
     fn test_execute_replace_in_file() {
         let (mut alice, mut tx, _tmp) = setup();
-        std::fs::write(alice.workspace.join("test.txt"), "hello world").unwrap();
+        std::fs::write(alice.instance.workspace.join("test.txt"), "hello world").unwrap();
 
         let action = Action::ReplaceInFile {
             path: "test.txt".to_string(),
@@ -752,7 +745,7 @@ mod tests {
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
         assert!(result.contains("replaced 1 block(s)"));
 
-        let content = std::fs::read_to_string(alice.workspace.join("test.txt")).unwrap();
+        let content = std::fs::read_to_string(alice.instance.workspace.join("test.txt")).unwrap();
         assert_eq!(content, "goodbye world");
     }
 
@@ -766,8 +759,8 @@ mod tests {
     #[test]
     fn test_execute_read_msg_with_messages() {
         let (mut alice, mut tx, _tmp) = setup();
-        alice.chat_history.write_user_message("24007", "hello agent", "20260220120000", "chat").unwrap();
-        alice.chat_history.write_user_message("24007", "how are you?", "20260220120001", "chat").unwrap();
+        alice.instance.chat.write_user_message("24007", "hello agent", "20260220120000", "chat").unwrap();
+        alice.instance.chat.write_user_message("24007", "how are you?", "20260220120001", "chat").unwrap();
 
         let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).unwrap();
         assert!(result.contains("24007"));
@@ -776,7 +769,7 @@ mod tests {
         // Verify MSG timestamp markers
         assert!(result.contains("[MSG:20260220120000]"));
         assert!(result.contains("[MSG:20260220120001]"));
-        assert_eq!(alice.chat_history.count_unread_user_messages().unwrap(), 0);
+        assert_eq!(alice.instance.chat.count_unread_user_messages().unwrap(), 0);
     }
 
     #[test]
@@ -791,7 +784,7 @@ mod tests {
         // Verify MSG timestamp marker in result
         assert!(result.contains("[MSG:"));
 
-        let replies = alice.chat_history.read_unread_agent_replies().unwrap();
+        let replies = alice.instance.chat.read_unread_agent_replies().unwrap();
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].1, "hello user!");
     }
@@ -809,7 +802,7 @@ mod tests {
         let (mut alice, mut tx, _tmp) = setup();
 
         // Write content to current with MSG markers
-        alice.memory.write_current(
+        alice.instance.memory.write_current(
             "---------行为编号[20260223160000_aaaaaa]开始---------\n\
              你打开了收件箱，开始阅读来信。\n\
              ---action executing, result pending---\n\n\
@@ -832,13 +825,13 @@ mod tests {
         assert!(result.contains("2个消息ID"));
 
         // current should be cleared
-        let current = alice.memory.current.get();
+        let current = alice.instance.memory.current.get();
         assert!(current.is_empty());
 
         // session block should exist with JSONL content
-        let blocks = alice.memory.list_session_blocks().unwrap();
+        let blocks = alice.instance.memory.list_session_blocks().unwrap();
         assert_eq!(blocks.len(), 1);
-        let block_content = alice.memory.read_session_block(&blocks[0]).unwrap();
+        let block_content = alice.instance.memory.read_session_block(&blocks[0]).unwrap();
         assert!(block_content.contains("first_msg"));
         assert!(block_content.contains("20260223155500"));
         assert!(block_content.contains("20260223160100"));
@@ -952,10 +945,10 @@ random [MSG:20260219120000] in output\n\
             "{{\"first_msg\":\"20260223100000\",\"last_msg\":\"20260223110000\",\"summary\":\"{}\"}}\n",
             "x".repeat(alice.session_block_kb as usize * 1024)
         );
-        alice.memory.append_session_block("20260223100000", &large_content).unwrap();
+        alice.instance.memory.append_session_block("20260223100000", &large_content).unwrap();
 
         // Write current with MSG markers
-        alice.memory.write_current(
+        alice.instance.memory.write_current(
             "---------行为编号[20260223160000_aaaaaa]开始---------\n\
              send success [MSG:20260223160000]\n\
              ---------行为编号[20260223160000_aaaaaa]结束---------\n"
@@ -968,7 +961,7 @@ random [MSG:20260219120000] in output\n\
         assert!(result.contains("小结完成"));
 
         // Should have 2 blocks now (old full one + new one)
-        let blocks = alice.memory.list_session_blocks().unwrap();
+        let blocks = alice.instance.memory.list_session_blocks().unwrap();
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0], "20260223100000");
         // Second block should be a new timestamp
@@ -1123,19 +1116,19 @@ Summary content
 /// Snapshot knowledge.md before overwriting (safety backup).
 fn snapshot_knowledge(alice: &Alice) {
     let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
-    let snapshot_dir = alice.memory.memory_dir().join("snapshots").join(&timestamp);
+    let snapshot_dir = alice.instance.memory.memory_dir().join("snapshots").join(&timestamp);
 
     if let Err(e) = fs::create_dir_all(&snapshot_dir) {
-        warn!("[CAPTURE-{}] Failed to create snapshot dir: {}", alice.instance_id, e);
+        warn!("[CAPTURE-{}] Failed to create snapshot dir: {}", alice.instance.id, e);
         return;
     }
 
-    let knowledge_path = alice.memory.knowledge.path();
+    let knowledge_path = alice.instance.memory.knowledge.path();
     if knowledge_path.exists() {
         if let Err(e) = fs::copy(knowledge_path, snapshot_dir.join(crate::prompt::KNOWLEDGE_FILE)) {
-            warn!("[CAPTURE-{}] Failed to snapshot knowledge.md: {}", alice.instance_id, e);
+            warn!("[CAPTURE-{}] Failed to snapshot knowledge.md: {}", alice.instance.id, e);
         }
     }
 
-    info!("[CAPTURE-{}] Knowledge snapshot saved to {}", alice.instance_id, snapshot_dir.display());
+    info!("[CAPTURE-{}] Knowledge snapshot saved to {}", alice.instance.id, snapshot_dir.display());
 }

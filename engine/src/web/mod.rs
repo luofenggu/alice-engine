@@ -384,18 +384,18 @@ async fn handle_create_instance(
         return json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
     }
 
-    // Use shared instance creation logic
-    let (name, _instance_dir) = match crate::engine::create_instance_dir(
-        &state.instances_dir, &state.user_id, None,
+    // Create instance atomically
+    let instance = match crate::core::instance::Instance::create(
+        &state.instances_dir, &state.user_id, None, None,
     ) {
-        Ok(result) => result,
-        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        Ok(inst) => inst,
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
 
-    info!("[WEB] Created new instance: {} (awaiting engine hot-scan)", name);
+    info!("[WEB] Created new instance: {} (awaiting engine hot-scan)", instance.id);
 
     Json(serde_json::json!({
-        "name": name,
+        "name": instance.id,
         "status": "created",
     })).into_response()
 }

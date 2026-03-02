@@ -52,7 +52,6 @@ const MEMORY_BACKUP_PATHS: &[(&str, &str)] = &[
 const SETTINGS_FILE: &str = "settings.json";
 
 use crate::model::InstanceSettings;
-use alice_persist::Document;
 
 // ─── Free function: sandbox user management ──────────────────────
 
@@ -383,15 +382,12 @@ impl AliceEngine {
     /// For non-privileged instances, automatically creates a Linux sandbox user
     /// (`agent-{name}`) and sets workspace ownership (紧箍咒).
     fn create_instance(&mut self, name: &str, instance_dir: &Path) -> Result<()> {
-        let settings_path = instance_dir.join(SETTINGS_FILE);
-        let settings_doc: Document<InstanceSettings> = Document::open(&settings_path)?;
-        let mut settings = settings_doc.get().clone();
+        let instance = crate::core::instance::Instance::open(instance_dir)?;
+        let mut settings = instance.settings.get().clone();
         settings.apply_env_fallbacks();
         settings.validate()?;
 
         let (api_url, model) = settings.parse_model();
-
-        let user_id = &settings.user_id;
 
         let config = AliceConfig {
             model,
@@ -404,7 +400,7 @@ impl AliceEngine {
             action_separator: settings.action_separator.clone(),
         };
 
-        let mut alice = Alice::new(name, user_id, instance_dir.to_path_buf(), config, settings_doc)?;
+        let mut alice = Alice::new(instance, config)?;
 
         // Build extra model configs for failover
         let extra_configs: Vec<crate::llm::LlmConfig> = settings.extra_models.iter().map(|em| {
@@ -429,7 +425,7 @@ impl AliceEngine {
         // Auto-create sandbox user (紧箍咒) for non-privileged instances
         if !settings.privileged {
             let sandbox_user = format!("agent-{}", name);
-            if let Err(e) = ensure_sandbox_user(&sandbox_user, &alice.workspace) {
+            if let Err(e) = ensure_sandbox_user(&sandbox_user, &alice.instance.workspace) {
                 warn!("[SANDBOX] Skipping sandbox setup for {}: {} (sandbox commands not available)", name, e);
             }
         }
@@ -442,9 +438,9 @@ impl AliceEngine {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).ok();
             };
             set_perm(instance_dir, 0o711);
-            set_perm(alice.memory.memory_dir(), 0o700);
+            set_perm(alice.instance.memory.memory_dir(), 0o700);
             set_perm(&instance_dir.join("data"), 0o700);
-            set_perm(&alice.workspace, 0o750);
+            set_perm(&alice.instance.workspace, 0o750);
             set_perm(&instance_dir.join(SETTINGS_FILE), 0o600);
         }
 
@@ -466,9 +462,9 @@ impl AliceEngine {
 
         // Insert welcome letter on first creation (empty chat.db)
         #[cfg(feature = "welcome-letter")]
-        if alice.chat_history.get_last_message_time().unwrap_or(0) == 0 {
+        if alice.instance.chat.get_last_message_time().unwrap_or(0) == 0 {
             let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
-            alice.chat_history.write_user_message(
+            alice.instance.chat.write_user_message(
                 "system",
                 crate::prompt::WELCOME_LETTER,
                 &timestamp,
@@ -478,9 +474,9 @@ impl AliceEngine {
         }
 
         // Write initial memory (imprint learning) on first creation
-        if alice.memory.history.get().is_empty() {
-            alice.memory.history.set(crate::prompt::INITIAL_HISTORY);
-            alice.memory.history.flush().ok();
+        if alice.instance.memory.history.get().is_empty() {
+            alice.instance.memory.history.set(crate::prompt::INITIAL_HISTORY);
+            alice.instance.memory.history.flush().ok();
             info!("[INSTANCE] Initial history written for {}", name);
         }
 
@@ -644,9 +640,9 @@ impl AliceEngine {
     /// - settings.json is missing (instance deleted)
     /// - beat limit reached
     fn instance_thread(mut alice: Alice, shutdown: Arc<AtomicBool>) {
-        let instance_id = alice.instance_id.clone();
+        let instance_id = alice.instance.id.clone();
         let rolling_in_progress = Arc::new(AtomicBool::new(false));
-        let instance_dir = alice.instance_dir.clone();
+        let instance_dir = alice.instance.instance_dir.clone();
         info!("[THREAD-{}] Instance thread started", instance_id);
 
         let mut consecutive_beats: u32 = 0;
@@ -661,9 +657,9 @@ impl AliceEngine {
             }
 
             // Hot-reload settings via Document (also detects instance deletion)
-            match alice.settings_doc.reload() {
+            match alice.instance.settings.reload() {
                 Ok(()) => {
-                    let s = alice.settings_doc.get();
+                    let s = alice.instance.settings.get();
                     if let Some(v) = s.safety_max_consecutive_beats { alice.safety_max_consecutive_beats = v; }
                     if let Some(v) = s.safety_cooldown_secs { alice.safety_cooldown_secs = v; }
                     if let Some(v) = s.session_blocks_limit { alice.session_blocks_limit = v; }
@@ -758,7 +754,7 @@ impl AliceEngine {
                     alice.active_config_index,
                     model_count,
                 );
-                alice.chat_history.update_status(&status_json).ok();
+                alice.instance.chat.update_status(&status_json).ok();
 
                 consecutive_beats = 0;
                 std::thread::sleep(Duration::from_secs(alice.config.beat_interval_secs));
@@ -769,7 +765,7 @@ impl AliceEngine {
                 }
 
                 // Check interrupt signal during idle (cancel timeout → infinite idle)
-                let interrupt_file = alice.instance_dir.join("interrupt.signal");
+                let interrupt_file = alice.instance.instance_dir.join("interrupt.signal");
                 if interrupt_file.exists() {
                     std::fs::remove_file(&interrupt_file).ok();
                     info!("[INTERRUPT-{}] Interrupt during idle, cancelling timeout", instance_id);
@@ -783,12 +779,12 @@ impl AliceEngine {
                         chrono::Local::now().format("%Y%m%d%H%M%S"),
                         alice.born,
                     );
-                    alice.chat_history.update_status(&status_json).ok();
+                    alice.instance.chat.update_status(&status_json).ok();
                     continue;
                 }
 
                 // Check switch-model signal (manual model switching from frontend)
-                let switch_file = alice.instance_dir.join("switch-model.signal");
+                let switch_file = alice.instance.instance_dir.join("switch-model.signal");
                 if switch_file.exists() {
                     if let Ok(content) = std::fs::read_to_string(&switch_file) {
                         std::fs::remove_file(&switch_file).ok();
@@ -922,7 +918,7 @@ impl AliceEngine {
                         chrono::Local::now().format("%Y%m%d%H%M%S"),
                         alice.born,
                     );
-                    alice.chat_history.update_status(&status_json).ok();
+                    alice.instance.chat.update_status(&status_json).ok();
                     alice.notify_anomaly(&format!("{}", e));
                     alice.last_was_idle = true;
                     consecutive_beats = 0;
@@ -951,54 +947,13 @@ impl AliceEngine {
 
 /// Create a new instance directory with minimal settings.json.
 /// Returns (instance_id, instance_dir_path).
-/// Engine hot-scan will discover and initialize the instance.
-///
-/// Shared by web API and agent action.
-pub fn create_instance_dir(
-    instances_dir: &Path,
-    user_id: &str,
-    display_name: Option<&str>,
-) -> Result<(String, PathBuf), String> {
-    // Generate 6-char random hex name
-    let id: String = (0..6).map(|_| format!("{:x}", rand::random::<u8>() % 16)).collect();
-    let instance_dir = instances_dir.join(&id);
-
-    if instance_dir.exists() {
-        return Err("Instance name collision, please retry".to_string());
-    }
-
-    std::fs::create_dir_all(&instance_dir)
-        .map_err(|e| format!("Failed to create dir: {}", e))?;
-
-    // Random color from 10 presets
-    const PRESET_COLORS: &[&str] = &[
-        "#6c5ce7", "#00b894", "#e17055", "#0984e3", "#fdcb6e",
-        "#e84393", "#00cec9", "#a29bfe", "#ff7675", "#55efc4",
-    ];
-    let color = PRESET_COLORS[rand::random::<usize>() % PRESET_COLORS.len()];
-
-    // Build settings via struct serialization
-    let settings_obj = InstanceSettings {
-        user_id: user_id.to_string(),
-        color: Some(color.to_string()),
-        name: display_name.map(|n| n.to_string()),
-        ..Default::default()
-    };
-    let settings = serde_json::to_string_pretty(&settings_obj)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-
-    let settings_path = instance_dir.join("settings.json");
-    std::fs::write(&settings_path, &settings)
-        .map_err(|e| format!("Failed to write settings: {}", e))?;
-
-    Ok((id, instance_dir))
-}
 
 // ─── Tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alice_persist::Document;
     use tempfile::TempDir;
 
 

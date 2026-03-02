@@ -80,7 +80,7 @@ pub fn render_session_block(jsonl_content: &str, alice: &Alice) -> String {
 
             // Fetch chat messages from database (truncate long content)
             if !first_msg.is_empty() && !last_msg.is_empty() {
-                if let Ok(messages) = alice.chat_history.read_messages_in_range(first_msg, last_msg) {
+                if let Ok(messages) = alice.instance.chat.read_messages_in_range(first_msg, last_msg) {
                     for msg in &messages {
                         let content_display = if msg.content.len() > 200 {
                             format!("{}...(略)", crate::safe_truncate(&msg.content, 200))
@@ -123,7 +123,7 @@ pub fn build_prompts(
 
     // Load history from memory
     let history_content = {
-        let h = alice.memory.history.get();
+        let h = alice.instance.memory.history.get();
         if h.is_empty() { "(空)".to_string() } else { h.to_string() }
     };
 
@@ -132,7 +132,7 @@ pub fn build_prompts(
 
     // Load current from memory
     let current_content = {
-        let c = alice.memory.current.get();
+        let c = alice.instance.memory.current.get();
         if c.is_empty() { "(空)".to_string() } else { c.to_string() }
     };
 
@@ -148,7 +148,7 @@ pub fn build_prompts(
 
     // Build memory status
     let memory_status = make_memory_status(
-        &alice.instance_id,
+        &alice.instance.id,
         alice.instance_name.as_deref(),
         history_content.len(),
         daily_rendered.len(),
@@ -161,7 +161,7 @@ pub fn build_prompts(
     let host_line = make_host_line(host);
 
     // Build knowledge section: knowledge file + forced app guide
-    let app_guide = make_app_guide_knowledge(host, &alice.instance_id);
+    let app_guide = make_app_guide_knowledge(host, &alice.instance.id);
     let full_knowledge = if app_guide.is_empty() {
         knowledge_content.clone()
     } else if knowledge_content.is_empty() {
@@ -178,7 +178,7 @@ pub fn build_prompts(
         ("{{SYSTEM_START_TIME}}", &alice.system_start_time),
         ("{{UNREAD_COUNT}}", &unread_count.to_string()),
         ("{{MEMORY_STATUS}}", &memory_status),
-        ("{{INSTANCE_ID}}", &alice.instance_id),
+        ("{{INSTANCE_ID}}", &alice.instance.id),
         ("{{SHELL_ENV}}", &shell_env),
         ("{{HOST_INFO}}", &host_line),
         ("{{KNOWLEDGE}}", &full_knowledge),
@@ -198,7 +198,7 @@ pub fn build_prompts(
 /// Load knowledge from memory for injection into prompt.
 /// Returns formatted knowledge section or empty string if empty.
 fn load_knowledge_file(alice: &Alice) -> String {
-    let content = alice.memory.knowledge.get();
+    let content = alice.instance.memory.knowledge.get();
     if content.trim().is_empty() {
         return String::new();
     }
@@ -208,19 +208,19 @@ fn load_knowledge_file(alice: &Alice) -> String {
 /// Load knowledge raw content from memory (for summary prompt).
 /// Returns raw content or empty string.
 pub fn load_knowledge_raw(alice: &Alice) -> String {
-    alice.memory.knowledge.get().to_string()
+    alice.instance.memory.knowledge.get().to_string()
 }
 
 /// Render all session block JSONL files in chronological order.
 pub fn render_all_session_blocks(alice: &Alice) -> String {
-    let blocks = alice.memory.list_session_blocks().unwrap_or_default();
+    let blocks = alice.instance.memory.list_session_blocks().unwrap_or_default();
     if blocks.is_empty() {
         return String::new();
     }
 
     let mut sections = Vec::new();
     for block_name in &blocks {
-        if let Ok(content) = alice.memory.read_session_block(block_name) {
+        if let Ok(content) = alice.instance.memory.read_session_block(block_name) {
             let rendered = render_session_block(&content, alice);
             if !rendered.is_empty() {
                 sections.push(format!("[{}]\n{}", block_name, rendered));
@@ -316,15 +316,19 @@ mod tests {
 
     fn setup_alice() -> (Alice, TempDir) {
         let tmp = TempDir::new().unwrap();
+
+        // Create minimal settings.json for Instance::open
+        let settings_path = tmp.path().join("settings.json");
+        std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
+
+        // Instance::open creates all subdirectories automatically
+        let instance = crate::core::instance::Instance::open(tmp.path()).unwrap();
+
         let config = AliceConfig {
             log_dir: tmp.path().join("logs"),
             ..Default::default()
         };
-        // Create a minimal settings.json for Document<InstanceSettings>
-        let settings_path = tmp.path().join("settings.json");
-        std::fs::write(&settings_path, "{}").unwrap();
-        let settings_doc = alice_persist::Document::open(&settings_path).unwrap();
-        let alice = Alice::new("alice", "user1", tmp.path().to_path_buf(), config, settings_doc).unwrap();
+        let alice = Alice::new(instance, config).unwrap();
         (alice, tmp)
     }
 
@@ -338,8 +342,8 @@ mod tests {
         let (mut alice, _tmp) = setup_alice();
 
         // Write chat messages to database
-        alice.chat_history.write_user_message("24007", "hello world", "20260223155500", "chat").unwrap();
-        alice.chat_history.write_agent_reply("alice", "hi back", "20260223155600").unwrap();
+        alice.instance.chat.write_user_message("24007", "hello world", "20260223155500", "chat").unwrap();
+        alice.instance.chat.write_agent_reply("alice", "hi back", "20260223155600").unwrap();
 
         let jsonl = r#"{"first_msg":"20260223155500","last_msg":"20260223155600","summary":"Alice read and replied"}"#;
         let rendered = render_session_block(jsonl, &alice);
@@ -361,7 +365,7 @@ mod tests {
 
         // Write a chat message with content > 200 chars
         let long_content = "x".repeat(300);
-        alice.chat_history.write_user_message("24007", &long_content, "20260223155500", "chat").unwrap();
+        alice.instance.chat.write_user_message("24007", &long_content, "20260223155500", "chat").unwrap();
 
         let jsonl = r#"{"first_msg":"20260223155500","last_msg":"20260223155500","summary":"test"}"#;
         let rendered = render_session_block(jsonl, &alice);
@@ -432,8 +436,8 @@ mod tests {
     fn test_build_prompts_basic() {
         let (mut alice, _tmp) = setup_alice();
 
-        alice.memory.history.set("history data");
-        alice.memory.current.set("current data");
+        alice.instance.memory.history.set("history data");
+        alice.instance.memory.current.set("current data");
 
         let (system, user, snapshot) = build_prompts(&alice, "test123", None);
 
@@ -460,11 +464,11 @@ mod tests {
     fn test_build_prompts_with_session_block() {
         let (mut alice, _tmp) = setup_alice();
 
-        alice.memory.history.set("some history");
+        alice.instance.memory.history.set("some history");
         // Write a chat message to DB and a session block referencing it
-        alice.chat_history.write_user_message("24007", "hi there", "20260223120000", "chat").unwrap();
+        alice.instance.chat.write_user_message("24007", "hi there", "20260223120000", "chat").unwrap();
         let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
-        alice.memory.append_session_block("20260223120000", jsonl).unwrap();
+        alice.instance.memory.append_session_block("20260223120000", jsonl).unwrap();
 
         let (_, user, _) = build_prompts(&alice, "tok", None);
         assert!(user.contains("24007 [20260223120000]: hi there"));
@@ -480,7 +484,7 @@ mod tests {
         assert!(knowledge.is_empty(), "no knowledge file should return empty string");
 
         // Set knowledge content
-        alice.memory.knowledge.set("# 泛准则\n- 收到消息先回复\n\n# 引擎架构\n模块结构...");
+        alice.instance.memory.knowledge.set("# 泛准则\n- 收到消息先回复\n\n# 引擎架构\n模块结构...");
 
         let knowledge = load_knowledge_file(&alice);
         assert!(knowledge.contains("### 要点与知识 ###"));
@@ -492,7 +496,7 @@ mod tests {
     fn test_load_knowledge_file_empty() {
         let (mut alice, _tmp) = setup_alice();
 
-        alice.memory.knowledge.set("  \n  ");
+        alice.instance.memory.knowledge.set("  \n  ");
 
         let knowledge = load_knowledge_file(&alice);
         assert!(knowledge.is_empty(), "empty knowledge file should return empty string");
@@ -502,7 +506,7 @@ mod tests {
     fn test_load_knowledge_file_raw() {
         let (mut alice, _tmp) = setup_alice();
 
-        alice.memory.knowledge.set("raw knowledge content");
+        alice.instance.memory.knowledge.set("raw knowledge content");
 
         let raw = load_knowledge_raw(&alice);
         assert_eq!(raw, "raw knowledge content");
@@ -512,7 +516,7 @@ mod tests {
     fn test_build_prompts_with_knowledge() {
         let (mut alice, _tmp) = setup_alice();
 
-        alice.memory.knowledge.set("# 泛准则\n- 谨慎加信任");
+        alice.instance.memory.knowledge.set("# 泛准则\n- 谨慎加信任");
 
         let (_, user, _) = build_prompts(&alice, "tok", None);
         assert!(user.contains("### 要点与知识 ###"));

@@ -212,18 +212,19 @@ impl AliceEngine for AliceEngineServer {
         let display_name = display_name.trim().to_string();
         let name_opt = if display_name.is_empty() { None } else { Some(display_name.as_str()) };
 
-        match crate::engine::create_instance_dir(
+        match crate::core::instance::Instance::create(
             &self.state.instances_dir,
             &self.state.user_id,
             name_opt,
+            None,
         ) {
-            Ok((id, _path)) => {
-                info!("[RPC] Created instance: id={}, name={:?}", id, name_opt);
-                ActionResult { success: true, message: Some(id) }
+            Ok(instance) => {
+                info!("[RPC] Created instance: id={}, name={:?}", instance.id, name_opt);
+                ActionResult { success: true, message: Some(instance.id) }
             }
             Err(e) => {
                 error!("[RPC] Create instance failed: {}", e);
-                ActionResult { success: false, message: Some(e) }
+                ActionResult { success: false, message: Some(e.to_string()) }
             }
         }
     }
