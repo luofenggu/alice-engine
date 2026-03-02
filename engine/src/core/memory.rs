@@ -7,7 +7,7 @@
 //! - sessions/*.jsonl — session block files (directory-based)
 //!
 //! Multiple commit methods control flush order for crash safety:
-//! - append_current() — normal beat, flush current only
+//! - append_current() — normal beat, write current to disk
 //! - commit_summary() — summary transaction: write session → knowledge → clear current
 //! - commit_history() — roll transaction: write history → delete old session block
 
@@ -80,20 +80,21 @@ impl Memory {
 
     // ── Current: convenience methods ──
 
-    /// Append text to current and immediately flush to disk.
-    pub fn append_current(&mut self, text: &str) -> Result<()> {
-        // Add newline separator if current is not empty (matches legacy behavior)
-        if !self.current.get().is_empty() {
-            self.current.append("\n");
+    /// Append text to current memory, with newline separator if not empty.
+    pub fn append_current(&self, text: &str) -> Result<()> {
+        let existing = self.current.read()?;
+        if existing.is_empty() {
+            self.current.write(text)
+        } else {
+            // Read existing + newline + new text, write atomically
+            let combined = format!("{}\n{}", existing, text);
+            self.current.write(&combined)
         }
-        self.current.append(text);
-        self.current.flush()
     }
 
-    /// Replace current content and flush to disk.
-    pub fn write_current(&mut self, content: &str) -> Result<()> {
-        self.current.set(content);
-        self.current.flush()
+    /// Replace current content.
+    pub fn write_current(&self, content: &str) -> Result<()> {
+        self.current.write(content)
     }
 
     // ── Session blocks ──
@@ -169,7 +170,7 @@ impl Memory {
 
     /// Normal beat: append to current and flush.
     /// This is a convenience alias for append_current().
-    pub fn commit_beat(&mut self, text: &str) -> Result<()> {
+    pub fn commit_beat(&self, text: &str) -> Result<()> {
         self.append_current(text)
     }
 
@@ -181,7 +182,7 @@ impl Memory {
     /// Crash safety: write targets first, clear source last.
     /// Worst case on crash: duplicate session entry + stale current (no data loss).
     pub fn commit_summary(
-        &mut self,
+        &self,
         session_block_name: &str,
         session_lines: &str,
         knowledge_text: &str,
@@ -190,12 +191,10 @@ impl Memory {
         self.append_session_block(session_block_name, session_lines)?;
 
         // Step 2: Write knowledge
-        self.knowledge.set(knowledge_text);
-        self.knowledge.flush()?;
+        self.knowledge.write(knowledge_text)?;
 
         // Step 3: Clear current
-        self.current.clear();
-        self.current.flush()?;
+        self.current.clear()?;
 
         Ok(())
     }
@@ -207,13 +206,12 @@ impl Memory {
     /// Crash safety: write target first, delete source last.
     /// Worst case on crash: history written but old session not deleted (re-roll is safe).
     pub fn commit_history(
-        &mut self,
+        &self,
         new_history: &str,
         oldest_block_name: &str,
     ) -> Result<()> {
         // Step 1: Write history (atomic: tmp + rename)
-        self.history.set(new_history);
-        self.history.flush()?;
+        self.history.write(new_history)?;
 
         // Step 2: Delete oldest session block
         self.delete_session_block(oldest_block_name)?;
@@ -255,9 +253,9 @@ mod tests {
     #[test]
     fn test_open_empty_files() {
         let (_tmp, memory) = setup();
-        assert_eq!(memory.knowledge.get(), "");
-        assert_eq!(memory.history.get(), "");
-        assert_eq!(memory.current.get(), "");
+        assert_eq!(memory.knowledge.read().unwrap(), "");
+        assert_eq!(memory.history.read().unwrap(), "");
+        assert_eq!(memory.current.read().unwrap(), "");
     }
 
     #[test]
@@ -271,9 +269,9 @@ mod tests {
         std::fs::write(sessions_dir.join("current.txt"), "existing current").unwrap();
 
         let memory = Memory::open(&memory_dir).unwrap();
-        assert_eq!(memory.knowledge.get(), "existing knowledge");
-        assert_eq!(memory.history.get(), "existing history");
-        assert_eq!(memory.current.get(), "existing current");
+        assert_eq!(memory.knowledge.read().unwrap(), "existing knowledge");
+        assert_eq!(memory.history.read().unwrap(), "existing history");
+        assert_eq!(memory.current.read().unwrap(), "existing current");
     }
 
     #[test]
@@ -281,11 +279,10 @@ mod tests {
         let (_tmp, mut memory) = setup();
         memory.append_current("line 1\n").unwrap();
         memory.append_current("line 2\n").unwrap();
-        assert_eq!(memory.current.get(), "line 1\n\nline 2\n");
+        assert_eq!(memory.current.read().unwrap(), "line 1\n\nline 2\n");
 
         // Verify persisted
-        memory.current.reload().unwrap();
-        assert_eq!(memory.current.get(), "line 1\n\nline 2\n");
+        assert_eq!(memory.current.read().unwrap(), "line 1\n\nline 2\n");
     }
 
     #[test]
@@ -293,10 +290,8 @@ mod tests {
         let (_tmp, mut memory) = setup();
         memory.append_current("old content").unwrap();
         memory.write_current("new content").unwrap();
-        assert_eq!(memory.current.get(), "new content");
-
-        memory.current.reload().unwrap();
-        assert_eq!(memory.current.get(), "new content");
+        assert_eq!(memory.current.read().unwrap(), "new content");
+        assert_eq!(memory.current.read().unwrap(), "new content");
     }
 
     #[test]
@@ -361,16 +356,13 @@ mod tests {
         assert_eq!(session, "{\"summary\": \"session data\"}\n");
 
         // Verify: knowledge updated
-        assert_eq!(memory.knowledge.get(), "# Updated Knowledge\nnew insights");
+        assert_eq!(memory.knowledge.read().unwrap(), "# Updated Knowledge\nnew insights");
 
         // Verify: current cleared
-        assert_eq!(memory.current.get(), "");
+        assert_eq!(memory.current.read().unwrap(), "");
 
-        // Verify persistence
-        memory.knowledge.reload().unwrap();
-        memory.current.reload().unwrap();
-        assert_eq!(memory.knowledge.get(), "# Updated Knowledge\nnew insights");
-        assert_eq!(memory.current.get(), "");
+        assert_eq!(memory.knowledge.read().unwrap(), "# Updated Knowledge\nnew insights");
+        assert_eq!(memory.current.read().unwrap(), "");
     }
 
     #[test]
@@ -379,8 +371,7 @@ mod tests {
 
         // Setup: write a session block and initial history
         memory.write_session_block("20260301120000", "old session data\n").unwrap();
-        memory.history.set("old history");
-        memory.history.flush().unwrap();
+        memory.history.write("old history").unwrap();
 
         // Commit history (roll)
         memory.commit_history(
@@ -389,7 +380,7 @@ mod tests {
         ).unwrap();
 
         // Verify: history updated
-        assert_eq!(memory.history.get(), "compressed new history");
+        assert_eq!(memory.history.read().unwrap(), "compressed new history");
 
         // Verify: old session block deleted
         assert!(memory.read_session_block("20260301120000").unwrap().is_empty());
@@ -399,8 +390,7 @@ mod tests {
         assert_eq!(marker, "20260301120000");
 
         // Verify persistence
-        memory.history.reload().unwrap();
-        assert_eq!(memory.history.get(), "compressed new history");
+        assert_eq!(memory.history.read().unwrap(), "compressed new history");
     }
 
     #[test]
@@ -419,7 +409,7 @@ mod tests {
         assert_eq!(session, "line1\nline2\n");
 
         // Knowledge is latest version
-        assert_eq!(memory.knowledge.get(), "knowledge v2");
+        assert_eq!(memory.knowledge.read().unwrap(), "knowledge v2");
     }
 
     #[test]

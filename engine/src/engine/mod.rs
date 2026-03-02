@@ -236,7 +236,7 @@ impl AliceEngine {
     /// (`agent-{name}`) and sets workspace ownership (紧箍咒).
     fn create_instance(&mut self, name: &str, instance_dir: &Path) -> Result<()> {
         let instance = crate::core::instance::Instance::open(instance_dir)?;
-        let mut settings = instance.settings.get().clone();
+        let mut settings = instance.settings.load()?;
         settings.apply_env_fallbacks();
         settings.validate()?;
 
@@ -327,9 +327,8 @@ impl AliceEngine {
         }
 
         // Write initial memory (imprint learning) on first creation
-        if alice.instance.memory.history.get().is_empty() {
-            alice.instance.memory.history.set(crate::prompt::INITIAL_HISTORY);
-            alice.instance.memory.history.flush().ok();
+        if alice.instance.memory.history.read()?.is_empty() {
+            alice.instance.memory.history.write(crate::prompt::INITIAL_HISTORY).ok();
             info!("[INSTANCE] Initial history written for {}", name);
         }
 
@@ -499,9 +498,8 @@ impl AliceEngine {
             }
 
             // Hot-reload settings via Document (also detects instance deletion)
-            match alice.instance.settings.reload() {
-                Ok(()) => {
-                    let s = alice.instance.settings.get();
+            match alice.instance.settings.load() {
+                Ok(s) => {
                     if let Some(v) = s.safety_max_consecutive_beats { alice.safety_max_consecutive_beats = v; }
                     if let Some(v) = s.safety_cooldown_secs { alice.safety_cooldown_secs = v; }
                     if let Some(v) = s.session_blocks_limit { alice.session_blocks_limit = v; }
@@ -881,7 +879,7 @@ mod tests {
         ).unwrap();
 
         let doc: Document<InstanceSettings> = Document::open(&settings_path).unwrap();
-        let settings = doc.get();
+        let settings = doc.load().unwrap();
         assert_eq!(settings.api_key, "sk-test-key");
         assert_eq!(settings.model, "openrouter@anthropic/claude-sonnet-4");
         assert!(settings.action_separator.is_none());
@@ -896,7 +894,7 @@ mod tests {
         ).unwrap();
 
         let doc: Document<InstanceSettings> = Document::open(&settings_path).unwrap();
-        let settings = doc.get();
+        let settings = doc.load().unwrap();
         assert_eq!(settings.action_separator, Some("fixed123".to_string()));
     }
 
@@ -977,14 +975,14 @@ mod tests {
             r#"{"api_key":"sk-test","model":"test","max_beats":20}"#
         ).unwrap();
         let doc: Document<InstanceSettings> = Document::open(&path).unwrap();
-        assert_eq!(doc.get().max_beats, Some(20));
+        assert_eq!(doc.load().unwrap().max_beats, Some(20));
 
         // Without max_beats
         std::fs::write(&path,
             r#"{"api_key":"sk-test","model":"test"}"#
         ).unwrap();
         let doc: Document<InstanceSettings> = Document::open(&path).unwrap();
-        assert_eq!(doc.get().max_beats, None);
+        assert_eq!(doc.load().unwrap().max_beats, None);
     }
 
     #[test]

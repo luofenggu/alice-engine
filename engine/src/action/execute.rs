@@ -387,7 +387,7 @@ fn execute_replace_in_file(
 fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) -> Result<String> {
     info!("[ACTION-{}] summary", tx.instance_id);
 
-    let current = alice.instance.memory.current.get().to_string();
+    let current = alice.instance.memory.current.read().unwrap();
     if current.trim().is_empty() {
         return Ok("current is empty, nothing to summarize\n".to_string());
     }
@@ -431,8 +431,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     // === Atomic: snapshot + knowledge update + session block + clear current ===
     let knowledge_info;
     if !knowledge_text.trim().is_empty() {
-        alice.instance.memory.knowledge.set(knowledge_text.trim());
-        alice.instance.memory.knowledge.flush()?;
+        alice.instance.memory.knowledge.write(knowledge_text.trim())?;
         knowledge_info = format!("\nknowledge: rewritten {} chars", knowledge_text.trim().len());
         info!("[ACTION-{}] knowledge rewritten ({} chars)", tx.instance_id, knowledge_text.trim().len());
     } else {
@@ -458,7 +457,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
 /// On success, returns empty string (silent execution - caller skips append_current).
 /// On failure, returns error (caller records it so agent sees what went wrong).
 fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &str, summary: &str) -> Result<String> {
-    let current = alice.instance.memory.current.get().to_string();
+    let current = alice.instance.memory.current.read().unwrap();
     if current.is_empty() {
         anyhow::bail!("current is empty, nothing to forget");
     }
@@ -628,8 +627,8 @@ fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, entries: &[(Stri
     })?;
 
     // Apply runtime effects
-    alice.privileged = alice.instance.settings.get().privileged;
-    alice.instance_name = alice.instance.settings.get().name.clone();
+    alice.privileged = alice.instance.settings.load()?.privileged;
+    alice.instance_name = alice.instance.settings.load()?.name.clone();
 
     let detail = applied.join(", ");
     Ok(format!("profile updated: {}\n", detail))
@@ -823,7 +822,7 @@ mod tests {
         assert!(result.contains("2个消息ID"));
 
         // current should be cleared
-        let current = alice.instance.memory.current.get();
+        let current = alice.instance.memory.current.read().unwrap();
         assert!(current.is_empty());
 
         // session block should exist with JSONL content

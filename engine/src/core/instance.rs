@@ -179,8 +179,8 @@ impl Instance {
     }
 
     /// Get user_id from settings.
-    pub fn user_id(&self) -> &str {
-        &self.settings.get().user_id
+    pub fn user_id(&self) -> String {
+        self.settings.load().map(|s| s.user_id).unwrap_or_default()
     }
 
     /// Path to the interrupt signal file.
@@ -402,7 +402,7 @@ mod tests {
         assert!(instance.instance_dir.join("memory").exists());
         assert_eq!(instance.user_id(), "user1");
 
-        let settings = instance.settings.get();
+        let settings = instance.settings.load().unwrap();
         assert_eq!(settings.user_id, "user1");
         assert_eq!(settings.name, Some("TestBot".to_string()));
         assert!(settings.color.is_some());
@@ -421,7 +421,7 @@ mod tests {
         )
         .unwrap();
 
-        let knowledge = instance.memory.knowledge.get().to_string();
+        let knowledge = instance.memory.knowledge.read().unwrap();
         assert!(knowledge.contains("Test Knowledge"));
         assert!(knowledge.contains("Hello world"));
     }
@@ -505,7 +505,7 @@ mod tests {
 
         // Open triggers migration
         let instance = Instance::open(&instance_dir).unwrap();
-        let knowledge = instance.memory.knowledge.get().to_string();
+        let knowledge = instance.memory.knowledge.read().unwrap();
         assert!(knowledge.contains("Keypoints"));
         assert!(knowledge.contains("Basics"));
     }
@@ -542,7 +542,7 @@ mod tests {
 
         let opened = store.open(&id).unwrap();
         assert_eq!(opened.id, id);
-        assert!(opened.memory.knowledge.get().contains("test knowledge"));
+        assert!(opened.memory.knowledge.read().unwrap().contains("test knowledge"));
     }
 
     #[test]

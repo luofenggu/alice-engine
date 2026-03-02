@@ -549,7 +549,7 @@ impl Alice {
         let rendered_block = crate::prompt::render_session_block(&block_content, self);
 
         // Read current history
-        let current_history = self.instance.memory.history.get().to_string();
+        let current_history = self.instance.memory.history.read()?;
 
         // Build LLM prompt
         let history_kb = self.history_kb;
@@ -628,7 +628,7 @@ impl Alice {
         let rendered_block = crate::prompt::render_session_block(&block_content, self);
 
         // 2. Read current history (from memory handle)
-        let current_history = self.instance.memory.history.get().to_string();
+        let current_history = self.instance.memory.history.read()?;
 
         // 3. Build LLM prompt for compression
         let history_kb = self.history_kb;
@@ -1159,21 +1159,20 @@ mod tests {
 
     #[test]
     fn test_history_read_write() {
-        let (mut alice, _tmp) = create_test_alice();
-        assert_eq!(alice.instance.memory.history.get(), "");
-        alice.instance.memory.history.set("hello history");
-        alice.instance.memory.history.flush().unwrap();
-        assert_eq!(alice.instance.memory.history.get(), "hello history");
+        let (alice, _tmp) = create_test_alice();
+        assert_eq!(alice.instance.memory.history.read().unwrap(), "");
+        alice.instance.memory.history.write("hello history").unwrap();
+        assert_eq!(alice.instance.memory.history.read().unwrap(), "hello history");
     }
 
     #[test]
     fn test_current_read_write_append() {
-        let (mut alice, _tmp) = create_test_alice();
-        assert_eq!(alice.instance.memory.current.get(), "");
+        let (alice, _tmp) = create_test_alice();
+        assert_eq!(alice.instance.memory.current.read().unwrap(), "");
         alice.instance.memory.write_current("line1").unwrap();
-        assert_eq!(alice.instance.memory.current.get(), "line1");
+        assert_eq!(alice.instance.memory.current.read().unwrap(), "line1");
         alice.instance.memory.append_current("line2").unwrap();
-        assert_eq!(alice.instance.memory.current.get(), "line1\nline2");
+        assert_eq!(alice.instance.memory.current.read().unwrap(), "line1\nline2");
     }
 
     #[test]
@@ -1216,7 +1215,7 @@ mod tests {
 
     #[test]
     fn test_session_files_in_sessions_dir() {
-        let (mut alice, _tmp) = create_test_alice();
+        let (alice, _tmp) = create_test_alice();
         alice.instance.memory.write_current("test content").unwrap();
         let current_file = alice.instance.memory.sessions_dir().join("current.txt");
         assert!(current_file.exists());

@@ -123,7 +123,7 @@ pub fn build_prompts(
 
     // Load history from memory
     let history_content = {
-        let h = alice.instance.memory.history.get();
+        let h = alice.instance.memory.history.read().unwrap_or_default();
         if h.is_empty() { "(空)".to_string() } else { h.to_string() }
     };
 
@@ -132,7 +132,7 @@ pub fn build_prompts(
 
     // Load current from memory
     let current_content = {
-        let c = alice.instance.memory.current.get();
+        let c = alice.instance.memory.current.read().unwrap_or_default();
         if c.is_empty() { "(空)".to_string() } else { c.to_string() }
     };
 
@@ -198,7 +198,7 @@ pub fn build_prompts(
 /// Load knowledge from memory for injection into prompt.
 /// Returns formatted knowledge section or empty string if empty.
 fn load_knowledge_file(alice: &Alice) -> String {
-    let content = alice.instance.memory.knowledge.get();
+    let content = alice.instance.memory.knowledge.read().unwrap_or_default();
     if content.trim().is_empty() {
         return String::new();
     }
@@ -208,7 +208,7 @@ fn load_knowledge_file(alice: &Alice) -> String {
 /// Load knowledge raw content from memory (for summary prompt).
 /// Returns raw content or empty string.
 pub fn load_knowledge_raw(alice: &Alice) -> String {
-    alice.instance.memory.knowledge.get().to_string()
+    alice.instance.memory.knowledge.read().unwrap_or_default()
 }
 
 /// Render all session block JSONL files in chronological order.
@@ -434,10 +434,10 @@ mod tests {
 
 
     fn test_build_prompts_basic() {
-        let (mut alice, _tmp) = setup_alice();
+        let (alice, _tmp) = setup_alice();
 
-        alice.instance.memory.history.set("history data");
-        alice.instance.memory.current.set("current data");
+        alice.instance.memory.history.write("history data").unwrap();
+        alice.instance.memory.current.write("current data").unwrap();
 
         let (system, user, snapshot) = build_prompts(&alice, "test123", None);
 
@@ -464,7 +464,7 @@ mod tests {
     fn test_build_prompts_with_session_block() {
         let (mut alice, _tmp) = setup_alice();
 
-        alice.instance.memory.history.set("some history");
+        alice.instance.memory.history.write("some history").unwrap();
         // Write a chat message to DB and a session block referencing it
         alice.instance.chat.write_user_message("24007", "hi there", "20260223120000", "chat").unwrap();
         let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
@@ -477,14 +477,14 @@ mod tests {
 
     #[test]
     fn test_load_knowledge_file() {
-        let (mut alice, _tmp) = setup_alice();
+        let (alice, _tmp) = setup_alice();
 
         // No knowledge file yet
         let knowledge = load_knowledge_file(&alice);
         assert!(knowledge.is_empty(), "no knowledge file should return empty string");
 
         // Set knowledge content
-        alice.instance.memory.knowledge.set("# 泛准则\n- 收到消息先回复\n\n# 引擎架构\n模块结构...");
+        alice.instance.memory.knowledge.write("# 泛准则\n- 收到消息先回复\n\n# 引擎架构\n模块结构...").unwrap();
 
         let knowledge = load_knowledge_file(&alice);
         assert!(knowledge.contains("### 要点与知识 ###"));
@@ -494,9 +494,9 @@ mod tests {
 
     #[test]
     fn test_load_knowledge_file_empty() {
-        let (mut alice, _tmp) = setup_alice();
+        let (alice, _tmp) = setup_alice();
 
-        alice.instance.memory.knowledge.set("  \n  ");
+        alice.instance.memory.knowledge.write("  \n  ").unwrap();
 
         let knowledge = load_knowledge_file(&alice);
         assert!(knowledge.is_empty(), "empty knowledge file should return empty string");
@@ -504,9 +504,9 @@ mod tests {
 
     #[test]
     fn test_load_knowledge_file_raw() {
-        let (mut alice, _tmp) = setup_alice();
+        let (alice, _tmp) = setup_alice();
 
-        alice.instance.memory.knowledge.set("raw knowledge content");
+        alice.instance.memory.knowledge.write("raw knowledge content").unwrap();
 
         let raw = load_knowledge_raw(&alice);
         assert_eq!(raw, "raw knowledge content");
@@ -514,9 +514,9 @@ mod tests {
 
     #[test]
     fn test_build_prompts_with_knowledge() {
-        let (mut alice, _tmp) = setup_alice();
+        let (alice, _tmp) = setup_alice();
 
-        alice.instance.memory.knowledge.set("# 泛准则\n- 谨慎加信任");
+        alice.instance.memory.knowledge.write("# 泛准则\n- 谨慎加信任").unwrap();
 
         let (_, user, _) = build_prompts(&alice, "tok", None);
         assert!(user.contains("### 要点与知识 ###"));
