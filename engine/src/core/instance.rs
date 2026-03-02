@@ -183,6 +183,22 @@ impl Instance {
         &self.settings.get().user_id
     }
 
+    /// Path to the interrupt signal file.
+    pub fn interrupt_signal_path(&self) -> PathBuf {
+        self.instance_dir.join("interrupt.signal")
+    }
+
+    /// Path to the switch-model signal file.
+    pub fn switch_model_signal_path(&self) -> PathBuf {
+        self.instance_dir.join("switch-model.signal")
+    }
+
+    /// Path to the data directory (contains chat.db).
+    pub fn data_dir(&self) -> PathBuf {
+        self.instance_dir.join("data")
+    }
+
+
     /// One-time migration: keypoints.md + knowledge/*.md → knowledge.md
     fn migrate_knowledge(knowledge_dir: &Path, knowledge_file: &Path, instance_id: &str) -> Result<()> {
         let keypoints_path = knowledge_dir.parent()
@@ -240,6 +256,7 @@ impl Instance {
 ///   InstanceStore (grandparent) — create / delete / list / open
 ///   Instance (parent) — manages all persistence for one instance
 ///   Memory (child) — manages memory files
+#[derive(Clone)]
 pub struct InstanceStore {
     instances_dir: PathBuf,
 }
@@ -327,6 +344,41 @@ impl InstanceStore {
         }
 
         Ok(ids)
+    }
+
+    /// Get the directory path for an instance by ID.
+    pub fn instance_dir(&self, id: &str) -> PathBuf {
+        self.instances_dir.join(id)
+    }
+
+    /// Get the chat database path for an instance.
+    pub fn chat_db_path(&self, id: &str) -> PathBuf {
+        self.instances_dir.join(id).join("data").join("chat.db")
+    }
+
+    /// Get the settings.json path for an instance.
+    pub fn settings_path(&self, id: &str) -> PathBuf {
+        self.instances_dir.join(id).join("settings.json")
+    }
+
+    /// Get the workspace path for an instance.
+    pub fn workspace_path(&self, id: &str) -> PathBuf {
+        self.instances_dir.join(id).join("workspace")
+    }
+
+    /// Get the knowledge.md path for an instance.
+    pub fn knowledge_path(&self, id: &str) -> PathBuf {
+        self.instances_dir.join(id).join("memory").join("knowledge.md")
+    }
+
+    /// Get the interrupt signal path for an instance.
+    pub fn interrupt_signal_path(&self, id: &str) -> PathBuf {
+        self.instances_dir.join(id).join("interrupt.signal")
+    }
+
+    /// Get the switch-model signal path for an instance.
+    pub fn switch_model_signal_path(&self, id: &str) -> PathBuf {
+        self.instances_dir.join(id).join("switch-model.signal")
     }
 }
 

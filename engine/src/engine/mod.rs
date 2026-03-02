@@ -215,7 +215,7 @@ impl AliceEngine {
                 self.instances_base.display()))?;
 
         for id in ids {
-            let instance_dir = self.instances_base.join(&id);
+            let instance_dir = self.instance_store.instance_dir(&id);
 
             match self.create_instance(&id, &instance_dir) {
                 Ok(()) => {
@@ -292,7 +292,7 @@ impl AliceEngine {
             };
             set_perm(instance_dir, 0o711);
             set_perm(alice.instance.memory.memory_dir(), 0o700);
-            set_perm(&instance_dir.join("data"), 0o700);
+            set_perm(&alice.instance.data_dir(), 0o700);
             set_perm(&alice.instance.workspace, 0o750);
             set_perm(alice.instance.settings.path(), 0o600);
         }
@@ -426,7 +426,7 @@ impl AliceEngine {
                     .collect();
 
                 for name in new_ids {
-                    let instance_dir = self.instances_base.join(&name);
+                    let instance_dir = self.instance_store.instance_dir(&name);
                     match self.create_instance(&name, &instance_dir) {
                         Ok(()) => {
                             // Pop the instance we just pushed to self.instances
@@ -607,7 +607,7 @@ impl AliceEngine {
                 }
 
                 // Check interrupt signal during idle (cancel timeout → infinite idle)
-                let interrupt_file = alice.instance.instance_dir.join("interrupt.signal");
+                let interrupt_file = alice.instance.interrupt_signal_path();
                 if interrupt_file.exists() {
                     std::fs::remove_file(&interrupt_file).ok();
                     info!("[INTERRUPT-{}] Interrupt during idle, cancelling timeout", instance_id);
@@ -626,7 +626,7 @@ impl AliceEngine {
                 }
 
                 // Check switch-model signal (manual model switching from frontend)
-                let switch_file = alice.instance.instance_dir.join("switch-model.signal");
+                let switch_file = alice.instance.switch_model_signal_path();
                 if switch_file.exists() {
                     if let Ok(content) = std::fs::read_to_string(&switch_file) {
                         std::fs::remove_file(&switch_file).ok();

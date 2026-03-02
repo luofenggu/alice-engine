@@ -5,7 +5,6 @@
 
 use std::sync::{Arc, Mutex};
 use chrono::TimeZone;
-use std::path::Path;
 
 use alice_rpc::{
     AliceEngine, ObserveResult, ActionResult,
@@ -22,12 +21,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::chat::ChatHistory;
+use crate::core::instance::InstanceStore;
 use tokio::sync::RwLock;
 
 /// 引擎状态（替代原web层的AppState，只保留引擎需要的字段）
 pub struct EngineState {
-    /// Base directory containing all instances.
-    pub instances_dir: PathBuf,
+    /// Instance store for path resolution and lifecycle management.
+    pub instance_store: InstanceStore,
     /// Logs directory.
     pub logs_dir: PathBuf,
     /// User ID for messages.
@@ -39,7 +39,7 @@ pub struct EngineState {
 impl EngineState {
     pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String) -> Self {
         Self {
-            instances_dir,
+            instance_store: InstanceStore::new(instances_dir),
             logs_dir,
             user_id,
             chat_connections: RwLock::new(HashMap::new()),
@@ -61,7 +61,7 @@ impl EngineState {
         if let Some(ch) = cache.get(name) {
             return Ok(ch.clone());
         }
-        let db_path = self.instances_dir.join(name).join("data").join("chat.db");
+        let db_path = self.instance_store.chat_db_path(name);
         let ch = ChatHistory::open(&db_path)?;
         let arc = Arc::new(Mutex::new(ch));
         cache.insert(name.to_string(), arc.clone());
@@ -77,9 +77,9 @@ struct AliceEngineServer {
 
 impl AliceEngine for AliceEngineServer {
     async fn get_instances(self, _: Context) -> Vec<InstanceInfo> {
-        let instances_dir = self.state.instances_dir.clone();
+        let store = self.state.instance_store.clone();
         let result = tokio::task::spawn_blocking(move || {
-            collect_instances(&instances_dir)
+            collect_instances(&store)
         }).await;
 
         match result {
@@ -155,7 +155,7 @@ impl AliceEngine for AliceEngineServer {
             return ActionResult { success: false, message: Some("Empty message".to_string()) };
         }
 
-        let instance_dir = self.state.instances_dir.join(&instance_id);
+        let instance_dir = self.state.instance_store.instance_dir(&instance_id);
         if !instance_dir.exists() {
             return ActionResult { success: false, message: Some("Instance not found".to_string()) };
         }
@@ -231,9 +231,7 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn interrupt(self, _: Context, instance_id: String) -> ActionResult {
-        let signal_path = self.state.instances_dir
-            .join(&instance_id)
-            .join("interrupt.signal");
+        let signal_path = self.state.instance_store.interrupt_signal_path(&instance_id);
 
         match std::fs::write(&signal_path, "interrupt") {
             Ok(_) => {
@@ -245,9 +243,7 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn switch_model(self, _: Context, instance_id: String, model_index: u32) -> ActionResult {
-        let signal_path = self.state.instances_dir
-            .join(&instance_id)
-            .join("switch-model.signal");
+        let signal_path = self.state.instance_store.switch_model_signal_path(&instance_id);
 
         match std::fs::write(&signal_path, model_index.to_string()) {
             Ok(_) => {
@@ -262,8 +258,7 @@ impl AliceEngine for AliceEngineServer {
         let display_name = display_name.trim().to_string();
         let name_opt = if display_name.is_empty() { None } else { Some(display_name.as_str()) };
 
-        let store = crate::core::instance::InstanceStore::new(self.state.instances_dir.clone());
-        match store.create(&self.state.user_id, name_opt, None) {
+        match self.state.instance_store.create(&self.state.user_id, name_opt, None) {
             Ok(instance) => {
                 info!("[RPC] Created instance: id={}, name={:?}", instance.id, name_opt);
                 ActionResult { success: true, message: Some(instance.id) }
@@ -276,8 +271,7 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn delete_instance(self, _: Context, instance_id: String) -> ActionResult {
-        let store = crate::core::instance::InstanceStore::new(self.state.instances_dir.clone());
-        match store.delete(&instance_id) {
+        match self.state.instance_store.delete(&instance_id) {
             Ok(trash_name) => {
                 info!("[RPC] Deleted instance: {} -> .trash/{}", instance_id, trash_name);
                 ActionResult { success: true, message: Some(format!("Deleted: {}", instance_id)) }
@@ -290,9 +284,7 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn get_settings(self, _: Context, instance_id: String) -> String {
-        let settings_path = self.state.instances_dir
-            .join(&instance_id)
-            .join("settings.json");
+        let settings_path = self.state.instance_store.settings_path(&instance_id);
 
         match std::fs::read_to_string(&settings_path) {
             Ok(content) => content,
@@ -304,9 +296,7 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn update_settings(self, _: Context, instance_id: String, settings_json: String) -> ActionResult {
-        let settings_path = self.state.instances_dir
-            .join(&instance_id)
-            .join("settings.json");
+        let settings_path = self.state.instance_store.settings_path(&instance_id);
 
         if !settings_path.exists() {
             return ActionResult { success: false, message: Some("Instance not found".to_string()) };
@@ -366,7 +356,7 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn list_files(self, _: Context, instance_id: String, path: String) -> Vec<FileInfo> {
-        let workspace = self.state.instances_dir.join(&instance_id).join("workspace");
+        let workspace = self.state.instance_store.workspace_path(&instance_id);
 
         let result = tokio::task::spawn_blocking(move || {
             let workspace_canonical = workspace.canonicalize()?;
@@ -419,7 +409,7 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn read_file(self, _: Context, instance_id: String, path: String) -> FileReadResult {
-        let workspace = self.state.instances_dir.join(&instance_id).join("workspace");
+        let workspace = self.state.instance_store.workspace_path(&instance_id);
         let empty = FileReadResult { content: String::new(), size: 0, is_binary: false };
 
         let result = tokio::task::spawn_blocking(move || {
@@ -468,10 +458,7 @@ impl AliceEngine for AliceEngineServer {
     }
 
     async fn get_knowledge(self, _: Context, instance_id: String) -> String {
-        let knowledge_path = self.state.instances_dir
-            .join(&instance_id)
-            .join("memory")
-            .join("knowledge.md");
+        let knowledge_path = self.state.instance_store.knowledge_path(&instance_id);
 
         match std::fs::read_to_string(&knowledge_path) {
             Ok(content) => content,
@@ -523,9 +510,9 @@ fn parse_observe_result(status_json: &str) -> ObserveResult {
 }
 
 /// 收集所有实例信息
-fn collect_instances(instances_dir: &Path) -> anyhow::Result<Vec<InstanceInfo>> {
+fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>> {
     let mut instances = Vec::new();
-    let entries = std::fs::read_dir(instances_dir)?;
+    let entries = std::fs::read_dir(store.instances_dir())?;
 
     for entry in entries {
         let entry = entry?;
@@ -536,7 +523,7 @@ fn collect_instances(instances_dir: &Path) -> anyhow::Result<Vec<InstanceInfo>> 
         if name.starts_with('.') {
             continue;
         }
-        let settings_path = entry.path().join("settings.json");
+        let settings_path = store.settings_path(&name);
         if !settings_path.exists() {
             continue;
         }

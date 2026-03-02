@@ -73,6 +73,11 @@ impl Memory {
         &self.sessions_dir
     }
 
+    /// Path to the .last_rolled idempotency marker file.
+    pub fn last_rolled_path(&self) -> PathBuf {
+        self.sessions_dir.join(".last_rolled")
+    }
+
     // ── Current: convenience methods ──
 
     /// Append text to current and immediately flush to disk.

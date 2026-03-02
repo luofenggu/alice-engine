@@ -521,7 +521,7 @@ impl Alice {
         let oldest_block = &blocks[0];
 
         // Idempotency check
-        let last_rolled_path = self.instance.memory.sessions_dir().join(".last_rolled");
+        let last_rolled_path = self.instance.memory.last_rolled_path();
         if last_rolled_path.exists() {
             if let Ok(last_rolled) = std::fs::read_to_string(&last_rolled_path) {
                 let last_rolled = last_rolled.trim();
@@ -598,7 +598,7 @@ impl Alice {
         // Idempotency check: if this block was already compressed but not deleted
         // (e.g., process killed between history write and block deletion),
         // just delete it and skip re-compression.
-        let last_rolled_path = self.instance.memory.sessions_dir().join(".last_rolled");
+        let last_rolled_path = self.instance.memory.last_rolled_path();
         if last_rolled_path.exists() {
             if let Ok(last_rolled) = std::fs::read_to_string(&last_rolled_path) {
                 let last_rolled = last_rolled.trim();
@@ -661,7 +661,7 @@ impl Alice {
 
         // 5. Commit history: atomic write history + delete oldest block
         // Write idempotency marker before commit.
-        let last_rolled_path = self.instance.memory.sessions_dir().join(".last_rolled");
+        let last_rolled_path = self.instance.memory.last_rolled_path();
         let _ = std::fs::write(&last_rolled_path, oldest_block.as_bytes());
 
         self.instance.memory.commit_history(new_history.trim(), oldest_block)?;
@@ -870,7 +870,7 @@ impl Alice {
 
         loop {
             // Check for interrupt signal before consuming next stream item
-            let interrupt_file = self.instance.instance_dir.join("interrupt.signal");
+            let interrupt_file = self.instance.interrupt_signal_path();
             if interrupt_file.exists() {
                 std::fs::remove_file(&interrupt_file).ok();
                 warn!("[INTERRUPT-{}] Interrupt signal detected, aborting inference", self.instance.id);
