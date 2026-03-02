@@ -454,7 +454,13 @@ def detect_serde_json_usage(root_node, source_bytes, persist_structs, source_lin
     return findings
 
 # --- Main scan ---
+# Files exempted at file level (message catalogs, etc.)
+EXEMPT_FILES = {'messages.rs'}
+
 def scan_file(filepath, persist_structs, source_bytes, parser):
+    # File-level exemption: message catalog files
+    if os.path.basename(filepath) in EXEMPT_FILES:
+        return []
     tree = parser.parse(source_bytes)
     source_lines = source_bytes.decode('utf-8', errors='replace').split('\n')
     findings = []

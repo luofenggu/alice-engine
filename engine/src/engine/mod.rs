@@ -657,8 +657,7 @@ impl AliceEngine {
             if consecutive_beats >= alice.safety_max_consecutive_beats {
                 warn!("[SAFETY-{}] {} consecutive beats without idle — forcing cooldown ({}s)",
                     instance_id, consecutive_beats, alice.safety_cooldown_secs);
-                alice.notify_anomaly(&format!(
-                    "安全阀触发：连续{}次推理未进入idle状态，强制冷却{}秒。这可能意味着推理陷入了循环。",
+                alice.notify_anomaly(&crate::messages::safety_valve_triggered(
                     consecutive_beats, alice.safety_cooldown_secs
                 ));
                 alice.last_was_idle = true;
@@ -673,10 +672,7 @@ impl AliceEngine {
                     if !alice.last_was_idle {
                         info!("[LIMIT-{}] Beat limit reached ({}/{}), forcing idle",
                             instance_id, alice.beat_count, max);
-                        alice.notify_anomaly(&format!(
-                            "推理次数已达上限（{}/{}），实例已停止推理。",
-                            alice.beat_count, max
-                        ));
+                        alice.notify_anomaly(&crate::messages::beat_limit_reached(alice.beat_count, max));
                         alice.last_was_idle = true;
                     }
                     // Sleep and check shutdown, but don't beat
@@ -699,10 +695,7 @@ impl AliceEngine {
             if consecutive_beats % 10 == 0 {
                 if let Some(avail_mb) = Self::check_disk_space_mb(&instance_dir) {
                     if avail_mb < 100 {
-                        alice.notify_anomaly(&format!(
-                            "磁盘空间不足：仅剩 {}MB 可用。请清理磁盘空间，否则可能导致数据损坏。",
-                            avail_mb
-                        ));
+                        alice.notify_anomaly(&crate::messages::disk_space_low(avail_mb));
                     }
                 }
             }

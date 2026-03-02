@@ -219,5 +219,6 @@ pub mod llm;
 pub mod prompt;
 pub mod engine;
 pub mod chat;
+pub mod messages;
 pub mod rpc;
 pub use alice_persist as persist;

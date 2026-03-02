@@ -249,11 +249,11 @@ fn make_memory_status(
     let total = history_size + daily_size + current_size + knowledge_size;
     // Knowledge capacity indicator
     let knowledge_indicator = if knowledge_size < 51200 {
-        format!("知识: {}/51200字符 🟢", knowledge_size)
+        crate::messages::knowledge_capacity_ok(knowledge_size)
     } else if knowledge_size < 61440 {
-        format!("知识: {}/51200字符 ⚠️ 知识接近上限，summary时请精简", knowledge_size)
+        crate::messages::knowledge_capacity_warning(knowledge_size)
     } else {
-        format!("知识: {}/51200字符 🔴 知识超出推荐容量，建议与用户商量裂变", knowledge_size)
+        crate::messages::knowledge_capacity_critical(knowledge_size)
     };
 
     // Instance identity line

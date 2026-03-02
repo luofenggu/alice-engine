@@ -125,7 +125,7 @@ impl AliceEngine for AliceEngineServer {
     async fn send_message(self, _: Context, instance_id: String, content: String) -> ActionResult {
         let content = content.trim().to_string();
         if content.is_empty() {
-            return ActionResult::err("Empty message");
+            return ActionResult::err(crate::messages::empty_message());
         }
 
         let user_id = self.state.user_id.clone();
@@ -240,7 +240,7 @@ impl AliceEngine for AliceEngineServer {
         match self.state.instance_store.delete(&instance_id) {
             Ok(trash_name) => {
                 info!("[RPC] Deleted instance: {} -> .trash/{}", instance_id, trash_name);
-                ActionResult::ok(format!("Deleted: {}", instance_id))
+                ActionResult::ok(crate::messages::instance_deleted(&instance_id))
             }
             Err(e) => {
                 error!("[RPC] Delete instance failed: {}", e);
@@ -282,41 +282,41 @@ impl AliceEngine for AliceEngineServer {
 
             if let Some(ref name) = update.name {
                 settings.name = Some(name.clone());
-                updated.push(format!("name: {}", name));
+                updated.push(crate::messages::field_changed("name", name));
             }
             if let Some(ref avatar) = update.avatar {
                 settings.avatar = Some(avatar.clone());
-                updated.push(format!("avatar: {}", avatar));
+                updated.push(crate::messages::field_changed("avatar", avatar));
             }
             if let Some(ref color) = update.color {
                 settings.color = Some(color.clone());
-                updated.push(format!("color: {}", color));
+                updated.push(crate::messages::field_changed("color", color));
             }
             if let Some(ref api_key) = update.api_key {
                 settings.api_key = api_key.clone();
-                updated.push(format!("api_key: ...{}", &api_key[api_key.len().saturating_sub(4)..]));
+                updated.push(crate::messages::api_key_changed(&api_key[api_key.len().saturating_sub(4)..]));
             }
             if let Some(ref model) = update.model {
                 settings.model = model.clone();
-                updated.push(format!("model: {}", model));
+                updated.push(crate::messages::field_changed("model", model));
             }
             if let Some(privileged) = update.privileged {
                 settings.privileged = privileged;
-                updated.push(format!("privileged: {}", privileged));
+                updated.push(crate::messages::field_changed("privileged", &privileged.to_string()));
             }
             if let Some(ref extra_models) = update.extra_models {
                 settings.extra_models = extra_models.clone();
-                updated.push(format!("extra_models: {} items", extra_models.len()));
+                updated.push(crate::messages::extra_models_changed(extra_models.len()));
             }
 
             if updated.is_empty() {
-                return Ok(ActionResult::err("No valid fields to update"));
+                return Ok(ActionResult::err(crate::messages::no_valid_fields()));
             }
 
             instance.settings.save(&settings)?;
 
             info!("[RPC] Settings updated for {}: {}", instance_id, updated.join(", "));
-            Ok::<_, anyhow::Error>(ActionResult::ok(updated.join(", ")))
+            Ok::<_, anyhow::Error>(ActionResult::ok(updated.join(crate::messages::field_separator())))
         }).await;
 
         match result {
