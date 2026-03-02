@@ -334,11 +334,8 @@ impl AliceEngine for AliceEngineServer {
             }
             // Sort: dirs first, then by name
             items.sort_by(|a, b| {
-                match (a.is_dir, b.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                }
+                b.is_dir.cmp(&a.is_dir)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             });
             Ok(items)
         }).await;
@@ -466,7 +463,7 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
 /// 启动RPC server（Unix socket）
 pub async fn start_rpc_server(state: Arc<EngineState>) {
     // RPC socket路径：环境变量 > 默认常量
-    let socket_path = std::env::var("ALICE_RPC_SOCKET")
+    let socket_path = std::env::var(RPC_SOCKET_ENV)
         .unwrap_or_else(|_| RPC_SOCKET_PATH.to_string());
 
     // 清理旧socket文件
