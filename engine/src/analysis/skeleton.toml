@@ -1,0 +1,42 @@
+# 骨架提取 — 极简程序分析
+# write_file后提取文件重点行，减少记忆空间占用
+
+[languages.rust]
+extensions = ["rs"]
+markers = ["fn ", "pub ", "struct ", "enum ", "impl ", "trait ", "mod ", "///", "//!", "type ", "const ", "static "]
+
+[languages.python]
+extensions = ["py"]
+markers = ["def ", "class ", "@", "# "]
+
+[languages.javascript]
+extensions = ["js", "ts", "jsx", "tsx"]
+markers = ["function ", "class ", "export ", "const ", "//", "/**"]
+
+[languages.go]
+extensions = ["go"]
+markers = ["func ", "type ", "//"]
+
+[languages.java]
+extensions = ["java", "kt"]
+markers = ["public ", "private ", "protected ", "class ", "interface ", "//", "/**"]
+
+[languages.html]
+extensions = ["html", "htm"]
+markers = ["<h1", "<h2", "<h3", "<h4", "<h5", "<h6", "<!--"]
+
+[languages.shell]
+extensions = ["sh", "bash"]
+markers = ["# ", "function "]
+
+[languages.toml]
+extensions = ["toml"]
+markers = ["[", "# "]
+
+[languages.yaml]
+extensions = ["yaml", "yml"]
+markers = ["# "]
+
+[languages.css]
+extensions = ["css", "scss"]
+markers = ["/*", "//", "."]

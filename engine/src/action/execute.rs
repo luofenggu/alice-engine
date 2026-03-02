@@ -199,31 +199,9 @@ fn extract_skeleton(path: &str, content: &str) -> String {
         );
     }
 
-    // Determine skeleton keywords by extension
-    let keywords: &[&str] = match ext.as_str() {
-        "rs" => &["fn ", "pub ", "struct ", "enum ", "impl ", "trait ", "mod ", "///", "//!", "type ", "const ", "static "],
-        "py" => &["def ", "class ", "@", "# "],
-        "js" | "ts" | "jsx" | "tsx" => &["function ", "class ", "export ", "const ", "//", "/**"],
-        "go" => &["func ", "type ", "//"],
-        "java" | "kt" => &["public ", "private ", "protected ", "class ", "interface ", "//", "/**"],
-        "html" | "htm" => &["<h1", "<h2", "<h3", "<h4", "<h5", "<h6", "<!--"],
-        "sh" | "bash" => &["# ", "function "],
-        "toml" => &["[", "# "],
-        "yaml" | "yml" => &["# "],
-        "css" | "scss" => &["/*", "//", "."],
-        _ => &[],
-    };
-
-    if !keywords.is_empty() {
-        // Extract skeleton lines
-        let skeleton: Vec<String> = lines.iter().enumerate()
-            .filter(|(_, line)| {
-                let trimmed = line.trim();
-                !trimmed.is_empty() && keywords.iter().any(|kw| trimmed.starts_with(kw))
-            })
-            .map(|(i, line)| format!("{:>4}: {}", i + 1, line))
-            .collect();
-
+    // Use SkeletonConfig for language-aware skeleton extraction
+    let skeleton_config = crate::analysis::SkeletonConfig::get();
+    if let Some(skeleton) = skeleton_config.extract(&ext, content) {
         if !skeleton.is_empty() {
             return format!(
                 "write success [{}] ({} bytes, {} lines)\n\n--- skeleton (auto-extracted, showing interface & comments only, not full content) ---\n{}\n",

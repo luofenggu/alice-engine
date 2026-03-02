@@ -212,6 +212,7 @@ mod tests {
 }
 
 pub mod logging;
+pub mod analysis;
 pub mod shell;
 pub mod core;
 pub mod action;
