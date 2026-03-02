@@ -34,6 +34,9 @@ LITERAL_TYPES = {
     'integer_literal': 'NUMBER', 'float_literal': 'NUMBER',
     'char_literal': 'CHAR', 'boolean_literal': 'BOOL',
 }
+SERDE_JSON_FNS = {'from_str', 'from_value', 'to_string', 'to_string_pretty',
+                  'to_value', 'from_reader', 'to_writer', 'to_writer_pretty'}
+SERDE_JSON_MACROS = {'json'}
 
 # --- Helpers ---
 def find_rust_files(directory, excludes):
@@ -362,6 +365,94 @@ def get_return_path_identifiers(fn_node, source_bytes):
 
     return idents
 
+# --- serde_json detection ---
+def detect_serde_json_usage(root_node, source_bytes, persist_structs, source_lines):
+    """Detect serde_json function calls and json! macro invocations.
+    Only exempt inside persist struct impl blocks and test modules."""
+    findings = []
+
+    def visit(node):
+        detected = False
+        detail = ''
+
+        # Check call_expression for serde_json::xxx
+        if node.type == 'call_expression':
+            func = node.child_by_field_name('function')
+            if func:
+                si = None
+                if func.type == 'scoped_identifier':
+                    si = func
+                elif func.type == 'generic_function':
+                    # serde_json::from_str::<T>(...)
+                    for c in func.children:
+                        if c.type == 'scoped_identifier':
+                            si = c
+                            break
+                if si:
+                    path = si.child_by_field_name('path')
+                    name = si.child_by_field_name('name')
+                    if path and name:
+                        if node_text(path, source_bytes) == 'serde_json' and \
+                           node_text(name, source_bytes) in SERDE_JSON_FNS:
+                            detected = True
+                            detail = 'serde_json::' + node_text(name, source_bytes)
+
+        # Check macro_invocation for json!
+        elif node.type == 'macro_invocation':
+            mac = node.child_by_field_name('macro')
+            if not mac:
+                for c in node.children:
+                    if c.type == 'identifier':
+                        mac = c
+                        break
+                    if c.type == 'scoped_identifier':
+                        mac = c
+                        break
+            if mac:
+                if mac.type == 'identifier' and node_text(mac, source_bytes) in SERDE_JSON_MACROS:
+                    detected = True
+                    detail = 'json! macro'
+                elif mac.type == 'scoped_identifier':
+                    name_node = mac.child_by_field_name('name')
+                    if name_node and node_text(name_node, source_bytes) in SERDE_JSON_MACROS:
+                        detected = True
+                        detail = 'serde_json::json! macro'
+
+        if detected:
+            line = node.start_point[0] + 1
+            context = get_line_text(source_lines, node.start_point[0])
+
+            exempt = False
+            exempt_reason = ''
+
+            # Test module exemption
+            if is_in_test_module(node):
+                exempt = True
+                exempt_reason = 'test'
+
+            # Persist struct exemption
+            if not exempt:
+                impl_struct = get_impl_struct_name(node, source_bytes)
+                if impl_struct and impl_struct in persist_structs:
+                    exempt = True
+                    exempt_reason = 'persist'
+
+            findings.append({
+                'line': line,
+                'kind': 'SERDE_JSON',
+                'value': detail,
+                'context': context.strip(),
+                'exempt': exempt,
+                'exempt_reason': exempt_reason,
+                'escape': False,
+            })
+
+        for c in node.children:
+            visit(c)
+
+    visit(root_node)
+    return findings
+
 # --- Main scan ---
 def scan_file(filepath, persist_structs, source_bytes, parser):
     tree = parser.parse(source_bytes)
@@ -507,6 +598,10 @@ def scan_file(filepath, persist_structs, source_bytes, parser):
                     'exempt_reason': '',
                     'escape': True,
                 })
+
+    # Phase 5: Detect serde_json usage outside persist structs
+    serde_findings = detect_serde_json_usage(tree.root_node, source_bytes, persist_structs, source_lines)
+    findings.extend(serde_findings)
 
     findings.sort(key=lambda f: f['line'])
     return findings
