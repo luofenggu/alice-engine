@@ -234,11 +234,16 @@ impl ChatHistory {
     /// Write a user message (unread, for engine to pick up).
     ///
     /// @TRACE: MSG
+    /// Generate a timestamp string in Alice's standard format.
+    pub fn now_timestamp() -> String {
+        chrono::Local::now().format("%Y%m%d%H%M%S").to_string()
+    }
+
     pub fn write_user_message(
-        &mut self, sender: &str, content: &str, timestamp: &str, msg_type: &str,
+        &mut self, sender: &str, content: &str, timestamp: &str,
     ) -> Result<i64> {
-        let id = self.insert_message(sender, Message::ROLE_USER, content, timestamp, Message::STATUS_UNREAD, msg_type)?;
-        info!("[MSG] User message written: id={}, sender={}, type={}", id, sender, msg_type);
+        let id = self.insert_message(sender, Message::ROLE_USER, content, timestamp, Message::STATUS_UNREAD, Message::TYPE_CHAT)?;
+        info!("[MSG] User message written: id={}, sender={}, type={}", id, sender, Message::TYPE_CHAT);
         Ok(id)
     }
 
@@ -453,8 +458,8 @@ mod tests {
     fn test_user_message_inbox() {
         let mut ch = setup();
 
-        ch.write_user_message("24007", "hello agent", "20260220120000", "chat").unwrap();
-        ch.write_user_message("24007", "are you there?", "20260220120001", "chat").unwrap();
+        ch.write_user_message("24007", "hello agent", "20260220120000").unwrap();
+        ch.write_user_message("24007", "are you there?", "20260220120001").unwrap();
 
         assert_eq!(ch.count_unread_user_messages().unwrap(), 2);
 

@@ -97,6 +97,26 @@ pub struct SettingsUpdate {
     pub avatar: Option<String>,
 }
 
+impl SettingsUpdate {
+    /// Apply non-None fields to the given settings.
+    pub fn apply_to(&self, s: &mut InstanceSettings) {
+        if let Some(ref v) = self.api_key { s.api_key = v.clone(); }
+        if let Some(ref v) = self.model { s.model = v.clone(); }
+        if let Some(v) = self.privileged { s.privileged = v; }
+        if let Some(v) = self.max_beats { s.max_beats = Some(v); }
+        if let Some(ref v) = self.action_separator { s.action_separator = Some(v.clone()); }
+        if let Some(v) = self.session_blocks_limit { s.session_blocks_limit = Some(v); }
+        if let Some(v) = self.session_block_kb { s.session_block_kb = Some(v); }
+        if let Some(v) = self.history_kb { s.history_kb = Some(v); }
+        if let Some(v) = self.safety_max_consecutive_beats { s.safety_max_consecutive_beats = Some(v); }
+        if let Some(v) = self.safety_cooldown_secs { s.safety_cooldown_secs = Some(v); }
+        if let Some(ref v) = self.extra_models { s.extra_models = v.clone(); }
+        if let Some(ref v) = self.name { s.name = Some(v.clone()); }
+        if let Some(ref v) = self.color { s.color = Some(v.clone()); }
+        if let Some(ref v) = self.avatar { s.avatar = Some(v.clone()); }
+    }
+}
+
 /// 实例基本信息
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstanceInfo {

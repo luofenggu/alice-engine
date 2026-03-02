@@ -342,7 +342,7 @@ mod tests {
         let (mut alice, _tmp) = setup_alice();
 
         // Write chat messages to database
-        alice.instance.chat.write_user_message("24007", "hello world", "20260223155500", "chat").unwrap();
+        alice.instance.chat.write_user_message("24007", "hello world", "20260223155500").unwrap();
         alice.instance.chat.write_agent_reply("alice", "hi back", "20260223155600").unwrap();
 
         let jsonl = r#"{"first_msg":"20260223155500","last_msg":"20260223155600","summary":"Alice read and replied"}"#;
@@ -365,7 +365,7 @@ mod tests {
 
         // Write a chat message with content > 200 chars
         let long_content = "x".repeat(300);
-        alice.instance.chat.write_user_message("24007", &long_content, "20260223155500", "chat").unwrap();
+        alice.instance.chat.write_user_message("24007", &long_content, "20260223155500").unwrap();
 
         let jsonl = r#"{"first_msg":"20260223155500","last_msg":"20260223155500","summary":"test"}"#;
         let rendered = render_session_block(jsonl, &alice);
@@ -466,7 +466,7 @@ mod tests {
 
         alice.instance.memory.history.write("some history").unwrap();
         // Write a chat message to DB and a session block referencing it
-        alice.instance.chat.write_user_message("24007", "hi there", "20260223120000", "chat").unwrap();
+        alice.instance.chat.write_user_message("24007", "hi there", "20260223120000").unwrap();
         let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
         alice.instance.memory.append_session_block("20260223120000", jsonl).unwrap();
 

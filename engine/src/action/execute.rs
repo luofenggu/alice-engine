@@ -756,8 +756,8 @@ mod tests {
     #[test]
     fn test_execute_read_msg_with_messages() {
         let (mut alice, mut tx, _tmp) = setup();
-        alice.instance.chat.write_user_message("24007", "hello agent", "20260220120000", "chat").unwrap();
-        alice.instance.chat.write_user_message("24007", "how are you?", "20260220120001", "chat").unwrap();
+        alice.instance.chat.write_user_message("24007", "hello agent", "20260220120000").unwrap();
+        alice.instance.chat.write_user_message("24007", "how are you?", "20260220120001").unwrap();
 
         let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).unwrap();
         assert!(result.contains("24007"));

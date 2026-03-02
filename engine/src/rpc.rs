@@ -135,8 +135,8 @@ impl AliceEngine for AliceEngineServer {
         let result = tokio::task::spawn_blocking(move || {
             let ch = store.get_chat(&name)?;
             let mut ch = ch.lock().unwrap_or_else(|e| e.into_inner());
-            let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
-            let id = ch.write_user_message(&user_id, &content, &timestamp, "chat")?;
+            let timestamp = crate::chat::ChatHistory::now_timestamp();
+            let id = ch.write_user_message(&user_id, &content, &timestamp)?;
             info!("[MSG] RPC: message sent to {}, id={}", name, id);
             Ok::<_, anyhow::Error>(id)
         }).await;
@@ -277,46 +277,18 @@ impl AliceEngine for AliceEngineServer {
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
             let mut settings = instance.settings.load()?;
+            let old = settings.clone();
 
-            let mut updated = Vec::new();
+            update.apply_to(&mut settings);
 
-            if let Some(ref name) = update.name {
-                settings.name = Some(name.clone());
-                updated.push(crate::messages::field_changed("name", name));
+            match crate::messages::describe_settings_change(&old, &settings) {
+                Some(desc) => {
+                    instance.settings.save(&settings)?;
+                    info!("[RPC] Settings updated for {}: {}", instance_id, desc);
+                    Ok::<_, anyhow::Error>(ActionResult::ok(desc))
+                }
+                None => Ok(ActionResult::err(crate::messages::no_valid_fields())),
             }
-            if let Some(ref avatar) = update.avatar {
-                settings.avatar = Some(avatar.clone());
-                updated.push(crate::messages::field_changed("avatar", avatar));
-            }
-            if let Some(ref color) = update.color {
-                settings.color = Some(color.clone());
-                updated.push(crate::messages::field_changed("color", color));
-            }
-            if let Some(ref api_key) = update.api_key {
-                settings.api_key = api_key.clone();
-                updated.push(crate::messages::api_key_changed(&api_key[api_key.len().saturating_sub(4)..]));
-            }
-            if let Some(ref model) = update.model {
-                settings.model = model.clone();
-                updated.push(crate::messages::field_changed("model", model));
-            }
-            if let Some(privileged) = update.privileged {
-                settings.privileged = privileged;
-                updated.push(crate::messages::field_changed("privileged", &privileged.to_string()));
-            }
-            if let Some(ref extra_models) = update.extra_models {
-                settings.extra_models = extra_models.clone();
-                updated.push(crate::messages::extra_models_changed(extra_models.len()));
-            }
-
-            if updated.is_empty() {
-                return Ok(ActionResult::err(crate::messages::no_valid_fields()));
-            }
-
-            instance.settings.save(&settings)?;
-
-            info!("[RPC] Settings updated for {}: {}", instance_id, updated.join(", "));
-            Ok::<_, anyhow::Error>(ActionResult::ok(updated.join(crate::messages::field_separator())))
         }).await;
 
         match result {

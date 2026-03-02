@@ -321,12 +321,11 @@ impl AliceEngine {
         // Insert welcome letter on first creation (empty chat.db)
         #[cfg(feature = "welcome-letter")]
         if alice.instance.chat.get_last_message_time().unwrap_or(0) == 0 {
-            let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+            let timestamp = ChatHistory::now_timestamp();
             alice.instance.chat.write_user_message(
                 "system",
                 crate::prompt::WELCOME_LETTER,
                 &timestamp,
-                "chat",
             ).ok();
             info!("[INSTANCE] Welcome letter inserted for {}", name);
         }

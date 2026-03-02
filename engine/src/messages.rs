@@ -18,20 +18,63 @@ pub fn no_valid_fields() -> &'static str {
     "No valid fields to update"
 }
 
-pub fn field_changed(field: &str, value: &str) -> String {
-    format!("{}: {}", field, value)
-}
+/// Compare old and new settings, return human-readable description of changes.
+/// Returns None if nothing changed.
+pub fn describe_settings_change(
+    old: &alice_rpc::InstanceSettings,
+    new: &alice_rpc::InstanceSettings,
+) -> Option<String> {
+    let mut changes = Vec::new();
 
-pub fn field_separator() -> &'static str {
-    ", "
-}
+    if old.name != new.name {
+        changes.push(format!("name: {}", new.name.as_deref().unwrap_or("")));
+    }
+    if old.avatar != new.avatar {
+        changes.push(format!("avatar: {}", new.avatar.as_deref().unwrap_or("")));
+    }
+    if old.color != new.color {
+        changes.push(format!("color: {}", new.color.as_deref().unwrap_or("")));
+    }
+    if old.api_key != new.api_key {
+        let suffix_len = 4.min(new.api_key.len());
+        changes.push(format!("api_key: ...{}", &new.api_key[new.api_key.len() - suffix_len..]));
+    }
+    if old.model != new.model {
+        changes.push(format!("model: {}", new.model));
+    }
+    if old.privileged != new.privileged {
+        changes.push(format!("privileged: {}", new.privileged));
+    }
+    if old.extra_models.len() != new.extra_models.len() {
+        changes.push(format!("extra_models: {} items", new.extra_models.len()));
+    }
+    if old.max_beats != new.max_beats {
+        changes.push(format!("max_beats: {:?}", new.max_beats));
+    }
+    if old.session_blocks_limit != new.session_blocks_limit {
+        changes.push(format!("session_blocks_limit: {:?}", new.session_blocks_limit));
+    }
+    if old.session_block_kb != new.session_block_kb {
+        changes.push(format!("session_block_kb: {:?}", new.session_block_kb));
+    }
+    if old.history_kb != new.history_kb {
+        changes.push(format!("history_kb: {:?}", new.history_kb));
+    }
+    if old.safety_max_consecutive_beats != new.safety_max_consecutive_beats {
+        changes.push(format!("safety_max_consecutive_beats: {:?}", new.safety_max_consecutive_beats));
+    }
+    if old.safety_cooldown_secs != new.safety_cooldown_secs {
+        changes.push(format!("safety_cooldown_secs: {:?}", new.safety_cooldown_secs));
+    }
+    if old.action_separator != new.action_separator {
+        changes.push(format!("action_separator: {:?}", new.action_separator));
+    }
 
-pub fn api_key_changed(suffix: &str) -> String {
-    format!("api_key: ...{}", suffix)
-}
-
-pub fn extra_models_changed(count: usize) -> String {
-    format!("extra_models: {} items", count)
+    if changes.is_empty() {
+        None
+    } else {
+        Some(changes.join(", "))
+    }
 }
 
 // === Engine anomaly notifications ===
