@@ -27,8 +27,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::time::FormatTime;
 
 use alice_engine::engine::AliceEngine;
 use alice_engine::web::{self, AppState};
@@ -58,23 +56,8 @@ fn env_bool(key: &str) -> bool {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Custom local time formatter for tracing (matches prompt timestamp format)
-    struct LocalTimer;
-    impl FormatTime for LocalTimer {
-        fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
-            let now = chrono::Local::now();
-            write!(w, "{}", now.format("%Y-%m-%d %H:%M:%S"))
-        }
-    }
-
-    // Initialize tracing with local time
-    tracing_subscriber::fmt()
-        .with_timer(LocalTimer)
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    // Initialize tracing with local timestamps
+    alice_engine::logging::init_tracing();
 
     let args: Vec<String> = std::env::args().collect();
 
@@ -131,19 +114,8 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&instances_dir).ok();
     std::fs::create_dir_all(&logs_dir).ok();
 
-    // Global panic hook: log panics to file for post-mortem analysis
-    let crash_log_path = logs_dir.join("crash.log");
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let msg = format!("[PANIC] {}", info);
-        tracing::error!("{}", msg);
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&crash_log_path) {
-            use std::io::Write;
-            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-            let _ = writeln!(f, "[{}] {}", timestamp, msg);
-        }
-        default_hook(info);
-    }));
+    // Set up crash log hook
+    alice_engine::logging::setup_crash_hook(&logs_dir);
 
     tracing::info!("Alice Engine (Rust) starting...");
     tracing::info!("  Base dir: {}", base_dir.display());

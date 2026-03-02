@@ -820,28 +820,17 @@ impl Alice {
         ];
 
         // 5. Set up inference log
-        let infer_log_dir = self.config.log_dir.join("infer").join(&self.instance.id);
-        std::fs::create_dir_all(&infer_log_dir).ok();
-        let log_timestamp = Local::now().format("%Y%m%d%H%M%S%3f").to_string();
-        let log_path = infer_log_dir.join(format!("{}.out.log", log_timestamp));
+        let (log_path, log_timestamp) = crate::logging::create_infer_log_path(
+            &self.config.log_dir, &self.instance.id,
+        );
         self.current_infer_log_path = Some(log_path.clone());
 
         // Write input log (only if ALICE_INFER_LOG_IN=true)
-        let infer_log_in_enabled = std::env::var("ALICE_INFER_LOG_IN")
-            .map(|v| v == "true" || v == "1")
-            .unwrap_or(false);
-        if infer_log_in_enabled {
-            let in_log_path = infer_log_dir.join(format!("{}.in.log", log_timestamp));
-            let in_log_content = format!(
-                "[model: {}]\n[endpoint: {}]\n\n=== SYSTEM PROMPT ({} chars) ===\n{}\n\n=== USER PROMPT ({} chars) ===\n{}\n",
-                self.config.model, self.config.api_url,
-                system_prompt.len(), system_prompt,
-                user_prompt.len(), user_prompt,
-            );
-            if let Err(e) = std::fs::write(&in_log_path, &in_log_content) {
-                warn!("[INFER-{}] Failed to write in-log: {}", self.instance.id, e);
-            }
-        }
+        crate::logging::write_infer_input_log(
+            &self.config.log_dir, &self.instance.id, &log_timestamp,
+            &self.config.model, &self.config.api_url,
+            &system_prompt, &user_prompt,
+        );
 
         // Mark born on first inference start (not just first idle)
         if !self.born {

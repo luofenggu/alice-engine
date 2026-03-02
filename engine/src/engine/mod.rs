@@ -116,84 +116,6 @@ fn check_shutdown_signal(pid_file: &Path) -> bool {
     true
 }
 
-// ─── Free function: log cleanup ──────────────────────────────────
-
-/// Clean up old inference logs (older than retention_days).
-///
-/// @TRACE: LOG-CLEANUP
-fn cleanup_old_infer_logs(logs_dir: &Path, retention_days: u64) {
-    let infer_dir = logs_dir.join("infer");
-    if !infer_dir.exists() {
-        return;
-    }
-
-    let cutoff = std::time::SystemTime::now()
-        .checked_sub(Duration::from_secs(retention_days * 86400))
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-    let mut cleaned_files = 0u64;
-    let mut cleaned_bytes = 0u64;
-
-    // Walk instance subdirectories
-    if let Ok(instances) = std::fs::read_dir(&infer_dir) {
-        for entry in instances.filter_map(|e| e.ok()) {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            if let Ok(files) = std::fs::read_dir(entry.path()) {
-                for file in files.filter_map(|f| f.ok()) {
-                    let path = file.path();
-                    if let Ok(metadata) = path.metadata() {
-                        if let Ok(modified) = metadata.modified() {
-                            if modified < cutoff {
-                                let size = metadata.len();
-                                if std::fs::remove_file(&path).is_ok() {
-                                    cleaned_files += 1;
-                                    cleaned_bytes += size;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if cleaned_files > 0 {
-        info!(
-            "[LOG-CLEANUP] Removed {} inference log files ({:.1}MB), retention={}d",
-            cleaned_files,
-            cleaned_bytes as f64 / 1_048_576.0,
-            retention_days
-        );
-    } else {
-        info!("[LOG-CLEANUP] No old inference logs to clean (retention={}d)", retention_days);
-    }
-}
-
-/// Rotate engine.log if it exceeds max_size_mb.
-///
-/// @TRACE: LOG-CLEANUP
-fn rotate_engine_log(logs_dir: &Path, max_size_mb: u64) {
-    let log_file = logs_dir.join("engine.log");
-    if !log_file.exists() {
-        return;
-    }
-
-    if let Ok(metadata) = log_file.metadata() {
-        let size_mb = metadata.len() / 1_048_576;
-        if size_mb >= max_size_mb {
-            let rotated = logs_dir.join("engine.log.1");
-            // Remove old rotated file if exists
-            std::fs::remove_file(&rotated).ok();
-            // Rename current to .1
-            if std::fs::rename(&log_file, &rotated).is_ok() {
-                info!("[LOG-CLEANUP] Rotated engine.log ({}MB) -> engine.log.1", size_mb);
-            }
-        }
-    }
-}
-
 // ─── AliceEngine ─────────────────────────────────────────────────
 
 /// Multi-instance Alice engine.
@@ -440,8 +362,8 @@ impl AliceEngine {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(7);
-        cleanup_old_infer_logs(&self.logs_dir, retention_days);
-        rotate_engine_log(&self.logs_dir, 50);       // rotate at 50MB
+        crate::logging::cleanup_old_infer_logs(&self.logs_dir, retention_days);
+        crate::logging::rotate_engine_log(&self.logs_dir, 50);
 
         // 2. Restore instances
         self.restore_instances()?;
