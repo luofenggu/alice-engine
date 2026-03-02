@@ -6,14 +6,16 @@
 //!
 //! ## @HUB - Crate Root
 //!
-//! Module map (mirrors Java engine):
-//! - [`repo`] — File repository for workspace I/O (@TRACE: MEMORY)
+//! Module map:
 //! - [`shell`] — Shell command execution (@TRACE: SHELL)
 //! - [`core`] — Alice instance, Transaction, React loop (@TRACE: BEAT, INSTANCE)
 //! - [`action`] — Action type system and execution (@TRACE: ACTION)
 //! - [`llm`] — LLM inference and streaming (@TRACE: INFER, STREAM)
 //! - [`prompt`] — Prompt template construction
 //! - [`engine`] — Multi-instance management (@TRACE: INSTANCE, RESTART)
+//! - [`rpc`] — RPC server (Unix socket, tarpc)
+//! - [`chat`] — Chat message storage (persist layer)
+//! - [`logging`] — Log initialization, rotation, inference logs
 //!
 //! ## Trace Log Format
 //!
@@ -217,7 +219,6 @@ pub mod llm;
 pub mod prompt;
 pub mod engine;
 pub mod chat;
-pub mod web;
 pub mod rpc;
 pub mod model;
 pub use alice_persist as persist;

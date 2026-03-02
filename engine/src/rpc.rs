@@ -3,7 +3,8 @@
 //! 通过Unix socket暴露类型安全的RPC接口，供Leptos前端调用。
 //! 与HTTP API并行运行，逐步替代前端对HTTP的依赖。
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use chrono::TimeZone;
 use std::path::Path;
 
 use alice_rpc::{
@@ -17,12 +18,61 @@ use tarpc::server::{self, Channel};
 use tokio::net::UnixListener;
 use tracing::{info, error};
 
-use crate::web::AppState;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use crate::chat::ChatHistory;
+use tokio::sync::RwLock;
+
+/// 引擎状态（替代原web层的AppState，只保留引擎需要的字段）
+pub struct EngineState {
+    /// Base directory containing all instances.
+    pub instances_dir: PathBuf,
+    /// Logs directory.
+    pub logs_dir: PathBuf,
+    /// User ID for messages.
+    pub user_id: String,
+    /// Cached ChatHistory connections per instance (connection reuse).
+    chat_connections: RwLock<HashMap<String, Arc<Mutex<ChatHistory>>>>,
+}
+
+impl EngineState {
+    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String) -> Self {
+        Self {
+            instances_dir,
+            logs_dir,
+            user_id,
+            chat_connections: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Get or create a cached ChatHistory connection for an instance.
+    pub async fn get_chat(&self, name: &str) -> anyhow::Result<Arc<Mutex<ChatHistory>>> {
+        // Fast path: read lock
+        {
+            let cache = self.chat_connections.read().await;
+            if let Some(ch) = cache.get(name) {
+                return Ok(ch.clone());
+            }
+        }
+        // Slow path: write lock, open connection
+        let mut cache = self.chat_connections.write().await;
+        // Double-check after acquiring write lock
+        if let Some(ch) = cache.get(name) {
+            return Ok(ch.clone());
+        }
+        let db_path = self.instances_dir.join(name).join("data").join("chat.db");
+        let ch = ChatHistory::open(&db_path)?;
+        let arc = Arc::new(Mutex::new(ch));
+        cache.insert(name.to_string(), arc.clone());
+        Ok(arc)
+    }
+}
 
 /// RPC服务实现，持有引擎状态
 #[derive(Clone)]
 struct AliceEngineServer {
-    state: Arc<AppState>,
+    state: Arc<EngineState>,
 }
 
 impl AliceEngine for AliceEngineServer {
@@ -435,8 +485,6 @@ impl AliceEngine for AliceEngineServer {
 
 /// 从engine_status JSON解析ObserveResult
 fn parse_observe_result(status_json: &str) -> ObserveResult {
-    use crate::web::{parse_engine_status, extract_json_string_simple, extract_json_array_raw, extract_json_i64_simple};
-
     let (engine_online, idle, inferring, infer_log_path, born) = parse_engine_status(status_json);
 
     let current_action = extract_json_string_simple(status_json, "currentDoing");
@@ -531,8 +579,96 @@ fn is_binary_file(name: &str) -> bool {
         || name.ends_with(".wasm")
 }
 
+
+// ─── JSON辅助函数（从web层迁移）────────────────────────────────
+
+fn extract_json_bool_simple(json: &str, key: &str) -> Option<bool> {
+    let pattern = format!("\"{}\":", key);
+    let idx = json.find(&pattern)?;
+    let rest = json[idx + pattern.len()..].trim_start();
+    if rest.starts_with("true") { Some(true) }
+    else if rest.starts_with("false") { Some(false) }
+    else { None }
+}
+
+fn extract_json_i64_simple(json: &str, key: &str) -> Option<i64> {
+    let pattern = format!("\"{}\":", key);
+    let idx = json.find(&pattern)?;
+    let rest = json[idx + pattern.len()..].trim_start();
+    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+fn extract_json_string_simple(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{}\":", key);
+    let idx = json.find(&pattern)?;
+    let rest = json[idx + pattern.len()..].trim_start();
+    if rest.starts_with("null") { return None; }
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn extract_json_array_raw(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{}\":", key);
+    let idx = json.find(&pattern)?;
+    let rest = json[idx + pattern.len()..].trim_start();
+    if !rest.starts_with('[') {
+        return None;
+    }
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, c) in rest.char_indices() {
+        if escaped { escaped = false; continue; }
+        if c == '\\' && in_string { escaped = true; continue; }
+        if c == '"' { in_string = !in_string; continue; }
+        if in_string { continue; }
+        if c == '[' { depth += 1; }
+        if c == ']' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(rest[..=i].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Parse engine status JSON to determine if engine is online and idle.
+fn parse_engine_status(status_json: &str) -> (bool, bool, bool, Option<String>, bool) {
+    let status_str = extract_json_string_simple(status_json, "status")
+        .unwrap_or_default();
+    let is_inferring = status_str == "inferring";
+    let idle = !is_inferring;
+
+    let last_beat_ms = extract_json_string_simple(status_json, "lastBeat")
+        .and_then(|s| parse_timestamp_to_millis(&s))
+        .unwrap_or(0);
+
+    let engine_online = if is_inferring {
+        true
+    } else {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        (now_ms - last_beat_ms) < 30000
+    };
+
+    let infer_log_path = extract_json_string_simple(status_json, "logPath");
+    let born = extract_json_bool_simple(status_json, "born").unwrap_or(false);
+
+    (engine_online, idle, is_inferring, infer_log_path, born)
+}
+
+/// Parse "20260222083246" format to milliseconds since epoch.
+fn parse_timestamp_to_millis(s: &str) -> Option<i64> {
+    if s.len() < 14 { return None; }
+    let dt = chrono::NaiveDateTime::parse_from_str(s, "%Y%m%d%H%M%S").ok()?;
+    let local = chrono::Local.from_local_datetime(&dt).single()?;
+    Some(local.timestamp_millis())
+}
+
 /// 启动RPC server（Unix socket）
-pub async fn start_rpc_server(state: Arc<AppState>) {
+pub async fn start_rpc_server(state: Arc<EngineState>) {
     // RPC socket路径：环境变量 > 默认常量
     let socket_path = std::env::var("ALICE_RPC_SOCKET")
         .unwrap_or_else(|_| RPC_SOCKET_PATH.to_string());
