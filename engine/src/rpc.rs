@@ -334,7 +334,7 @@ impl AliceEngine for AliceEngineServer {
                 items.push(FileInfo {
                     name,
                     is_dir: metadata.is_dir(),
-                    size: if metadata.is_file() { metadata.len() } else { 0 },
+                    size: if metadata.is_file() { Some(metadata.len()) } else { None },
                 });
             }
             // Sort: dirs first, then by name

@@ -209,7 +209,7 @@ impl ActionResult {
 pub struct FileInfo {
     pub name: String,
     pub is_dir: bool,
-    pub size: u64,
+    pub size: Option<u64>,
 }
 
 /// 文件读取结果
