@@ -455,7 +455,7 @@ def detect_serde_json_usage(root_node, source_bytes, persist_structs, source_lin
 
 # --- Main scan ---
 # Files exempted at file level (message catalogs, etc.)
-EXEMPT_FILES = {'messages.rs'}
+EXEMPT_FILES = {'messages.rs', 'action_output.rs'}
 # Directories exempted at directory level (persist layer, etc.)
 EXEMPT_DIRS = {'persist', 'analysis'}
 

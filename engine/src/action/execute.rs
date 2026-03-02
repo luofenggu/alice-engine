@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use crate::core::{Alice, Transaction};
 use crate::shell::Shell;
 use super::{Action, ReplaceBlock};
+use super::action_output as out;
 
 /// Resolve an action path to an absolute path.
 /// Absolute paths are used directly (only meaningful for privileged instances;
@@ -98,7 +99,7 @@ pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) 
 fn truncate_result(text: &str) -> String {
     if text.len() > MAX_RESULT_SIZE {
         let truncated = crate::safe_truncate(text, MAX_RESULT_SIZE);
-        format!("{}...\n[truncated, total {} bytes]", truncated, text.len())
+        out::truncated_output(truncated, text.len())
     } else {
         text.to_string()
     }
@@ -121,15 +122,12 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
         .context("Failed to read unread messages")?;
 
     if messages.is_empty() {
-        return Ok("(收件箱为空)\n".to_string());
+        return Ok(out::inbox_empty());
     }
 
     let mut result = String::new();
     for msg in &messages {
-        result.push_str(&format!(
-            "{} [MSG:{}]{}\n\n{}\n",
-            msg.sender, msg.timestamp, MSG_READ_CONTEXT, msg.content
-        ));
+        result.push_str(&out::read_msg_entry(&msg.sender, &msg.timestamp, &msg.content));
     }
 
     Ok(result)
@@ -141,17 +139,14 @@ fn execute_send_msg(alice: &mut Alice, tx: &mut Transaction, recipient: &str, co
     if recipient != alice.user_id {
         warn!("[ACTION-{}] send_msg rejected: recipient '{}' != user_id '{}'",
             tx.instance_id, recipient, alice.user_id);
-        return Ok(format!(
-            "send failed: unknown recipient '{}'. You can only send messages to your user.\n",
-            recipient
-        ));
+        return Ok(out::send_failed_unknown_recipient(recipient));
     }
 
     let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
     alice.instance.chat.write_agent_reply(&alice.instance.id, content, &timestamp)
         .context("Failed to write agent reply")?;
 
-    Ok(format!("{}[MSG:{}]\n", MSG_SEND_CONTEXT, timestamp))
+    Ok(out::send_success(&timestamp))
 }
 
 fn execute_thinking(_alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<String> {
@@ -164,20 +159,8 @@ fn execute_script(alice: &mut Alice, tx: &mut Transaction, content: &str) -> Res
     let shell = make_shell(alice);
     let result = shell.exec(content)?;
 
-    let duration_str = format!("{:.1}s", result.duration.as_secs_f64());
     let output = truncate_result(&result.output);
-
-    let exit_info = if result.exit_code != Some(0) {
-        format!("\n[exit code: {}]", result.exit_code.map_or("unknown".to_string(), |c| c.to_string()))
-    } else {
-        String::new()
-    };
-
-    let done_text = format!(
-        "---exec result ({})---\n{}{}\n",
-        duration_str, output, exit_info
-    );
-    Ok(done_text)
+    Ok(out::script_result(result.duration.as_secs_f64(), &output, result.exit_code))
 }
 
 /// Extract a skeleton view of file content based on file extension.
@@ -193,20 +176,14 @@ fn extract_skeleton(path: &str, content: &str) -> String {
     // .md files: preserve full content
     if ext == "md" {
         let display = truncate_result(content);
-        return format!(
-            "write success [{}] ({} bytes, {} lines)\n\n---file content---\n{}\n",
-            path, total_bytes, total_lines, display
-        );
+        return out::write_success_full(path, total_bytes, total_lines, &display);
     }
 
     // Use SkeletonConfig for language-aware skeleton extraction
     let skeleton_config = crate::analysis::SkeletonConfig::get();
     if let Some(skeleton) = skeleton_config.extract(&ext, content) {
         if !skeleton.is_empty() {
-            return format!(
-                "write success [{}] ({} bytes, {} lines)\n\n--- skeleton (auto-extracted, showing interface & comments only, not full content) ---\n{}\n",
-                path, total_bytes, total_lines, skeleton.join("\n")
-            );
+            return out::write_success_skeleton(path, total_bytes, total_lines, &skeleton.join("\n"));
         }
     }
 
@@ -214,23 +191,20 @@ fn extract_skeleton(path: &str, content: &str) -> String {
     let mut preview: Vec<String> = Vec::new();
     let head = std::cmp::min(10, total_lines);
     for i in 0..head {
-        preview.push(format!("{:>4}: {}", i + 1, lines[i]));
+        preview.push(out::preview_line(i + 1, lines[i]));
     }
     if total_lines > 15 {
-        preview.push("     ...".to_string());
+        preview.push(out::PREVIEW_ELLIPSIS.to_string());
         for i in (total_lines - 5)..total_lines {
-            preview.push(format!("{:>4}: {}", i + 1, lines[i]));
+            preview.push(out::preview_line(i + 1, lines[i]));
         }
     } else if total_lines > 10 {
         for i in 10..total_lines {
-            preview.push(format!("{:>4}: {}", i + 1, lines[i]));
+            preview.push(out::preview_line(i + 1, lines[i]));
         }
     }
 
-    format!(
-        "write success [{}] ({} bytes, {} lines)\n\n--- preview (first 10 + last 5 lines, not full content) ---\n{}\n",
-        path, total_bytes, total_lines, preview.join("\n")
-    )
+    out::write_success_preview(path, total_bytes, total_lines, &preview.join("\n"))
 }
 
 fn execute_write_file(alice: &mut Alice, tx: &mut Transaction, path: &str, content: &str) -> Result<String> {
@@ -281,21 +255,19 @@ fn execute_replace_in_file(
         for block in blocks.iter() {
             let count = content.matches(block.search.as_str()).count();
             if count != 1 {
-                result_lines.push(format!("  ERROR: '{}...' matched {} times (expected 1)",
-                    crate::safe_truncate(&block.search, 40), count));
+                result_lines.push(out::replace_match_error(
+                    &crate::safe_truncate(&block.search, 40), count));
                 continue;
             }
             content = content.replacen(block.search.as_str(), block.replace.as_str(), 1);
             total_replaced += 1;
-            result_lines.push(format!("  replaced '{}...'", crate::safe_truncate(&block.search, 40)));
+            result_lines.push(out::replace_block_success(&crate::safe_truncate(&block.search, 40)));
         }
 
         std::fs::write(&abs_path, &content)
             .with_context(|| format!("Failed to write file: {}", path))?;
 
-        let summary = format!("replaced {} block(s) successfully", total_replaced);
-        let detail = result_lines.join("\n");
-        Ok(format!("{}\n{}\n", summary, detail))
+        Ok(out::replace_result(total_replaced, &result_lines))
     } else {
         // Shell-based access for sandboxed instances
         let path_str = abs_path.to_string_lossy().replace('\'', "'\\''");
@@ -315,13 +287,13 @@ fn execute_replace_in_file(
         for block in blocks.iter() {
             let count = content.matches(block.search.as_str()).count();
             if count != 1 {
-                result_lines.push(format!("  ERROR: '{}...' matched {} times (expected 1)",
-                    crate::safe_truncate(&block.search, 40), count));
+                result_lines.push(out::replace_match_error(
+                    &crate::safe_truncate(&block.search, 40), count));
                 continue;
             }
             content = content.replacen(block.search.as_str(), block.replace.as_str(), 1);
             total_replaced += 1;
-            result_lines.push(format!("  replaced '{}...'", crate::safe_truncate(&block.search, 40)));
+            result_lines.push(out::replace_block_success(&crate::safe_truncate(&block.search, 40)));
         }
 
         let delimiter = format!("ALICE_HEREDOC_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
@@ -338,9 +310,7 @@ fn execute_replace_in_file(
                 write_result.output.trim());
         }
 
-        let summary = format!("replaced {} block(s) successfully", total_replaced);
-        let detail = result_lines.join("\n");
-        Ok(format!("{}\n{}\n", summary, detail))
+        Ok(out::replace_result(total_replaced, &result_lines))
     }
 }
 
@@ -367,7 +337,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
 
     let current = alice.instance.memory.current.read().unwrap();
     if current.trim().is_empty() {
-        return Ok("current is empty, nothing to summarize\n".to_string());
+        return Ok(out::summary_empty());
     }
 
     // Parse dual output: find ===KNOWLEDGE_TOKEN=== on its own line
@@ -410,23 +380,18 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     let knowledge_info;
     if !knowledge_text.trim().is_empty() {
         alice.instance.memory.knowledge.write(knowledge_text.trim())?;
-        knowledge_info = format!("\nknowledge: rewritten {} chars", knowledge_text.trim().len());
+        knowledge_info = out::knowledge_rewritten(knowledge_text.trim().len());
         info!("[ACTION-{}] knowledge rewritten ({} chars)", tx.instance_id, knowledge_text.trim().len());
     } else {
         warn!("[ACTION-{}] summary: no knowledge section found, skipping knowledge update", tx.instance_id);
-        knowledge_info = "\nknowledge: no knowledge marker found, skipped".to_string();
+        knowledge_info = out::knowledge_skipped();
     }
 
     alice.instance.memory.append_session_block(&block_name, &jsonl_line)?;
     alice.instance.memory.write_current("")?;
 
     let msg_count = msg_ids.len();
-    let stats = format!(
-        "小结完成: {}个消息ID({}~{}) → sessions/{}.jsonl, current已清空{}",
-        msg_count, first_msg, last_msg, block_name, knowledge_info
-    );
-
-    Ok(format!("{}\n", stats))
+    Ok(out::summary_complete(msg_count, &first_msg, &last_msg, &block_name, &knowledge_info))
 }
 
 /// Parse summary dual output: split by first ===KNOWLEDGE_TOKEN=== on its own line.
@@ -440,8 +405,8 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
         anyhow::bail!("current is empty, nothing to forget");
     }
 
-    let start_marker = format!("---------行为编号[{}]开始---------", target_action_id);
-    let end_marker = format!("---------行为编号[{}]结束---------", target_action_id);
+    let start_marker = out::action_block_start(target_action_id);
+    let end_marker = out::action_block_end(target_action_id);
 
     let start_pos = current.find(&start_marker)
         .ok_or_else(|| anyhow::anyhow!("action block [{}] not found in current", target_action_id))?;
@@ -456,13 +421,7 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
         end_pos
     };
 
-    let replacement = format!(
-        "---------行为编号[{}]开始---------
-[已提炼] {}
----------行为编号[{}]结束---------
-",
-        target_action_id, summary.trim(), target_action_id
-    );
+    let replacement = out::forgotten_block(target_action_id, summary.trim());
 
     let new_current = format!("{}{}{}", &current[..start_pos], replacement, &current[end_pos..]);
     alice.instance.memory.write_current(&new_current)?;
@@ -516,11 +475,7 @@ fn parse_summary_dual_output(raw: &str, summary_marker: &str, knowledge_marker: 
     (summary_part, knowledge_part)
 }
 
-/// Implicit contract: context strings around [MSG:xxx] markers.
-/// Write-side (execute_read_msg, execute_send_msg) and extract-side (extract_msg_ids)
-/// MUST share these constants. If you change the format, update both sides.
-pub const MSG_SEND_CONTEXT: &str = "send success ";   // appears before [MSG:xxx]
-pub const MSG_READ_CONTEXT: &str = "发来一条消息：";    // appears after [MSG:xxx]
+// MSG_SEND_CONTEXT and MSG_READ_CONTEXT moved to action_output.rs
 
 /// Extract MSG IDs from current.txt content.
 /// Only matches trusted markers (send success / read_msg format).
@@ -529,8 +484,8 @@ pub const MSG_READ_CONTEXT: &str = "发来一条消息：";    // appears after 
 pub fn extract_msg_ids(text: &str) -> Vec<String> {
     let mut ids = Vec::new();
     let marker = "[MSG:";
-    let send_context = MSG_SEND_CONTEXT;
-    let read_context = MSG_READ_CONTEXT;
+    let send_context = out::MSG_SEND_CONTEXT;
+    let read_context = out::MSG_READ_CONTEXT;
     let mut search_from = 0;
 
     while let Some(start) = text[search_from..].find(marker) {
@@ -609,7 +564,7 @@ fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, entries: &[(Stri
     alice.instance_name = alice.instance.settings.load()?.name.clone();
 
     let detail = applied.join(", ");
-    Ok(format!("profile updated: {}\n", detail))
+    Ok(out::profile_updated(&detail))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────
@@ -637,10 +592,7 @@ fn execute_create_instance(
     info!("[ACTION-{}] Created new instance: {} (name: {}, knowledge: {} bytes, awaiting hot-scan)",
         alice.instance.id, instance.id, name, knowledge.len());
 
-    Ok(format!(
-        "instance created: {} (name: {}), knowledge: {} bytes written\nEngine hot-scan will start it automatically.\n",
-        instance.id, name, knowledge.len()
-    ))
+    Ok(out::instance_created(&instance.id, name, knowledge.len()))
 }
 
 #[cfg(test)]
