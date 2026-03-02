@@ -43,7 +43,7 @@ const SHUTDOWN_SIGNAL_FILE: &str = "/var/run/alice-engine-shutdown.signal";
 
 
 
-use crate::model::InstanceSettings;
+use crate::core::instance::InstanceSettings;
 
 // ─── Free function: sandbox user management ──────────────────────
 

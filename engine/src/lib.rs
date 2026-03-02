@@ -220,5 +220,4 @@ pub mod prompt;
 pub mod engine;
 pub mod chat;
 pub mod rpc;
-pub mod model;
 pub use alice_persist as persist;
