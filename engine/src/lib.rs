@@ -221,4 +221,4 @@ pub mod engine;
 pub mod chat;
 pub mod messages;
 pub mod rpc;
-pub use alice_persist as persist;
+pub mod persist;

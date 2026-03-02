@@ -33,15 +33,18 @@ pub struct EngineState {
     pub user_id: String,
     /// Signal hub for inter-thread communication (interrupt, switch-model).
     pub signal_hub: SignalHub,
+    /// API configuration (file browse rules, etc.)
+    pub api_config: crate::persist::ApiConfig,
 }
 
 impl EngineState {
-    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String, signal_hub: SignalHub) -> Self {
+    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String, signal_hub: SignalHub, api_config: crate::persist::ApiConfig) -> Self {
         Self {
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
             user_id,
             signal_hub,
+            api_config,
         }
     }
 
@@ -300,6 +303,7 @@ impl AliceEngine for AliceEngineServer {
 
     async fn list_files(self, _: Context, instance_id: String, path: String) -> Vec<FileInfo> {
         let store = self.state.instance_store.clone();
+        let file_browse = self.state.api_config.file_browse.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
@@ -319,8 +323,7 @@ impl AliceEngine for AliceEngineServer {
             for entry in std::fs::read_dir(&target)? {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().to_string();
-                const HIDDEN_DIRS: &[&str] = &["target", "node_modules"];
-                if name.starts_with('.') || HIDDEN_DIRS.contains(&name.as_str()) {
+                if file_browse.is_hidden_file(&name) || file_browse.is_hidden_dir(&name) {
                     continue;
                 }
                 let metadata = entry.metadata()?;
@@ -356,6 +359,7 @@ impl AliceEngine for AliceEngineServer {
 
     async fn read_file(self, _: Context, instance_id: String, path: String) -> FileReadResult {
         let store = self.state.instance_store.clone();
+        let api_config = self.state.api_config.clone();
         let empty = FileReadResult::error(String::new());
 
         let result = tokio::task::spawn_blocking(move || {
@@ -371,7 +375,7 @@ impl AliceEngine for AliceEngineServer {
             let metadata = target.metadata()?;
             let size = metadata.len();
 
-            if size > 1024 * 1024 {
+            if size > api_config.file_browse.max_file_size {
                 anyhow::bail!("File too large (>1MB)");
             }
 
@@ -380,8 +384,8 @@ impl AliceEngine for AliceEngineServer {
                 .to_string_lossy()
                 .to_string();
 
-            if is_binary_file(&file_name) {
-                return Ok(FileReadResult::binary(format!("[Binary file: {}, {} bytes]", file_name, size), size));
+            if api_config.file_browse.is_binary_file(&file_name) {
+                return Ok(FileReadResult::binary(crate::messages::binary_file_description(&file_name, size), size));
             }
 
             let content = std::fs::read_to_string(&target)?;
@@ -456,17 +460,6 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
 }
 
 
-/// 二进制文件扩展名列表
-const BINARY_EXTENSIONS: &[&str] = &[
-    ".jar", ".class", ".zip", ".gz", ".png", ".jpg",
-    ".jpeg", ".gif", ".ico", ".pdf", ".exe", ".so", ".wasm",
-];
-
-/// 判断文件是否为二进制格式（基于扩展名）
-fn is_binary_file(name: &str) -> bool {
-    let name = name.to_lowercase();
-    BINARY_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
-}
 
 
 

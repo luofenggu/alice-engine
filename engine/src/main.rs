@@ -79,11 +79,13 @@ async fn main() -> anyhow::Result<()> {
     let signal_hub = SignalHub::new();
 
     // Create engine state (shared between RPC and engine)
+    let api_config = alice_engine::persist::ApiConfig::load();
     let engine_state = Arc::new(EngineState::new(
         instances_dir.clone(),
         logs_dir.clone(),
         user_id,
         signal_hub.clone(),
+        api_config,
     ));
 
     // Start RPC server (Unix socket, for Leptos frontend)

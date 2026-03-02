@@ -784,7 +784,7 @@ impl AliceEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alice_persist::Document;
+    use crate::persist::Document;
     use crate::core::instance::InstanceSettings;
     use tempfile::TempDir;
 

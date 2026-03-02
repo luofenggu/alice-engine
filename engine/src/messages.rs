@@ -110,3 +110,7 @@ pub fn knowledge_capacity_warning(size: usize) -> String {
 pub fn knowledge_capacity_critical(size: usize) -> String {
     format!("知识: {}/51200字符 🔴 知识超出推荐容量，建议与用户商量裂变", size)
 }
+
+pub fn binary_file_description(name: &str, size: u64) -> String {
+    format!("[Binary file: {}, {} bytes]", name, size)
+}

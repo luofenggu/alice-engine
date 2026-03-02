@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
-use alice_persist::TextFile;
+use crate::persist::TextFile;
 
 /// Session block file extension
 const SESSION_EXT: &str = "jsonl";

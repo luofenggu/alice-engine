@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tracing::info;
 
-use alice_persist::Document;
+use crate::persist::Document;
 use crate::chat::ChatHistory;
 use crate::core::memory::Memory;
 

@@ -1,0 +1,6 @@
+[file_browse]
+binary_extensions = [".jar", ".class", ".zip", ".gz", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".exe", ".so", ".wasm"]
+hidden_dirs = ["target", "node_modules"]
+hidden_prefix = "."
+max_file_size = 1048576
+
