@@ -37,6 +37,12 @@ pub struct FileBrowseConfig {
 
 impl ApiConfig {
     /// Load from the embedded api.toml (compiled into the binary).
+    /// Get the global ApiConfig singleton (initialized on first call).
+    pub fn get() -> &'static Self {
+        static INSTANCE: std::sync::OnceLock<ApiConfig> = std::sync::OnceLock::new();
+        INSTANCE.get_or_init(|| Self::load())
+    }
+
     pub fn load() -> Self {
         let toml_str = include_str!("api.toml");
         toml::from_str(toml_str).expect("failed to parse embedded api.toml")

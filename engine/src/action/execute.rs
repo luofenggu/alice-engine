@@ -12,6 +12,7 @@ use chrono::Local;
 use super::strip_remember_markers;
 
 use std::path::PathBuf;
+use crate::policy::ApiConfig;
 
 use crate::core::{Alice, Transaction};
 use crate::external::shell::Shell;
@@ -36,8 +37,6 @@ fn resolve_action_path(alice: &Alice, path: &str) -> Result<PathBuf> {
     }
 }
 
-/// Maximum output size stored in memory (100KB).
-const MAX_RESULT_SIZE: usize = 100 * 1024;
 
 /// Create a Shell instance with appropriate sandboxing for the given Alice.
 /// In local mode (no sandbox user), runs without sandboxing.
@@ -84,10 +83,11 @@ pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) 
     }
 }
 
-/// Truncate result text if it exceeds MAX_RESULT_SIZE.
+/// Truncate result text if it exceeds max_result_bytes.
 fn truncate_result(text: &str) -> String {
-    if text.len() > MAX_RESULT_SIZE {
-        let truncated = crate::safe_truncate(text, MAX_RESULT_SIZE);
+    let max = ApiConfig::get().action.max_result_bytes;
+    if text.len() > max {
+        let truncated = crate::safe_truncate(text, max);
         out::truncated_output(truncated, text.len())
     } else {
         text.to_string()
@@ -176,19 +176,20 @@ fn extract_skeleton(path: &str, content: &str) -> String {
         }
     }
 
-    // Fallback: first 10 + last 5 lines
+    // Fallback: head + tail preview
+    let action = &ApiConfig::get().action;
     let mut preview: Vec<String> = Vec::new();
-    let head = std::cmp::min(10, total_lines);
+    let head = std::cmp::min(action.preview_head_lines, total_lines);
     for i in 0..head {
         preview.push(out::preview_line(i + 1, lines[i]));
     }
-    if total_lines > 15 {
+    if total_lines > action.preview_threshold {
         preview.push(out::PREVIEW_ELLIPSIS.to_string());
-        for i in (total_lines - 5)..total_lines {
+        for i in (total_lines - action.preview_tail_lines)..total_lines {
             preview.push(out::preview_line(i + 1, lines[i]));
         }
-    } else if total_lines > 10 {
-        for i in 10..total_lines {
+    } else if total_lines > action.preview_head_lines {
+        for i in action.preview_head_lines..total_lines {
             preview.push(out::preview_line(i + 1, lines[i]));
         }
     }
@@ -244,12 +245,12 @@ fn execute_replace_in_file(
             let count = content.matches(block.search.as_str()).count();
             if count != 1 {
                 result_lines.push(out::replace_match_error(
-                    &crate::safe_truncate(&block.search, 40), count));
+                    &crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display), count));
                 continue;
             }
             content = content.replacen(block.search.as_str(), block.replace.as_str(), 1);
             total_replaced += 1;
-            result_lines.push(out::replace_block_success(&crate::safe_truncate(&block.search, 40)));
+            result_lines.push(out::replace_block_success(&crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display)));
         }
 
         std::fs::write(&abs_path, &content)
@@ -274,12 +275,12 @@ fn execute_replace_in_file(
             let count = content.matches(block.search.as_str()).count();
             if count != 1 {
                 result_lines.push(out::replace_match_error(
-                    &crate::safe_truncate(&block.search, 40), count));
+                    &crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display), count));
                 continue;
             }
             content = content.replacen(block.search.as_str(), block.replace.as_str(), 1);
             total_replaced += 1;
-            result_lines.push(out::replace_block_success(&crate::safe_truncate(&block.search, 40)));
+            result_lines.push(out::replace_block_success(&crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display)));
         }
 
         let shell = make_shell(alice);
@@ -881,7 +882,7 @@ random [MSG:20260219120000] in output\n\
         let short = "hello";
         assert_eq!(truncate_result(short), "hello");
 
-        let long = "x".repeat(MAX_RESULT_SIZE + 100);
+        let long = "x".repeat(ApiConfig::get().action.max_result_bytes + 100);
         let truncated = truncate_result(&long);
         assert!(truncated.contains("[truncated"));
         assert!(truncated.len() < long.len());
