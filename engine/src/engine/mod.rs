@@ -161,57 +161,7 @@ impl AliceEngine {
         }
     }
 
-    /// Clean up .tmp files left by atomic_write after crash.
-    /// These are harmless but should be cleaned to avoid confusion.
-    fn cleanup_tmp_files(&self) {
-        let mut cleaned = 0;
-        for entry in std::fs::read_dir(&self.instances_base).into_iter().flatten() {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if !entry.path().is_dir() {
-                continue;
-            }
 
-            // Clean memory/ directory
-            let memory_dir = entry.path().join("memory");
-            if memory_dir.exists() {
-                cleaned += Self::cleanup_tmp_in_dir(&memory_dir);
-                // Also check sessions/ subdirectory
-                let sessions_dir = memory_dir.join("sessions");
-                if sessions_dir.exists() {
-                    cleaned += Self::cleanup_tmp_in_dir(&sessions_dir);
-                }
-                // Also check knowledge/ subdirectory
-                let knowledge_dir = memory_dir.join("knowledge");
-                if knowledge_dir.exists() {
-                    cleaned += Self::cleanup_tmp_in_dir(&knowledge_dir);
-                }
-            }
-        }
-        if cleaned > 0 {
-            info!("[STARTUP] Cleaned {} .tmp residual files from previous crash", cleaned);
-        }
-    }
-
-    fn cleanup_tmp_in_dir(dir: &Path) -> usize {
-        let mut count = 0;
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if path.is_file() && path.extension().map_or(false, |ext| ext == "tmp") {
-                    if let Err(e) = std::fs::remove_file(&path) {
-                        warn!("[STARTUP] Failed to clean tmp file {:?}: {}", path, e);
-                    } else {
-                        info!("[STARTUP] Cleaned tmp file: {:?}", path);
-                        count += 1;
-                    }
-                }
-            }
-        }
-        count
-    }
 
     /// Discover and restore instances from the instances directory.
     ///
@@ -361,10 +311,7 @@ impl AliceEngine {
         info!("Instances dir: {}", self.instances_base.display());
         info!("Logs dir: {}", self.logs_dir.display());
 
-        // 1. Clean up .tmp residual files from previous crash
-        self.cleanup_tmp_files();
-
-        // 1.6. Clean up old logs
+        // 1. Clean up old logs
         let retention_days = self.env_config.infer_log_retention_days;
         crate::logging::cleanup_old_infer_logs(&self.logs_dir, retention_days);
         crate::logging::rotate_engine_log(&self.logs_dir, 50);

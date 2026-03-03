@@ -50,6 +50,9 @@ impl Memory {
         std::fs::create_dir_all(&sessions_dir)
             .with_context(|| format!("Failed to create sessions dir: {}", sessions_dir.display()))?;
 
+        // Clean up .tmp residuals from atomic_write after crash (self-contained cleanup)
+        Self::cleanup_tmp_residuals(&memory_dir);
+
         let knowledge = TextFile::open(memory_dir.join("knowledge.md"))?;
         let history = TextFile::open(sessions_dir.join("history.txt"))?;
         let current = TextFile::open(sessions_dir.join("current.txt"))?;
@@ -61,6 +64,32 @@ impl Memory {
             history,
             current,
         })
+    }
+
+    /// Clean up .tmp files left by atomic_write after crash.
+    /// Recursively scans memory directory and subdirectories.
+    fn cleanup_tmp_residuals(dir: &Path) {
+        let mut cleaned = 0u32;
+        Self::cleanup_tmp_in_dir(dir, &mut cleaned);
+        if cleaned > 0 {
+            tracing::info!("[MEMORY] Cleaned {} .tmp residual files from previous crash", cleaned);
+        }
+    }
+
+    fn cleanup_tmp_in_dir(dir: &Path, cleaned: &mut u32) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_file() && path.extension().is_some_and(|ext| ext == "tmp") {
+                    if std::fs::remove_file(&path).is_ok() {
+                        tracing::info!("[MEMORY] Cleaned tmp file: {:?}", path);
+                        *cleaned += 1;
+                    }
+                } else if path.is_dir() {
+                    Self::cleanup_tmp_in_dir(&path, cleaned);
+                }
+            }
+        }
     }
 
     /// Root memory directory path.
