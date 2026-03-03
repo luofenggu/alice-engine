@@ -46,51 +46,7 @@ use crate::core::signal::SignalHub;
 
 // ─── Free function: sandbox user management ──────────────────────
 
-/// Ensure a Linux sandbox user exists for 紧箍咒 (privilege demotion).
-///
-/// - Checks if user exists via `id {user}`
-/// - Creates user if missing via `useradd -r -s /bin/bash --home-dir {workspace} {user}`
-/// - Sets workspace directory ownership via `chown -R {user}:{user} {workspace}`
-///
-/// @TRACE: SHELL
-fn ensure_sandbox_user(user: &str, workspace: &Path) -> Result<()> {
-    use std::process::Command;
 
-    let workspace_str = workspace.to_string_lossy();
-
-    // Check if user already exists
-    let check = Command::new("id").arg(user).output()
-        .context("Failed to run 'id' command")?;
-
-    if !check.status.success() {
-        // Create user with home set to workspace
-        info!("[SANDBOX] Creating sandbox user: {} (home={})", user, workspace_str);
-        let create = Command::new("useradd")
-            .args(["-r", "-s", "/bin/bash", "--home-dir", &workspace_str, user])
-            .output()
-            .context("Failed to run 'useradd' command")?;
-
-        if !create.status.success() {
-            let stderr = String::from_utf8_lossy(&create.stderr);
-            anyhow::bail!("Failed to create sandbox user '{}': {}", user, stderr.trim());
-        }
-        info!("[SANDBOX] Created sandbox user: {}", user);
-    }
-
-    // Ensure workspace ownership (user:user so group matches)
-    let owner = format!("{}:{}", user, user);
-    let chown = Command::new("chown")
-        .args(["-R", &owner, &workspace_str])
-        .output()
-        .context("Failed to run 'chown' command")?;
-
-    if !chown.status.success() {
-        let stderr = String::from_utf8_lossy(&chown.stderr);
-        warn!("[SANDBOX] chown failed for {}: {}", user, stderr.trim());
-    }
-
-    Ok(())
-}
 
 // ─── Free function: shutdown signal check ────────────────────────
 
@@ -197,7 +153,7 @@ impl AliceEngine {
             model: settings.model.clone(),
             api_key: settings.api_key.clone(),
             log_dir: self.logs_dir.clone(),
-            beat_interval_secs: 3,
+
         };
 
         let mut alice = Alice::new(instance, config, self.env_config.clone())?;
@@ -220,8 +176,9 @@ impl AliceEngine {
 
         // Auto-create sandbox user (紧箍咒) for non-privileged instances
         if !settings.privileged {
-            let sandbox_user = format!("agent-{}", name);
-            if let Err(e) = ensure_sandbox_user(&sandbox_user, &alice.instance.workspace) {
+            let engine_policy = &crate::policy::EngineConfig::get().engine;
+            let sandbox_user = format!("{}{}", engine_policy.sandbox_user_prefix, name);
+            if let Err(e) = crate::external::shell::ensure_sandbox_user(&sandbox_user, &alice.instance.workspace) {
                 warn!("[SANDBOX] Skipping sandbox setup for {}: {} (sandbox commands not available)", name, e);
             }
         }
@@ -240,9 +197,14 @@ impl AliceEngine {
             alice.history_kb = kb;
         }
 
-        // test- prefixed instances default to max 10 beats if not explicitly set
+        // test- prefixed instances default to limited beats if not explicitly set
         alice.max_beats = settings.max_beats.or_else(|| {
-            if name.starts_with("test-") { Some(10) } else { None }
+            let engine_policy = &crate::policy::EngineConfig::get().engine;
+            if name.starts_with(&engine_policy.test_instance_prefix) {
+                Some(engine_policy.test_instance_max_beats)
+            } else {
+                None
+            }
         });
 
         // Insert welcome letter on first creation (empty chat.db)
@@ -290,7 +252,7 @@ impl AliceEngine {
         // 1. Clean up old logs
         let retention_days = self.env_config.infer_log_retention_days;
         crate::logging::cleanup_old_infer_logs(&self.logs_dir, retention_days);
-        crate::logging::rotate_engine_log(&self.logs_dir, 50);
+        crate::logging::rotate_engine_log(&self.logs_dir, crate::policy::EngineConfig::get().engine.log_rotate_max_mb);
 
         // 2. Restore instances
         self.restore_instances()?;
@@ -384,24 +346,7 @@ impl AliceEngine {
         }
     }
 
-    /// Check available disk space. Returns available MB.
-    /// Returns None if check fails.
-    fn check_disk_space_mb(path: &Path) -> Option<u64> {
-        let output = std::process::Command::new("df")
-            .arg("-BM")  // block size = 1M
-            .arg("--output=avail")
-            .arg(path)
-            .output()
-            .ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // Parse: skip header line, get first number
-        stdout.lines()
-            .nth(1)?
-            .trim()
-            .trim_end_matches('M')
-            .parse::<u64>()
-            .ok()
-    }
+
 
     /// Independent heartbeat loop for a single instance.
     /// Runs in its own thread. Exits when:
@@ -416,7 +361,8 @@ impl AliceEngine {
 
         let mut consecutive_beats: u32 = 0;
         let mut idle_elapsed: u64 = 0;
-        const ERROR_BACKOFF_SECS: u64 = 10;
+        let engine_policy = &crate::policy::EngineConfig::get().engine;
+        let error_backoff_secs = engine_policy.error_backoff_secs;
 
         loop {
             // Check shutdown signal
@@ -512,7 +458,7 @@ impl AliceEngine {
                 }
 
                 consecutive_beats = 0;
-                std::thread::sleep(Duration::from_secs(alice.config.beat_interval_secs));
+                std::thread::sleep(Duration::from_secs(engine_policy.beat_interval_secs));
 
                 // Re-check after sleep
                 if shutdown.load(Ordering::Relaxed) {
@@ -546,7 +492,7 @@ impl AliceEngine {
 
                 // Check idle timeout (timed idle wakeup)
                 if let Some(timeout) = alice.idle_timeout_secs {
-                    idle_elapsed += alice.config.beat_interval_secs;
+                    idle_elapsed += engine_policy.beat_interval_secs;
                     if idle_elapsed >= timeout {
                         info!("[IDLE-TIMEOUT-{}] Idle timeout {}s reached (elapsed {}s), waking up",
                             instance_id, timeout, idle_elapsed);
@@ -587,7 +533,7 @@ impl AliceEngine {
                         alice.last_was_idle = true;
                     }
                     // Sleep and check shutdown, but don't beat
-                    std::thread::sleep(Duration::from_secs(alice.config.beat_interval_secs));
+                    std::thread::sleep(Duration::from_secs(engine_policy.beat_interval_secs));
                     continue;
                 }
             }
@@ -602,10 +548,11 @@ impl AliceEngine {
                     instance_id, unread, alice.last_was_idle, consecutive_beats);
             }
 
-            // Disk space check (every 10 beats to avoid overhead)
-            if consecutive_beats % 10 == 0 {
-                if let Some(avail_mb) = Self::check_disk_space_mb(&instance_dir) {
-                    if avail_mb < 100 {
+            // Disk space check (periodic to avoid overhead)
+            let engine_policy = &crate::policy::EngineConfig::get().engine;
+            if consecutive_beats % engine_policy.disk_check_interval_beats == 0 {
+                if let Some(avail_mb) = crate::external::shell::available_mb(&instance_dir) {
+                    if avail_mb < engine_policy.disk_min_available_mb {
                         alice.notify_anomaly(&crate::policy::messages::disk_space_low(avail_mb));
                     }
                 }
@@ -650,7 +597,7 @@ impl AliceEngine {
                 }
                 Err(e) => {
                     error!("[BEAT-{}] Error: {} — backing off {}s",
-                        instance_id, e, ERROR_BACKOFF_SECS);
+                        instance_id, e, error_backoff_secs);
                     alice.current_infer_log_path = None;
                     if let Some(ref signals) = alice.signals {
                         signals.update_status(|s| {
@@ -665,7 +612,7 @@ impl AliceEngine {
                     alice.notify_anomaly(&format!("{}", e));
                     alice.last_was_idle = true;
                     consecutive_beats = 0;
-                    std::thread::sleep(Duration::from_secs(ERROR_BACKOFF_SECS));
+                    std::thread::sleep(Duration::from_secs(error_backoff_secs));
                 }
             }
         }

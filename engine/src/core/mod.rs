@@ -169,8 +169,6 @@ pub struct AliceConfig {
     pub api_key: String,
     /// Log directory path
     pub log_dir: PathBuf,
-    /// Beat interval in seconds (sleep between beats when idle)
-    pub beat_interval_secs: u64,
 }
 
 impl Default for AliceConfig {
@@ -179,7 +177,6 @@ impl Default for AliceConfig {
             model: String::new(),
             api_key: String::new(),
             log_dir: PathBuf::from("/root/alice-logs"),
-            beat_interval_secs: 3,
         }
     }
 }

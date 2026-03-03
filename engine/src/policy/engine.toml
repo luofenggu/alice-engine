@@ -9,6 +9,16 @@ hidden_dirs = ["target", "node_modules"]
 hidden_prefix = "."
 max_file_size = 1048576
 
+[engine]
+beat_interval_secs = 3
+error_backoff_secs = 10
+log_rotate_max_mb = 50
+disk_check_interval_beats = 10
+disk_min_available_mb = 100
+sandbox_user_prefix = "agent-"
+test_instance_prefix = "test-"
+test_instance_max_beats = 10
+
 [llm]
 max_tokens = 16384
 temperature = 0.5

@@ -359,6 +359,82 @@ mod tests {
         assert!(result.output.contains("line2"));
     }
 
+}
+
+// ─── System shell utilities ─────────────────────────────────────
+
+/// Check available disk space at the given path. Returns available MB.
+/// Wraps `df -BM --output=avail`.
+pub fn available_mb(path: &std::path::Path) -> Option<u64> {
+    let output = std::process::Command::new("df")
+        .arg("-BM")
+        .arg("--output=avail")
+        .arg(path)
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.lines()
+        .nth(1)?
+        .trim()
+        .trim_end_matches('M')
+        .parse::<u64>()
+        .ok()
+}
+
+/// Ensure a system user exists, creating if needed. Sets workspace ownership.
+///
+/// - Checks if user exists via `id {user}`
+/// - Creates user if missing via `useradd -r -s /bin/bash --home-dir {workspace} {user}`
+/// - Sets workspace directory ownership via `chown -R {user}:{user} {workspace}`
+pub fn ensure_sandbox_user(user: &str, workspace: &std::path::Path) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    let workspace_str = workspace.to_string_lossy();
+
+    // Check if user already exists
+    let check = std::process::Command::new("id").arg(user).output()
+        .context("Failed to run 'id' command")?;
+
+    if !check.status.success() {
+        tracing::info!("[SANDBOX] Creating sandbox user: {} (home={})", user, workspace_str);
+        let create = std::process::Command::new("useradd")
+            .args(["-r", "-s", "/bin/bash", "--home-dir", &workspace_str, user])
+            .output()
+            .context("Failed to run 'useradd' command")?;
+
+        if !create.status.success() {
+            let stderr = String::from_utf8_lossy(&create.stderr);
+            anyhow::bail!("Failed to create sandbox user '{}': {}", user, stderr.trim());
+        }
+        tracing::info!("[SANDBOX] Created sandbox user: {}", user);
+    }
+
+    // Ensure workspace ownership (user:user so group matches)
+    let owner = format!("{}:{}", user, user);
+    let chown = std::process::Command::new("chown")
+        .args(["-R", &owner, &workspace_str])
+        .output()
+        .context("Failed to run 'chown' command")?;
+
+    if !chown.status.success() {
+        let stderr = String::from_utf8_lossy(&chown.stderr);
+        tracing::warn!("[SANDBOX] chown failed for {}: {}", user, stderr.trim());
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod system_tests {
+    // System utility tests require root and are not run in CI.
+    // available_mb and ensure_sandbox_user are integration-tested manually.
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+    use tempfile::TempDir;
+
     #[test]
     fn test_truncation() {
         let tmp = TempDir::new().unwrap();
