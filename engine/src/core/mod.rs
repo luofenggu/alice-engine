@@ -456,13 +456,13 @@ impl Alice {
             self.instance.id, blocks.len(), self.session_blocks_limit, oldest_block);
 
         // Read and render the oldest block
-        let block_content = self.instance.memory.read_session_block(oldest_block)?;
-        if block_content.trim().is_empty() {
+        let block_entries = self.instance.memory.read_session_entries(oldest_block)?;
+        if block_entries.is_empty() {
             self.instance.memory.delete_session_block(oldest_block)?;
             return Ok(None);
         }
 
-        let entries = crate::prompt::extract_session_block_data(&block_content, self);
+        let entries = crate::prompt::extract_session_block_data(&block_entries, self);
         let rendered_block = crate::inference::beat::format_session_entries(&entries);
 
         // Read current history
@@ -521,15 +521,15 @@ impl Alice {
             self.instance.id, blocks.len(), self.session_blocks_limit, oldest_block);
 
         // 1. Read and render the oldest block
-        let block_content = self.instance.memory.read_session_block(oldest_block)?;
-        if block_content.trim().is_empty() {
+        let entries = self.instance.memory.read_session_entries(oldest_block)?;
+        if entries.is_empty() {
             // Empty block, just delete it
             self.instance.memory.delete_session_block(oldest_block)?;
             return Ok(Some(crate::policy::messages::roll_deleted_empty(oldest_block)));
         }
 
-        let entries = crate::prompt::extract_session_block_data(&block_content, self);
-        let rendered_block = crate::inference::beat::format_session_entries(&entries);
+        let session_entries: Vec<crate::inference::beat::SessionEntryData> = entries.iter().map(Into::into).collect();
+        let rendered_block = crate::inference::beat::format_session_entries(&session_entries);
 
         // 2. Read current history (from memory handle)
         let current_history = self.instance.memory.history.read()?;

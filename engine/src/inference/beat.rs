@@ -177,6 +177,15 @@ impl BeatRequest {
 // Public formatting — used by both render() and compress
 // ---------------------------------------------------------------------------
 
+impl From<&crate::persist::SessionBlockEntry> for SessionEntryData {
+    fn from(entry: &crate::persist::SessionBlockEntry) -> Self {
+        SessionEntryData {
+            messages: vec![],
+            summary: entry.summary.clone(),
+        }
+    }
+}
+
 /// Format session entries into display text.
 /// Used by render() for beat prompts and by compress for history rolling.
 pub fn format_session_entries(entries: &[SessionEntryData]) -> String {

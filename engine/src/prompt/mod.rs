@@ -19,36 +19,28 @@ use crate::inference::beat::{BeatRequest, PromptMessage, SessionBlockData, Sessi
 ///
 /// For each line, fetches actual chat messages from chat.db in the
 /// [first_msg, last_msg] range, returning raw data structs.
-pub fn extract_session_block_data(jsonl_content: &str, alice: &Alice) -> Vec<SessionEntryData> {
-    use crate::persist::SessionBlockEntry;
-
+pub fn extract_session_block_data(block_entries: &[crate::persist::SessionBlockEntry], alice: &Alice) -> Vec<SessionEntryData> {
     let mut entries = Vec::new();
-    for line in jsonl_content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(entry) = serde_json::from_str::<SessionBlockEntry>(line) {
-            let mut messages = Vec::new();
+    for entry in block_entries {
+        let mut messages = Vec::new();
 
-            // Fetch chat messages from database (raw, no truncation here)
-            if !entry.first_msg.is_empty() && !entry.last_msg.is_empty() {
-                if let Ok(db_messages) = alice.instance.chat.read_messages_in_range(&entry.first_msg, &entry.last_msg) {
-                    for msg in &db_messages {
-                        messages.push(PromptMessage {
-                            sender: msg.sender.clone(),
-                            timestamp: msg.timestamp.clone(),
-                            content: msg.content.clone(),
-                        });
-                    }
+        // Fetch chat messages from database (raw, no truncation here)
+        if !entry.first_msg.is_empty() && !entry.last_msg.is_empty() {
+            if let Ok(db_messages) = alice.instance.chat.read_messages_in_range(&entry.first_msg, &entry.last_msg) {
+                for msg in &db_messages {
+                    messages.push(PromptMessage {
+                        sender: msg.sender.clone(),
+                        timestamp: msg.timestamp.clone(),
+                        content: msg.content.clone(),
+                    });
                 }
             }
-
-            entries.push(SessionEntryData {
-                messages,
-                summary: entry.summary.clone(),
-            });
         }
+
+        entries.push(SessionEntryData {
+            messages,
+            summary: entry.summary.clone(),
+        });
     }
     entries
 }
@@ -106,8 +98,8 @@ fn extract_all_session_blocks(alice: &Alice) -> Vec<SessionBlockData> {
 
     let mut result = Vec::new();
     for block_name in &blocks {
-        if let Ok(content) = alice.instance.memory.read_session_block(block_name) {
-            let entries = extract_session_block_data(&content, alice);
+        if let Ok(block_entries) = alice.instance.memory.read_session_entries(block_name) {
+            let entries = extract_session_block_data(&block_entries, alice);
             if !entries.is_empty() {
                 result.push(SessionBlockData {
                     block_name: block_name.clone(),
@@ -145,8 +137,12 @@ mod tests {
         alice.instance.chat.write_user_message("24007", "hello world", "20260223155500").unwrap();
         alice.instance.chat.write_agent_reply("alice", "hi back", "20260223155600").unwrap();
 
-        let jsonl = r#"{"first_msg":"20260223155500","last_msg":"20260223155600","summary":"Alice read and replied"}"#;
-        let entries = extract_session_block_data(jsonl, &alice);
+        let block_entries = vec![crate::persist::SessionBlockEntry {
+            first_msg: "20260223155500".to_string(),
+            last_msg: "20260223155600".to_string(),
+            summary: "Alice read and replied".to_string(),
+        }];
+        let entries = extract_session_block_data(&block_entries, &alice);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].messages.len(), 2);
         assert_eq!(entries[0].messages[0].sender, "24007");
@@ -158,15 +154,18 @@ mod tests {
     #[test]
     fn test_extract_session_block_data_empty() {
         let (alice, _tmp) = setup_alice();
-        assert!(extract_session_block_data("", &alice).is_empty());
-        assert!(extract_session_block_data("  \n  \n", &alice).is_empty());
+        assert!(extract_session_block_data(&[], &alice).is_empty());
     }
 
     #[test]
     fn test_extract_session_block_data_no_chat() {
         let (alice, _tmp) = setup_alice();
-        let jsonl = r#"{"first_msg":"20260223155500","last_msg":"20260223155600","summary":"Some work happened"}"#;
-        let entries = extract_session_block_data(jsonl, &alice);
+        let block_entries = vec![crate::persist::SessionBlockEntry {
+            first_msg: "20260223155500".to_string(),
+            last_msg: "20260223155600".to_string(),
+            summary: "Some work happened".to_string(),
+        }];
+        let entries = extract_session_block_data(&block_entries, &alice);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].messages.is_empty());
         assert_eq!(entries[0].summary, "Some work happened");
