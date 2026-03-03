@@ -5,11 +5,25 @@ use std::collections::HashMap;
 pub struct SkeletonConfig {
     /// 扩展名 → 行前缀标记列表
     markers: HashMap<String, Vec<String>>,
+    /// 全文显示的扩展名集合
+    full_extensions: Vec<String>,
+}
+
+/// 骨架提取结果
+pub enum ExtractionResult {
+    /// 全文显示（md等配置的扩展名）
+    Full,
+    /// 骨架行
+    Skeleton(Vec<String>),
+    /// 无规则，调用方自行决定fallback
+    NoRule,
 }
 
 #[derive(serde::Deserialize)]
 struct TomlRoot {
     languages: HashMap<String, LanguageDef>,
+    #[serde(default)]
+    full_extensions: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -37,12 +51,35 @@ impl SkeletonConfig {
             }
         }
 
-        SkeletonConfig { markers }
+        SkeletonConfig {
+            markers,
+            full_extensions: root.full_extensions,
+        }
+    }
+
+    /// 从文件路径和内容提取骨架
+    /// 内部处理扩展名提取、全文显示判断、骨架提取
+    pub fn extract_from_path(&self, path: &str, content: &str) -> ExtractionResult {
+        let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+
+        // 全文显示的扩展名
+        if self.full_extensions.iter().any(|e| e == &ext) {
+            return ExtractionResult::Full;
+        }
+
+        // 尝试骨架提取
+        if let Some(skeleton) = self.extract(&ext, content) {
+            if !skeleton.is_empty() {
+                return ExtractionResult::Skeleton(skeleton);
+            }
+        }
+
+        ExtractionResult::NoRule
     }
 
     /// 根据文件扩展名提取骨架行
     /// 返回None表示该扩展名没有配置规则
-    pub fn extract(&self, ext: &str, content: &str) -> Option<Vec<String>> {
+    fn extract(&self, ext: &str, content: &str) -> Option<Vec<String>> {
         let markers = self.markers.get(ext)?;
         let skeleton: Vec<String> = content
             .lines()
@@ -72,8 +109,7 @@ mod tests {
     #[test]
     fn test_extract_rust() {
         let config = SkeletonConfig::load();
-        let content = "use std::io;\n\npub fn hello() {\n    println!(\"hi\");\n}\n\nstruct Foo;";
-        let result = config.extract("rs", content).unwrap();
+        let result = config.extract("rs", "use std::io;\n\npub fn hello() {\n    println!(\"hi\");\n}\n\nstruct Foo;").unwrap();
         assert!(result.iter().any(|l| l.contains("pub fn hello")));
         assert!(result.iter().any(|l| l.contains("struct Foo")));
     }
@@ -83,5 +119,23 @@ mod tests {
         let config = SkeletonConfig::load();
         assert!(config.extract("xyz", "anything").is_none());
     }
-}
 
+    #[test]
+    fn test_extract_from_path_md() {
+        let config = SkeletonConfig::load();
+        assert!(matches!(config.extract_from_path("readme.md", "# Hello"), ExtractionResult::Full));
+    }
+
+    #[test]
+    fn test_extract_from_path_rust() {
+        let config = SkeletonConfig::load();
+        let result = config.extract_from_path("main.rs", "pub fn main() {}");
+        assert!(matches!(result, ExtractionResult::Skeleton(_)));
+    }
+
+    #[test]
+    fn test_extract_from_path_unknown() {
+        let config = SkeletonConfig::load();
+        assert!(matches!(config.extract_from_path("data.xyz", "anything"), ExtractionResult::NoRule));
+    }
+}

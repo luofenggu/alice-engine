@@ -615,6 +615,7 @@ pub use alice_rpc::{InstanceSettings, SettingsUpdate};
 pub trait InstanceSettingsExt {
     fn apply_env_fallbacks(&mut self, env_config: &crate::policy::EnvConfig);
     fn validate(&self) -> anyhow::Result<()>;
+    fn apply_profile_entries(&mut self, entries: &[(String, String)]) -> anyhow::Result<String>;
 }
 
 impl InstanceSettingsExt for InstanceSettings {
@@ -640,5 +641,38 @@ impl InstanceSettingsExt for InstanceSettings {
             anyhow::bail!("Missing api_key: set in settings.json or ALICE_DEFAULT_API_KEY env var");
         }
         Ok(())
+    }
+
+    /// Apply profile entries from agent's set_profile action.
+    /// Validates keys, sets fields, returns human-readable description of changes.
+    fn apply_profile_entries(&mut self, entries: &[(String, String)]) -> anyhow::Result<String> {
+        // Validate all keys first
+        for (key, _) in entries {
+            match key.as_str() {
+                "name" | "color" | "avatar" | "privileged" => {}
+                _ => anyhow::bail!("unknown key '{}'", key),
+            }
+        }
+
+        let mut applied = Vec::new();
+        for (key, value) in entries {
+            let trimmed = value.trim();
+            let desc = if trimmed.is_empty() {
+                format!("{}: (cleared)", key)
+            } else {
+                format!("{}: {}", key, trimmed)
+            };
+            applied.push(desc);
+
+            match key.as_str() {
+                "name" => self.name = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
+                "color" => self.color = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
+                "avatar" => self.avatar = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
+                "privileged" => self.privileged = trimmed == "true",
+                _ => {} // already validated above
+            }
+        }
+
+        Ok(applied.join(", "))
     }
 }

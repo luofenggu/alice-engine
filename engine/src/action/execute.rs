@@ -130,33 +130,27 @@ fn execute_script(alice: &mut Alice, tx: &mut Transaction, content: &str) -> Res
 }
 
 /// Extract a skeleton view of file content based on file extension.
-/// For code files: extracts interface-level lines (fn/struct/class/etc.) and comments.
-/// For .md files: preserves full content.
-/// For unknown types: shows first 10 + last 5 lines.
+/// Delegates to SkeletonConfig for language-aware extraction logic.
 fn extract_skeleton(path: &str, content: &str) -> String {
-    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    use crate::external::{SkeletonConfig, ExtractionResult};
+
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let total_bytes = content.len();
 
-    // .md files: preserve full content
-    if ext == "md" {
-        let display = out::truncate_result(content);
-        return out::write_success_full(path, total_bytes, total_lines, &display);
-    }
-
-    // Use SkeletonConfig for language-aware skeleton extraction
-    let skeleton_config = crate::external::SkeletonConfig::get();
-    if let Some(skeleton) = skeleton_config.extract(&ext, content) {
-        if !skeleton.is_empty() {
-            return out::write_success_skeleton(path, total_bytes, total_lines, &skeleton.join("\n"));
+    match SkeletonConfig::get().extract_from_path(path, content) {
+        ExtractionResult::Full => {
+            let display = out::truncate_result(content);
+            out::write_success_full(path, total_bytes, total_lines, &display)
+        }
+        ExtractionResult::Skeleton(skeleton) => {
+            out::write_success_skeleton(path, total_bytes, total_lines, &skeleton.join("\n"))
+        }
+        ExtractionResult::NoRule => {
+            let preview = out::format_preview(&lines);
+            out::write_success_preview(path, total_bytes, total_lines, &preview)
         }
     }
-
-    // Fallback: head + tail preview
-    
-    let preview = out::format_preview(&lines);
-    out::write_success_preview(path, total_bytes, total_lines, &preview)
 }
 
 fn execute_write_file(alice: &mut Alice, tx: &mut Transaction, path: &str, content: &str) -> Result<String> {
@@ -379,53 +373,18 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
 }
 
 fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, entries: &[(String, String)]) -> Result<String> {
+    use crate::persist::InstanceSettingsExt;
     info!("[ACTION-{}] set_profile ({} entries)", tx.instance_id, entries.len());
 
-    let mut applied = Vec::new();
-
-    // Validate keys first
-    for (key, _) in entries {
-        match key.as_str() {
-            "name" | "color" | "avatar" | "privileged" => {}
-            _ => {
-                return Ok(format!(
-                    "set_profile failed: unknown key '{}'\n", key
-                ));
-            }
-        }
-    }
-
-    // Collect changes to apply
-    let entries_owned: Vec<(String, String)> = entries.to_vec();
-    for (key, value) in &entries_owned {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            applied.push(format!("{}: (cleared)", key));
-        } else {
-            applied.push(format!("{}: {}", key, trimmed));
-        }
-    }
-
-    // Apply changes via Document::update (auto-saves to disk)
-    alice.instance.settings.update(|s| {
-        for (key, value) in &entries_owned {
-            let trimmed = value.trim();
-            match key.as_str() {
-                "name" => s.name = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
-                "color" => s.color = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
-                "avatar" => s.avatar = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) },
-                "privileged" => s.privileged = trimmed == "true",
-                _ => {} // already validated above
-            }
-        }
-    })?;
+    let mut settings = alice.instance.settings.load()?;
+    let description = settings.apply_profile_entries(entries)?;
+    alice.instance.settings.save(&settings)?;
 
     // Apply runtime effects
-    alice.privileged = alice.instance.settings.load()?.privileged;
-    alice.instance_name = alice.instance.settings.load()?.name.clone();
+    alice.privileged = settings.privileged;
+    alice.instance_name = settings.name.clone();
 
-    let detail = applied.join(", ");
-    Ok(out::profile_updated(&detail))
+    Ok(out::profile_updated(&description))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────

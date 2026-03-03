@@ -1,6 +1,9 @@
 # 骨架提取 — 极简程序分析
 # write_file后提取文件重点行，减少记忆空间占用
 
+# 全文显示的扩展名（不提取骨架，保留完整内容）
+full_extensions = ["md"]
+
 [languages.rust]
 extensions = ["rs"]
 markers = ["fn ", "pub ", "struct ", "enum ", "impl ", "trait ", "mod ", "///", "//!", "type ", "const ", "static "]

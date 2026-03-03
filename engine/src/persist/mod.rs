@@ -216,3 +216,4 @@ mod tests {
         assert_eq!(tf.read().unwrap(), "pre-existing content");
     }
 }
+pub use instance::InstanceSettingsExt;

@@ -146,11 +146,26 @@ def get_impl_struct_name(node, source_bytes):
         p = p.parent
     return None
 
+def _is_in_call_arguments(node, stop_node):
+    """Check if node is inside a function/method call's arguments list.
+    Walks up from node to stop_node looking for an 'arguments' parent."""
+    p = node.parent
+    while p and p != stop_node:
+        if p.type == 'arguments':
+            return True
+        p = p.parent
+    return False
+
 def is_in_return_path(literal_node, fn_node):
     """Check if a literal is in the return path of a function.
     Return path = explicit return statement OR implicit return (last expr in block).
     Exception: literals used as arguments to function/method calls are NOT escaping,
-    even if the call itself is in the return path."""
+    even if the call itself is in the return path — the call transforms the literal,
+    so the literal value itself does not appear in the return value."""
+
+    # Literals inside call arguments are not escaping
+    if _is_in_call_arguments(literal_node, fn_node):
+        return False
 
     # Check explicit return
     p = literal_node.parent
