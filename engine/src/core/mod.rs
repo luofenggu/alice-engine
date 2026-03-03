@@ -123,9 +123,8 @@ impl SequenceGuard {
                 } else if matches!(action, Action::SendMsg { .. }) {
                     SequenceVerdict::Allow
                 } else {
-                    SequenceVerdict::Reject(format!(
-                        "[SEQUENCE-{}] Non-blocking action '{}' after blocking action — aborting inference",
-                        self.instance_id, action
+                    SequenceVerdict::Reject(crate::policy::messages::sequence_reject_after_blocking(
+                        &self.instance_id, &action.to_string()
                     ))
                 }
             }
@@ -133,9 +132,8 @@ impl SequenceGuard {
                 if is_idle {
                     SequenceVerdict::Ignore
                 } else {
-                    SequenceVerdict::Reject(format!(
-                        "[SEQUENCE-{}] Action '{}' after idle — zero tolerance, aborting inference",
-                        self.instance_id, action
+                    SequenceVerdict::Reject(crate::policy::messages::sequence_reject_after_idle(
+                        &self.instance_id, &action.to_string()
                     ))
                 }
             }
@@ -413,11 +411,11 @@ impl Alice {
             signals: None,
             inference_failures: 0,
             inference_backoff_until: None,
-            session_blocks_limit: 4,
-            session_block_kb: 2,
-            history_kb: 2,
-            safety_max_consecutive_beats: 10,
-            safety_cooldown_secs: 30,
+            session_blocks_limit: crate::policy::EngineConfig::get().memory.session_blocks_limit,
+            session_block_kb: crate::policy::EngineConfig::get().memory.session_block_kb,
+            history_kb: crate::policy::EngineConfig::get().memory.history_kb,
+            safety_max_consecutive_beats: crate::policy::EngineConfig::get().memory.safety_max_consecutive_beats,
+            safety_cooldown_secs: crate::policy::EngineConfig::get().memory.safety_cooldown_secs,
             env_config,
         })
     }
@@ -548,7 +546,7 @@ impl Alice {
                         self.instance.id, oldest_block);
                     self.instance.memory.delete_session_block(oldest_block)?;
                     let _ = std::fs::remove_file(&last_rolled_path);
-                    return Ok(Some(format!("deleted residual block {} (already compressed)", oldest_block)));
+                    return Ok(Some(crate::policy::messages::roll_deleted_residual(oldest_block)));
                 }
             }
             // Stale marker, clean up
@@ -563,7 +561,7 @@ impl Alice {
         if block_content.trim().is_empty() {
             // Empty block, just delete it
             self.instance.memory.delete_session_block(oldest_block)?;
-            return Ok(Some(format!("deleted empty block {}", oldest_block)));
+            return Ok(Some(crate::policy::messages::roll_deleted_empty(oldest_block)));
         }
 
         let rendered_block = crate::prompt::render_session_block(&block_content, self);
@@ -584,7 +582,7 @@ impl Alice {
 
         if new_history.trim().is_empty() {
             warn!("[ROLL-{}] LLM returned empty history, aborting roll", self.instance.id);
-            return Ok(Some("LLM returned empty, roll aborted".to_string()));
+            return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
         }
 
         // 5. Commit history: atomic write history + delete oldest block
@@ -597,15 +595,9 @@ impl Alice {
         // Clean up marker after successful commit
         let _ = std::fs::remove_file(&last_rolled_path);
 
-        let usage_info = if let Some(u) = usage {
-            format!(", tokens: {}+{}", u.input_tokens, u.output_tokens)
-        } else {
-            String::new()
-        };
-
-        let result = format!(
-            "history rolled: block {} compressed into history.txt{}",
-            oldest_block, usage_info
+        let result = crate::policy::messages::roll_result(
+            oldest_block,
+            usage.as_ref().map(|u| (u.input_tokens, u.output_tokens)),
         );
         info!("[ROLL-{}] {}", self.instance.id, result);
 
@@ -950,15 +942,9 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     // Clean up marker
     let _ = std::fs::remove_file(&last_rolled_path);
 
-    let usage_info = if let Some(u) = usage {
-        format!(", tokens: {}+{}", u.input_tokens, u.output_tokens)
-    } else {
-        String::new()
-    };
-
-    let result = format!(
-        "history rolled: block {} compressed into history.txt{}",
-        task.oldest_block, usage_info
+    let result = crate::policy::messages::roll_result(
+        &task.oldest_block,
+        usage.as_ref().map(|u| (u.input_tokens, u.output_tokens)),
     );
     info!("[ROLL-{}] Background: {}", task.instance_id, result);
 

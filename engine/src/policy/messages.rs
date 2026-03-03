@@ -113,3 +113,42 @@ pub fn binary_file_description(name: &str, size: u64) -> String {
 pub fn beat_error(e: &anyhow::Error) -> String {
     format!("Beat error: {}", e)
 }
+
+// === Sequence defense (hallucination defense) ===
+
+pub fn sequence_reject_after_blocking(instance_id: &str, action: &str) -> String {
+    format!(
+        "[SEQUENCE-{}] Non-blocking action '{}' after blocking action — aborting inference",
+        instance_id, action
+    )
+}
+
+pub fn sequence_reject_after_idle(instance_id: &str, action: &str) -> String {
+    format!(
+        "[SEQUENCE-{}] Action '{}' after idle — zero tolerance, aborting inference",
+        instance_id, action
+    )
+}
+
+// === Roll result messages ===
+
+pub fn roll_deleted_residual(block: &str) -> String {
+    format!("deleted residual block {} (already compressed)", block)
+}
+
+pub fn roll_deleted_empty(block: &str) -> String {
+    format!("deleted empty block {}", block)
+}
+
+pub fn roll_llm_empty() -> &'static str {
+    "LLM returned empty, roll aborted"
+}
+
+pub fn roll_result(block: &str, usage: Option<(u64, u64)>) -> String {
+    let usage_info = if let Some((input, output)) = usage {
+        format!(", tokens: {}+{}", input, output)
+    } else {
+        String::new()
+    };
+    format!("history rolled: block {} compressed into history.txt{}", block, usage_info)
+}

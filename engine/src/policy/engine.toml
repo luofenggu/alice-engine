@@ -20,6 +20,13 @@ sandbox_user_prefix = "agent-"
 test_instance_prefix = "test-"
 test_instance_max_beats = 10
 
+[memory]
+session_blocks_limit = 4
+session_block_kb = 2
+history_kb = 2
+safety_max_consecutive_beats = 10
+safety_cooldown_secs = 30
+
 [llm]
 max_tokens = 16384
 temperature = 0.5

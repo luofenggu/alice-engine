@@ -7,6 +7,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Deserialize)]
 pub struct EngineConfig {
     pub engine: EnginePolicyConfig,
+    pub memory: MemoryPolicyConfig,
     pub rpc: RpcConfig,
     pub file_browse: FileBrowseConfig,
     pub llm: LlmPolicyConfig,
@@ -23,6 +24,15 @@ pub struct EnginePolicyConfig {
     pub sandbox_user_prefix: String,
     pub test_instance_prefix: String,
     pub test_instance_max_beats: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryPolicyConfig {
+    pub session_blocks_limit: u32,
+    pub session_block_kb: u32,
+    pub history_kb: u32,
+    pub safety_max_consecutive_beats: u32,
+    pub safety_cooldown_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
