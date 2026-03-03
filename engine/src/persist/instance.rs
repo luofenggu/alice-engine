@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::persist::Document;
-use crate::chat::ChatHistory;
-use crate::core::memory::Memory;
+use super::chat::ChatHistory;
+use super::memory::Memory;
 
 const SETTINGS_FILE: &str = "settings.json";
 

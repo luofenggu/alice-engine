@@ -41,11 +41,10 @@ fn resolve_action_path(alice: &Alice, path: &str) -> Result<PathBuf> {
 /// Create a Shell instance with appropriate sandboxing for the given Alice.
 /// In local mode (no sandbox user), runs without sandboxing.
 fn make_shell(alice: &Alice) -> Shell {
-    if alice.privileged {
-        Shell::new(alice.instance.workspace.clone())
+    let sandbox_user = if alice.privileged {
+        None
     } else {
         let user = format!("agent-{}", alice.instance.id);
-        // Check if sandbox user exists (skip on local mode / systems without it)
         let user_exists = std::process::Command::new("id")
             .arg(&user)
             .stdout(std::process::Stdio::null())
@@ -53,12 +52,9 @@ fn make_shell(alice: &Alice) -> Shell {
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
-        if user_exists {
-            Shell::new(alice.instance.workspace.clone()).with_sandbox(user)
-        } else {
-            Shell::new(alice.instance.workspace.clone())
-        }
-    }
+        if user_exists { Some(user) } else { None }
+    };
+    Shell::new(alice.instance.workspace.clone(), sandbox_user)
 }
 
 
@@ -563,7 +559,7 @@ fn execute_create_instance(
 
     // Create instance atomically via InstanceStore
     let knowledge_opt = if knowledge.is_empty() { None } else { Some(knowledge) };
-    let store = crate::core::instance::InstanceStore::new(instances_dir.to_path_buf());
+    let store = crate::persist::instance::InstanceStore::new(instances_dir.to_path_buf());
     let instance = store.create(
         &alice.user_id,
         Some(name),
@@ -590,7 +586,7 @@ mod tests {
         std::fs::write(&settings_path, r#"{"user_id":"user1","api_key":"test","model":"test@test"}"#).unwrap();
 
         // Instance::open creates all subdirectories automatically
-        let instance = crate::core::instance::Instance::open(tmp.path()).unwrap();
+        let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let config = AliceConfig::default();
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());

@@ -109,39 +109,29 @@ fn read_limited(reader: &mut impl Read, limit: usize, buf: &mut Vec<u8>) {
 
 /// Shell command executor with timeout and truncation protection.
 ///
-/// Both privileged and sandboxed modes pipe scripts via stdin to bash,
+/// Both privileged and sandbox modes pipe scripts via stdin to bash,
 /// ensuring identical I/O behavior and test coverage.
 ///
-/// - `sandboxed=false` (privileged): `/bin/bash` with `current_dir`
-/// - `sandboxed=true`: `su - {user} -c "bash -s"` (紧箍咒)
+/// - No sandbox_user (privileged): `/bin/bash` with `current_dir`
+/// - With sandbox_user: `su - {user} -c "bash -s"` (紧箍咒)
 ///
 /// @TRACE: SHELL
 pub struct Shell {
     working_dir: PathBuf,
     timeout_duration: Duration,
     max_output: usize,
-    /// Whether to sandbox commands via su (紧箍咒)
-    sandboxed: bool,
-    /// Linux username for sandboxed execution
+    /// Linux username for sandboxed execution (紧箍咒)
     sandbox_user: Option<String>,
 }
 
 impl Shell {
-    pub fn new(working_dir: PathBuf) -> Self {
+    pub fn new(working_dir: PathBuf, sandbox_user: Option<String>) -> Self {
         Self {
             working_dir,
             timeout_duration: DEFAULT_TIMEOUT,
             max_output: MAX_OUTPUT_BYTES,
-            sandboxed: false,
-            sandbox_user: None,
+            sandbox_user,
         }
-    }
-
-    /// Enable sandboxing with a specific Linux user (紧箍咒).
-    pub fn with_sandbox(mut self, user: String) -> Self {
-        self.sandboxed = true;
-        self.sandbox_user = Some(user);
-        self
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -177,7 +167,7 @@ impl Shell {
         // Both paths use stdin to pipe the script to bash.
         // This ensures identical I/O behavior (read_limited on stdout/stderr)
         // regardless of privilege mode, eliminating test coverage blind spots.
-        let mut child = if self.sandboxed {
+        let mut child = if self.sandbox_user.is_some() {
             // 紧箍咒: su降权执行
             let user = self.sandbox_user.as_deref().unwrap_or("nobody");
             let mut cmd = Command::new("su");
@@ -203,7 +193,7 @@ impl Shell {
 
         // Unified: write script to stdin for both paths
         {
-            let script_content = if self.sandboxed {
+            let script_content = if self.sandbox_user.is_some() {
                 format!("cd {} && {}", dir.display(), script)
             } else {
                 script.to_string()
@@ -303,7 +293,7 @@ mod tests {
 
     fn setup() -> (Shell, TempDir) {
         let tmp = TempDir::new().unwrap();
-        let shell = Shell::new(tmp.path().to_path_buf());
+        let shell = Shell::new(tmp.path().to_path_buf(), None);
         (shell, tmp)
     }
 
@@ -341,7 +331,7 @@ mod tests {
     #[test]
     fn test_timeout() {
         let tmp = TempDir::new().unwrap();
-        let shell = Shell::new(tmp.path().to_path_buf())
+        let shell = Shell::new(tmp.path().to_path_buf(), None)
             .with_timeout(Duration::from_millis(500));
         let result = shell.exec("sleep 10");
         assert!(matches!(result, Err(ShellError::Timeout(_))));
@@ -358,7 +348,7 @@ mod tests {
     #[test]
     fn test_truncation() {
         let tmp = TempDir::new().unwrap();
-        let shell = Shell::new(tmp.path().to_path_buf())
+        let shell = Shell::new(tmp.path().to_path_buf(), None)
             .with_max_output(100);
         // Generate output larger than 100 bytes
         let result = shell.exec("yes | head -200").unwrap();

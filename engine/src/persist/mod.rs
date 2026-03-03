@@ -11,6 +11,10 @@
 //!
 
 
+pub mod memory;
+pub mod instance;
+pub mod chat;
+
 use anyhow::{Result, Context};
 
 // ─── Document ────────────────────────────────────────────────────

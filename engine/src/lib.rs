@@ -219,7 +219,6 @@ pub mod action;
 pub mod llm;
 pub mod prompt;
 pub mod engine;
-pub mod chat;
 pub mod messages;
 pub mod rpc;
 pub mod persist;

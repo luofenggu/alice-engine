@@ -321,7 +321,7 @@ mod tests {
         std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
 
         // Instance::open creates all subdirectories automatically
-        let instance = crate::core::instance::Instance::open(tmp.path()).unwrap();
+        let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let config = AliceConfig {
             log_dir: tmp.path().join("logs"),

@@ -20,7 +20,7 @@ use tracing::{info, error};
 
 use std::path::PathBuf;
 
-use crate::core::instance::InstanceStore;
+use crate::persist::instance::InstanceStore;
 use crate::core::signal::SignalHub;
 
 /// 引擎状态（替代原web层的AppState，只保留引擎需要的字段）
@@ -142,7 +142,7 @@ impl AliceEngine for AliceEngineServer {
         let result = tokio::task::spawn_blocking(move || {
             let ch = store.get_chat(&name)?;
             let mut ch = ch.lock().unwrap_or_else(|e| e.into_inner());
-            let timestamp = crate::chat::ChatHistory::now_timestamp();
+            let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
             let id = ch.write_user_message(&user_id, &content, &timestamp)?;
             info!("[MSG] RPC: message sent to {}, id={}", name, id);
             Ok::<_, anyhow::Error>(id)

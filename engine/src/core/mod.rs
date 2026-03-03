@@ -47,6 +47,7 @@ use chrono::Local;
 
 use crate::action::Action;
 use crate::action::execute::execute_action;
+use crate::persist::instance;
 use crate::llm::{LlmClient, LlmConfig, ChatMessage, InferenceStream, StreamItem, RecvResult};
 use crate::prompt::build_prompts;
 
@@ -1128,8 +1129,6 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
 }
 
 pub mod signal;
-pub mod memory;
-pub mod instance;
 
 #[cfg(test)]
 mod tests {
@@ -1145,7 +1144,7 @@ mod tests {
         std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
 
         // Instance::open creates all subdirectories automatically
-        let instance = super::instance::Instance::open(tmp.path()).unwrap();
+        let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let config = AliceConfig {
             log_dir: tmp.path().join("logs"),

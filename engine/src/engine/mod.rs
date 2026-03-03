@@ -35,7 +35,7 @@ use anyhow::{Result, Context};
 use tracing::{info, warn, error};
 
 use crate::core::{Alice, AliceConfig};
-use crate::core::instance::{InstanceStore, InstanceSettingsExt, parse_model_str};
+use crate::persist::instance::{InstanceStore, InstanceSettingsExt, parse_model_str};
 use crate::core::signal::SignalHub;
 /// Graceful shutdown signal file path.
 /// Written by engine.sh stop / self-deploy.sh to request graceful shutdown.
@@ -242,7 +242,7 @@ impl AliceEngine {
     /// For non-privileged instances, automatically creates a Linux sandbox user
     /// (`agent-{name}`) and sets workspace ownership (紧箍咒).
     fn create_instance(&mut self, name: &str, instance_dir: &Path) -> Result<()> {
-        let instance = crate::core::instance::Instance::open(instance_dir)?;
+        let instance = crate::persist::instance::Instance::open(instance_dir)?;
         let mut settings = instance.settings.load()?;
         settings.apply_env_fallbacks(&self.env_config);
         settings.validate()?;
@@ -784,7 +784,7 @@ impl AliceEngine {
 mod tests {
     use super::*;
     use crate::persist::Document;
-    use crate::core::instance::InstanceSettings;
+    use crate::persist::instance::InstanceSettings;
     use tempfile::TempDir;
 
 

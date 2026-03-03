@@ -2,10 +2,11 @@
 """Guardian - Rust literal escape detector using tree-sitter AST analysis.
 
 Scans Rust source files for string/number/char/bool literals and reports violations.
-For persist structs, detects literal escape through pub fn return paths.
+For exempt directories (persist/external/policy), exempts internal literals
+but detects escape through pub fn return paths.
 
 Usage:
-    python3 guardian.py <dir> [--full] [--exclude dir1,dir2] [--persist-structs "S1,S2"]
+    python3 guardian.py <dir> [--full] [--exclude dir1,dir2]
 """
 
 import sys, os, argparse, re
@@ -366,7 +367,7 @@ def get_return_path_identifiers(fn_node, source_bytes):
     return idents
 
 # --- serde_json detection ---
-def detect_serde_json_usage(root_node, source_bytes, persist_structs, source_lines):
+def detect_serde_json_usage(root_node, source_bytes, is_exempt_dir, source_lines):
     """Detect serde_json function calls and json! macro invocations.
     Only exempt inside persist struct impl blocks and test modules."""
     findings = []
@@ -433,7 +434,7 @@ def detect_serde_json_usage(root_node, source_bytes, persist_structs, source_lin
             # Persist struct exemption
             if not exempt:
                 impl_struct = get_impl_struct_name(node, source_bytes)
-                if impl_struct and impl_struct in persist_structs:
+                if is_exempt_dir:
                     exempt = True
                     exempt_reason = 'persist'
 
@@ -459,25 +460,24 @@ EXEMPT_FILES = {'messages.rs', 'action_output.rs'}
 # Directories exempted at directory level (persist layer, etc.)
 EXEMPT_DIRS = {'persist', 'external', 'policy'}
 
-def scan_file(filepath, persist_structs, source_bytes, parser):
+def scan_file(filepath, source_bytes, parser):
     # File-level exemption: message catalog files
     if os.path.basename(filepath) in EXEMPT_FILES:
         return []
-    # Directory-level exemption: persist layer
+    # Check if file is in an exempt directory (dir-level escape-guarded exemption)
     parts = filepath.replace(os.sep, '/').split('/')
-    if any(p in EXEMPT_DIRS for p in parts):
-        return []
+    is_exempt_dir = any(p in EXEMPT_DIRS for p in parts)
     tree = parser.parse(source_bytes)
     source_lines = source_bytes.decode('utf-8', errors='replace').split('\n')
     findings = []
 
-    # Phase 1: Collect persist struct impl metadata
+    # Phase 1: Collect impl metadata (for exempt dirs, all impls; otherwise skip)
     persist_impls = {}  # struct_name -> metadata
     def find_impls(node):
         if node.type == 'impl_item':
             meta = collect_impl_metadata(node, source_bytes)
             sname = meta['struct_name']
-            if sname and sname in persist_structs:
+            if sname and is_exempt_dir:
                 # Mark which private fns return literals
                 for fn_name, fn_info in meta['fns'].items():
                     if not fn_info['is_pub']:
@@ -485,7 +485,8 @@ def scan_file(filepath, persist_structs, source_bytes, parser):
                 persist_impls[sname] = meta
         for c in node.children:
             find_impls(c)
-    find_impls(tree.root_node)
+    if is_exempt_dir:
+        find_impls(tree.root_node)
 
     # Phase 2: For persist impls, detect indirect escape in pub fns
     # A pub fn escapes if its return path calls a tainted private fn or references a tainted const
@@ -545,38 +546,33 @@ def scan_file(filepath, persist_structs, source_bytes, parser):
                     exempt = True
                     exempt_reason = 'error'
 
-            # 5. Persist struct analysis
-            if not exempt:
-                impl_struct = get_impl_struct_name(node, source_bytes)
-                if impl_struct and impl_struct in persist_structs:
-                    fn_result = get_fn_info(node)
-                    if fn_result:
-                        fn_node, fn_name, is_pub = fn_result
-                        if not is_pub:
-                            # Private fn — exempt
-                            exempt = True
-                            exempt_reason = 'private'
-                        else:
-                            # Pub fn — check if in return path
-                            if is_in_return_path(node, fn_node):
-                                # Direct escape!
-                                escape = True
-                            else:
-                                # Not in return path — internal use, exempt
-                                exempt = True
-                                exempt_reason = 'internal'
-
-                            # Also check indirect escape
-                            if not escape and (impl_struct, fn_name) in escape_fns:
-                                # This pub fn has indirect escape via private fn or const
-                                # But this specific literal is not the one escaping
-                                # We only flag the pub fn, not every literal in it
-                                pass
-                    else:
-                        # In impl block but not in a fn (e.g., const, associated type)
-                        # Const declarations in persist struct — exempt (internal)
+            # 5. Exempt directory analysis (dir-level exemption with escape guard)
+            if not exempt and is_exempt_dir:
+                fn_result = get_fn_info(node)
+                if fn_result:
+                    fn_node, fn_name, is_pub = fn_result
+                    if not is_pub:
+                        # Private fn in exempt dir — exempt
                         exempt = True
-                        exempt_reason = 'const'
+                        exempt_reason = 'private'
+                    else:
+                        # Pub fn — check if in return path
+                        if is_in_return_path(node, fn_node):
+                            # Direct escape!
+                            escape = True
+                        else:
+                            # Not in return path — internal use, exempt
+                            exempt = True
+                            exempt_reason = 'internal'
+
+                        # Also check indirect escape
+                        impl_struct = get_impl_struct_name(node, source_bytes)
+                        if not escape and impl_struct and (impl_struct, fn_name) in escape_fns:
+                            pass
+                else:
+                    # Not in a fn (e.g., const, module-level) — exempt
+                    exempt = True
+                    exempt_reason = 'internal'
 
             findings.append({
                 'line': line,
@@ -612,7 +608,7 @@ def scan_file(filepath, persist_structs, source_bytes, parser):
                 })
 
     # Phase 5: Detect serde_json usage outside persist structs
-    serde_findings = detect_serde_json_usage(tree.root_node, source_bytes, persist_structs, source_lines)
+    serde_findings = detect_serde_json_usage(tree.root_node, source_bytes, is_exempt_dir, source_lines)
     findings.extend(serde_findings)
 
     findings.sort(key=lambda f: f['line'])
@@ -623,12 +619,9 @@ def main():
     ap.add_argument('directory', help='Directory to scan')
     ap.add_argument('--full', action='store_true', help='Show all violations (default: summary)')
     ap.add_argument('--exclude', default='', help='Comma-separated directories to exclude')
-    ap.add_argument('--persist-structs', default='Memory,Instance,InstanceStore,ChatHistory,TextFile,Document',
-                    help='Comma-separated persist struct names')
     args = ap.parse_args()
 
     excludes = [e.strip() for e in args.exclude.split(',') if e.strip()]
-    persist_structs = set(s.strip() for s in args.persist_structs.split(',') if s.strip())
 
     parser = Parser()
     parser.set_language(RUST_LANG)
@@ -647,7 +640,7 @@ def main():
     for filepath in files:
         with open(filepath, 'rb') as f:
             source_bytes = f.read()
-        findings = scan_file(filepath, persist_structs, source_bytes, parser)
+        findings = scan_file(filepath, source_bytes, parser)
 
         violations = [f for f in findings if not f['exempt']]
         exempted = [f for f in findings if f['exempt']]
