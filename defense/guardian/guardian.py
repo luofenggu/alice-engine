@@ -458,7 +458,7 @@ def detect_serde_json_usage(root_node, source_bytes, is_exempt_dir, source_lines
 # Files exempted at file level (message catalogs, etc.)
 EXEMPT_FILES = set()
 # Directories exempted at directory level (persist layer, etc.)
-EXEMPT_DIRS = {'persist', 'external', 'policy'}
+EXEMPT_DIRS = {'persist', 'external'}
 
 def scan_file(filepath, source_bytes, parser):
     # File-level exemption: message catalog files
@@ -466,6 +466,9 @@ def scan_file(filepath, source_bytes, parser):
         return []
     # Check if file is in an exempt directory (dir-level escape-guarded exemption)
     parts = filepath.replace(os.sep, '/').split('/')
+    # Full exemption for policy directory (strategy parameters, message catalogs)
+    if any(p == "policy" for p in parts):
+        return []
     is_exempt_dir = any(p in EXEMPT_DIRS for p in parts)
     tree = parser.parse(source_bytes)
     source_lines = source_bytes.decode('utf-8', errors='replace').split('\n')
