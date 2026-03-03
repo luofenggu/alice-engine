@@ -9,6 +9,18 @@
 //! Guardian: file-level exempt (similar to messages.rs).
 
 use crate::inference::Action;
+use chrono::Local;
+
+// ─── ID Generation ───────────────────────────────────────────────
+
+/// Generate a unique action ID: YYYYMMDDHHmmss_6hexchars
+pub fn generate_action_id() -> String {
+    let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
+    let hex: String = (0..6)
+        .map(|_| format!("{:x}", rand::random::<u8>() % 16))
+        .collect();
+    format!("{}_{}", timestamp, hex)
+}
 
 // ─── Output strategy constants ───────────────────────────────────
 

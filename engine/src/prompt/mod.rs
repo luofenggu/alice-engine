@@ -94,7 +94,7 @@ pub fn build_beat_request(
         instance_name: alice.instance_name.clone(),
         shell_env: alice.env_config.shell_env.clone(),
         host: host.map(|s| s.to_string()),
-        system_start_time: alice.system_start_time.clone(),
+        system_start_time: alice.system_start_time.format("%Y%m%d%H%M%S").to_string(),
         knowledge_content,
         history_content,
         daily_rendered,

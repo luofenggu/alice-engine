@@ -213,18 +213,14 @@ impl Transaction {
 
     /// Generate a unique action ID: YYYYMMDDHHmmss_6hexchars
     pub fn generate_action_id(&self) -> String {
-        let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
-        let hex: String = (0..6)
-            .map(|_| format!("{:x}", rand::random::<u8>() % 16))
-            .collect();
-        format!("{}_{}", timestamp, hex)
+        action_output::generate_action_id()
     }
 
     /// Record an action's "doing" phase (before execution).
     ///
     /// @TRACE: ACTION
     pub fn record_doing(&mut self, action: Action, doing_text: String) -> String {
-        let action_id = self.generate_action_id();
+        let action_id = action_output::generate_action_id();
         info!("[ACTION-{}] START {} ({})", self.instance_id, action_id, action);
         self.action_records.push(ActionRecord {
             action_id: action_id.clone(),
@@ -316,7 +312,7 @@ pub struct Alice {
     /// Whether this instance runs with root privileges (no sandboxing)
     pub privileged: bool,
     /// System start time (for prompt)
-    pub system_start_time: String,
+    pub system_start_time: chrono::DateTime<Local>,
     /// Mock streams for scripted testing. Each beat consumes one Vec<StreamItem>.
     /// None = production mode (use LLM). Some = test mode (use mock).
     mock_streams: Option<VecDeque<Vec<StreamItem>>>,
@@ -375,7 +371,7 @@ impl Alice {
             idle_timeout_secs: None,
             idle_since: None,
             privileged: false,
-            system_start_time: Local::now().format("%Y%m%d%H%M%S").to_string(),
+            system_start_time: Local::now(),
             mock_streams: None,
             mock_sync_responses: None,
             beat_count: Counter::<u32>::new(),
@@ -595,7 +591,7 @@ impl Alice {
         let marker = action_output::anomaly_notification(message);
         self.instance.memory.append_current(&marker).ok();
 
-        let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
+        let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
         self.instance.chat.write_agent_reply(
             &self.instance.id,
             message,

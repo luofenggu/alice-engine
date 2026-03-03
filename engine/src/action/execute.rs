@@ -108,7 +108,7 @@ fn execute_send_msg(alice: &mut Alice, tx: &mut Transaction, recipient: &str, co
         return Ok(out::send_failed_unknown_recipient(recipient));
     }
 
-    let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
+    let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
     alice.instance.chat.write_agent_reply(&alice.instance.id, content, &timestamp)
         .context("Failed to write agent reply")?;
 
