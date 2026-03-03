@@ -49,6 +49,7 @@ use crate::inference::Action;
 use crate::util::Counter;
 use crate::action::execute::execute_action;
 use crate::persist::instance;
+use crate::policy::action_output;
 use crate::external::llm::{LlmClient, LlmConfig, InferenceStream, StreamItem, RecvResult};
 use crate::prompt::build_beat_request;
 
@@ -282,18 +283,15 @@ impl Transaction {
     pub fn build_session_text(&self) -> String {
         let mut text = String::new();
         for record in &self.action_records {
-            text.push_str(&format!(
-                "---------行为编号[{}]开始---------\n",
-                record.action_id
-            ));
+            text.push_str(&action_output::action_block_start(&record.action_id));
+            text.push_str("\n");
             text.push_str(&record.doing_text);
             if let Some(done) = &record.done_text {
                 text.push_str(done);
             }
-            text.push_str(&format!(
-                "\n---------行为编号[{}]结束---------\n",
-                record.action_id
-            ));
+            text.push_str("\n");
+            text.push_str(&action_output::action_block_end(&record.action_id));
+            text.push_str("\n");
         }
         text
     }
@@ -636,10 +634,7 @@ impl Alice {
     /// All anomaly sources should either call this directly or bail!() to let the
     /// engine's unified error handler call it.
     pub fn notify_anomaly(&mut self, message: &str) {
-        let marker = format!(
-            "---------系统异常通知---------\n{}\n",
-            message
-        );
+        let marker = action_output::anomaly_notification(message);
         self.instance.memory.append_current(&marker).ok();
 
         let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
@@ -680,8 +675,9 @@ impl Alice {
             let mut tx = Transaction::new(&self.instance.id);
 
             let doing_text = format!(
-                "{}\n---action executing, result pending---\n",
-                build_doing_description(&Action::ReadMsg),
+                "{}\n{}",
+                action_output::build_doing_description(&Action::ReadMsg),
+                action_output::action_executing(),
             );
             let action_id = tx.record_doing(Action::ReadMsg, doing_text);
 
@@ -689,17 +685,15 @@ impl Alice {
             let done_text = match result {
                 Ok(ref output) if output.is_empty() => String::new(),
                 Ok(output) => format!("\n{}", output),
-                Err(e) => format!("\nERROR: {}\n", e),
+                Err(e) => action_output::action_error(&e),
             };
             tx.record_done(&action_id, done_text);
 
             if let Some(record) = tx.action_records.last() {
-                let action_text = format!(
-                    "---------行为编号[{}]开始---------\n{}{}\n---------行为编号[{}]结束---------\n",
-                    record.action_id,
-                    record.doing_text,
+                let action_text = action_output::action_block_full(
+                    &record.action_id,
+                    &record.doing_text,
                     record.done_text.as_deref().unwrap_or(""),
-                    record.action_id,
                 );
                 self.instance.memory.append_current(&action_text).ok();
             }
@@ -777,7 +771,7 @@ impl Alice {
             // Check for interrupt signal before consuming next stream item
             if self.signals.as_ref().map_or(false, |s| s.check_interrupt()) {
                 warn!("[INTERRUPT-{}] Interrupt signal detected, aborting inference", self.instance.id);
-                let interrupt_text = "---------推理被用户中断---------\n".to_string();
+                let interrupt_text = action_output::inference_interrupted().to_string();
                 self.instance.memory.append_current(&interrupt_text).ok();
                 break;
             }
@@ -800,10 +794,7 @@ impl Alice {
                             }
                             SequenceVerdict::Reject(reason) => {
                                 warn!("{}", reason);
-                                let reject_text = format!(
-                                    "---------序列防御中断---------\n{}\n",
-                                    reason
-                                );
+                                let reject_text = action_output::hallucination_defense_interrupted(&reason);
                                 self.instance.memory.append_current(&reject_text).ok();
                                 break;
                             }
@@ -811,8 +802,9 @@ impl Alice {
 
                         // Build doing text
                         let doing_text = format!(
-                            "{}\n---action executing, result pending---\n",
-                            build_doing_description(&action),
+                            "{}\n{}",
+                            action_output::build_doing_description(&action),
+                            action_output::action_executing(),
                         );
 
                         let action_id = tx.record_doing(action.clone(), doing_text);
@@ -838,18 +830,16 @@ impl Alice {
                         let done_text = match result {
                             Ok(ref output) if output.is_empty() => String::new(),
                             Ok(output) => format!("\n{}", output),
-                            Err(e) => format!("\nERROR: {}\n", e),
+                            Err(e) => action_output::action_error(&e),
                         };
                         tx.record_done(&action_id, done_text);
 
                         // Append this action's record to current session immediately
                         if let Some(record) = tx.action_records.last() {
-                            let action_text = format!(
-                                "---------行为编号[{}]开始---------\n{}{}\n---------行为编号[{}]结束---------\n",
-                                record.action_id,
-                                record.doing_text,
+                            let action_text = action_output::action_block_full(
+                                &record.action_id,
+                                &record.doing_text,
                                 record.done_text.as_deref().unwrap_or(""),
-                                record.action_id,
                             );
                             self.instance.memory.append_current(&action_text).ok();
                         }
@@ -898,47 +888,7 @@ impl Alice {
     }
 }
 
-/// Build a human-readable description of an action for the "doing" text.
-pub fn build_doing_description(action: &Action) -> String {
-    match action {
-        Action::Idle { timeout_secs: None } => "idle".to_string(),
-        Action::Idle { timeout_secs: Some(secs) } => format!("idle ({}s)", secs),
-        Action::ReadMsg => "你打开了收件箱，开始阅读来信。".to_string(),
-        Action::SendMsg { recipient, content } =>
-            format!("you send a letter to [{}]: \n\n{}\n", recipient, content),
-        Action::Thinking { content } =>
-            format!("记录思考: {}", content),
-        Action::Script { content } =>
-            format!("execute script: \n{}", content),
-        Action::WriteFile { path, content } => {
-            #[cfg(feature = "remember")]
-            {
-                match crate::inference::extract_remember_fragments(content) {
-                    Some(fragments) => format!("write file [{}]\n[以下仅为REMEMBER标记的关键片段，非完整文件内容]\n{}", path, fragments),
-                    None => format!("write file [{}]", path),
-                }
-            }
-            #[cfg(not(feature = "remember"))]
-            {
-                let _ = content;
-                format!("write file [{}]", path)
-            }
-        }
-        Action::ReplaceInFile { path, .. } =>
-            format!("replace in file [{}]", path),
-        Action::Summary { .. } =>
-            "summary (小结)".to_string(),
 
-        Action::SetProfile { entries } => {
-            let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
-            format!("set_profile [{}]", keys.join(", "))
-        }
-        Action::CreateInstance { name, knowledge } =>
-            format!("create_instance: {} ({} bytes knowledge)", name, knowledge.len()),
-        Action::Forget { target_action_id, summary } =>
-            format!("forget [{}]: {}", target_action_id, crate::safe_truncate(summary, 80)),
-    }
-}
 
 // ─── Tests ───────────────────────────────────────────────────────
 
@@ -1163,15 +1113,16 @@ mod tests {
 
     #[test]
     fn test_build_doing_description() {
-        assert_eq!(build_doing_description(&Action::Idle { timeout_secs: None }), "idle");
-        assert_eq!(build_doing_description(&Action::Idle { timeout_secs: Some(30) }), "idle (30s)");
-        assert!(build_doing_description(&Action::ReadMsg).contains("收件箱"));
+        use crate::policy::action_output;
+        assert_eq!(action_output::build_doing_description(&Action::Idle { timeout_secs: None }), "idle");
+        assert_eq!(action_output::build_doing_description(&Action::Idle { timeout_secs: Some(30) }), "idle (30s)");
+        assert!(action_output::build_doing_description(&Action::ReadMsg).contains("收件箱"));
 
         let send = Action::SendMsg {
             recipient: "user1".to_string(),
             content: "hello".to_string(),
         };
-        let desc = build_doing_description(&send);
+        let desc = action_output::build_doing_description(&send);
         assert!(desc.contains("user1"));
         assert!(desc.contains("hello"));
     }

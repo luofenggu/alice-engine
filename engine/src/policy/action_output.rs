@@ -8,6 +8,8 @@
 //!
 //! Guardian: file-level exempt (similar to messages.rs).
 
+use crate::inference::Action;
+
 // ─── Output strategy constants ───────────────────────────────────
 
 /// Max bytes for script/command output before truncation.
@@ -229,6 +231,94 @@ pub fn instance_created(id: &str, name: &str, knowledge_bytes: usize) -> String 
     )
 }
 
+
+// ─── Action block formatting ─────────────────────────────────────
+
+/// Format a complete action block (start + doing + done + end).
+pub fn action_block_full(action_id: &str, doing_text: &str, done_text: &str) -> String {
+    format!(
+        "{}\n{}{}\n{}\n",
+        action_block_start(action_id),
+        doing_text,
+        done_text,
+        action_block_end(action_id),
+    )
+}
+
+/// Format the "action executing" pending marker.
+pub fn action_executing() -> &'static str {
+    "---action executing, result pending---\n"
+}
+
+/// Format action execution error.
+pub fn action_error(e: &anyhow::Error) -> String {
+    format!("\nERROR: {}\n", e)
+}
+
+// ─── Inference interruption ──────────────────────────────────────
+
+/// Format user interrupt marker.
+/// Tells the agent that inference was interrupted and they should idle to await instructions.
+pub fn inference_interrupted() -> &'static str {
+    "---------推理被用户中断，请idle等待用户指示---------\n"
+}
+
+/// Format hallucination defense interruption marker.
+/// Uses "幻觉防御" terminology consistent with prompt template (react_system.txt).
+pub fn hallucination_defense_interrupted(reason: &str) -> String {
+    format!("---------幻觉防御中断---------\n{}\n", reason)
+}
+
+// ─── Anomaly notification ────────────────────────────────────────
+
+/// Format system anomaly notification marker.
+pub fn anomaly_notification(message: &str) -> String {
+    format!("---------系统异常通知---------\n{}\n", message)
+}
+
+// ─── Action description (doing text) ─────────────────────────────
+
+/// Build a human-readable description of an action for agent memory.
+/// This is the "doing" part that appears before execution results.
+pub fn build_doing_description(action: &Action) -> String {
+    match action {
+        Action::Idle { timeout_secs: None } => "idle".to_string(),
+        Action::Idle { timeout_secs: Some(secs) } => format!("idle ({}s)", secs),
+        Action::ReadMsg => "你打开了收件箱，开始阅读来信。".to_string(),
+        Action::SendMsg { recipient, content } =>
+            format!("you send a letter to [{}]: \n\n{}\n", recipient, content),
+        Action::Thinking { content } =>
+            format!("记录思考: {}", content),
+        Action::Script { content } =>
+            format!("execute script: \n{}", content),
+        Action::WriteFile { path, content } => {
+            #[cfg(feature = "remember")]
+            {
+                match crate::inference::extract_remember_fragments(content) {
+                    Some(fragments) => format!("write file [{}]\n[以下仅为REMEMBER标记的关键片段，非完整文件内容]\n{}", path, fragments),
+                    None => format!("write file [{}]", path),
+                }
+            }
+            #[cfg(not(feature = "remember"))]
+            {
+                let _ = content;
+                format!("write file [{}]", path)
+            }
+        }
+        Action::ReplaceInFile { path, .. } =>
+            format!("replace in file [{}]", path),
+        Action::Summary { .. } =>
+            "summary (小结)".to_string(),
+        Action::SetProfile { entries } => {
+            let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+            format!("set_profile [{}]", keys.join(", "))
+        }
+        Action::CreateInstance { name, knowledge } =>
+            format!("create_instance: {} ({} bytes knowledge)", name, knowledge.len()),
+        Action::Forget { target_action_id, summary } =>
+            format!("forget [{}]: {}", target_action_id, crate::safe_truncate(summary, 80)),
+    }
+}
 
 // ─── Truncation ──────────────────────────────────────────────────
 
