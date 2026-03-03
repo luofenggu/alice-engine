@@ -9,11 +9,3 @@ hidden_dirs = ["target", "node_modules"]
 hidden_prefix = "."
 max_file_size = 1048576
 
-[action]
-preview_head_lines = 10
-preview_tail_lines = 5
-preview_threshold = 15
-max_result_bytes = 102400
-truncate_display = 40
-truncate_detail = 200
-

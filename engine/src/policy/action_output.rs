@@ -8,6 +8,26 @@
 //!
 //! Guardian: file-level exempt (similar to messages.rs).
 
+// ─── Output strategy constants ───────────────────────────────────
+
+/// Max bytes for script/command output before truncation.
+const MAX_RESULT_BYTES: usize = 102_400;
+
+/// Max bytes to show in search preview for replace_in_file.
+const TRUNCATE_DISPLAY: usize = 40;
+
+/// Max bytes to show in detail messages.
+const TRUNCATE_DETAIL: usize = 200;
+
+/// Number of head lines in preview.
+const PREVIEW_HEAD_LINES: usize = 10;
+
+/// Number of tail lines in preview.
+const PREVIEW_TAIL_LINES: usize = 5;
+
+/// Line count threshold to switch from head-only to head+tail preview.
+const PREVIEW_THRESHOLD: usize = 15;
+
 /// Context string before [MSG:xxx] in send results.
 /// Used by extract_msg_ids to identify trusted send markers.
 pub const MSG_SEND_CONTEXT: &str = "send success ";
@@ -70,20 +90,20 @@ const PREVIEW_ELLIPSIS: &str = "     ...";
 
 /// Format head+tail preview from lines with line numbers.
 /// Handles three cases: all lines fit in head, head+tail with ellipsis, head+remaining.
-pub fn format_preview(lines: &[&str], head: usize, tail: usize, threshold: usize) -> String {
+pub fn format_preview(lines: &[&str]) -> String {
     let total = lines.len();
-    let actual_head = std::cmp::min(head, total);
+    let actual_head = std::cmp::min(PREVIEW_HEAD_LINES, total);
     let mut preview: Vec<String> = Vec::new();
     for (line, num) in lines[..actual_head].iter().zip(1..) {
         preview.push(preview_line(num, line));
     }
-    if total > threshold {
+    if total > PREVIEW_THRESHOLD {
         preview.push(PREVIEW_ELLIPSIS.to_string());
-        for (line, num) in lines[total - tail..].iter().zip(total - tail + 1..) {
+        for (line, num) in lines[total - PREVIEW_TAIL_LINES..].iter().zip(total - PREVIEW_TAIL_LINES + 1..) {
             preview.push(preview_line(num, line));
         }
-    } else if total > head {
-        for (line, num) in lines[head..].iter().zip(head + 1..) {
+    } else if total > PREVIEW_HEAD_LINES {
+        for (line, num) in lines[PREVIEW_HEAD_LINES..].iter().zip(PREVIEW_HEAD_LINES + 1..) {
             preview.push(preview_line(num, line));
         }
     }
@@ -209,3 +229,20 @@ pub fn instance_created(id: &str, name: &str, knowledge_bytes: usize) -> String 
     )
 }
 
+
+// ─── Truncation ──────────────────────────────────────────────────
+
+/// Truncate result text if it exceeds MAX_RESULT_BYTES.
+pub fn truncate_result(text: &str) -> String {
+    if text.len() > MAX_RESULT_BYTES {
+        let truncated = crate::safe_truncate(text, MAX_RESULT_BYTES);
+        truncated_output(truncated, text.len())
+    } else {
+        text.to_string()
+    }
+}
+
+/// Get the truncate_display limit for replace_in_file search previews.
+pub fn truncate_display_limit() -> usize {
+    TRUNCATE_DISPLAY
+}

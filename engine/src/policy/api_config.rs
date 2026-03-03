@@ -7,7 +7,6 @@ use serde::Deserialize;
 pub struct ApiConfig {
     pub rpc: RpcConfig,
     pub file_browse: FileBrowseConfig,
-    pub action: ActionConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -17,15 +16,6 @@ pub struct RpcConfig {
     pub heartbeat_timeout_secs: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ActionConfig {
-    pub preview_head_lines: usize,
-    pub preview_tail_lines: usize,
-    pub preview_threshold: usize,
-    pub max_result_bytes: usize,
-    pub truncate_display: usize,
-    pub truncate_detail: usize,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileBrowseConfig {

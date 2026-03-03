@@ -132,7 +132,7 @@ impl AliceEngine for AliceEngineServer {
     async fn send_message(self, _: Context, instance_id: String, content: String) -> ActionResult {
         let content = content.trim().to_string();
         if content.is_empty() {
-            return ActionResult::err(crate::messages::empty_message());
+            return ActionResult::err(crate::policy::messages::empty_message());
         }
 
         let user_id = self.state.user_id.clone();
@@ -250,7 +250,7 @@ impl AliceEngine for AliceEngineServer {
         match self.state.instance_store.delete(&instance_id) {
             Ok(trash_name) => {
                 info!("[RPC] Deleted instance: {} -> .trash/{}", instance_id, trash_name);
-                ActionResult::ok(crate::messages::instance_deleted(&instance_id))
+                ActionResult::ok(crate::policy::messages::instance_deleted(&instance_id))
             }
             Err(e) => {
                 error!("[RPC] Delete instance failed: {}", e);
@@ -291,13 +291,13 @@ impl AliceEngine for AliceEngineServer {
 
             update.apply_to(&mut settings);
 
-            match crate::messages::describe_settings_change(&old, &settings) {
+            match crate::policy::messages::describe_settings_change(&old, &settings) {
                 Some(desc) => {
                     instance.settings.save(&settings)?;
                     info!("[RPC] Settings updated for {}: {}", instance_id, desc);
                     Ok::<_, anyhow::Error>(ActionResult::ok(desc))
                 }
-                None => Ok(ActionResult::err(crate::messages::no_valid_fields())),
+                None => Ok(ActionResult::err(crate::policy::messages::no_valid_fields())),
             }
         }).await;
 
@@ -389,7 +389,7 @@ impl AliceEngine for AliceEngineServer {
                 .to_string();
 
             if api_config.file_browse.is_binary_file(&file_name) {
-                return Ok(FileReadResult::binary(crate::messages::binary_file_description(&file_name, size), size));
+                return Ok(FileReadResult::binary(crate::policy::messages::binary_file_description(&file_name, size), size));
             }
 
             let content = std::fs::read_to_string(&target)?;

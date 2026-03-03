@@ -17,7 +17,7 @@ use crate::policy::ApiConfig;
 use crate::core::{Alice, Transaction};
 use crate::external::shell::Shell;
 use super::{Action, ReplaceBlock};
-use super::action_output as out;
+use crate::policy::action_output as out;
 
 /// Resolve an action path to an absolute path.
 /// Absolute paths are used directly (only meaningful for privileged instances;
@@ -71,16 +71,6 @@ pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) 
     }
 }
 
-/// Truncate result text if it exceeds max_result_bytes.
-fn truncate_result(text: &str) -> String {
-    let max = ApiConfig::get().action.max_result_bytes;
-    if text.len() > max {
-        let truncated = crate::safe_truncate(text, max);
-        out::truncated_output(truncated, text.len())
-    } else {
-        text.to_string()
-    }
-}
 
 // ─── Individual action executors ─────────────────────────────────
 
@@ -136,7 +126,7 @@ fn execute_script(alice: &mut Alice, tx: &mut Transaction, content: &str) -> Res
     let shell = make_shell(alice);
     let result = shell.exec(content)?;
 
-    let output = truncate_result(&result.output);
+    let output = out::truncate_result(&result.output);
     Ok(out::script_result(result.duration.as_secs_f64(), &output, result.exit_code))
 }
 
@@ -152,7 +142,7 @@ fn extract_skeleton(path: &str, content: &str) -> String {
 
     // .md files: preserve full content
     if ext == "md" {
-        let display = truncate_result(content);
+        let display = out::truncate_result(content);
         return out::write_success_full(path, total_bytes, total_lines, &display);
     }
 
@@ -165,8 +155,8 @@ fn extract_skeleton(path: &str, content: &str) -> String {
     }
 
     // Fallback: head + tail preview
-    let action = &ApiConfig::get().action;
-    let preview = out::format_preview(&lines, action.preview_head_lines, action.preview_tail_lines, action.preview_threshold);
+    
+    let preview = out::format_preview(&lines);
     out::write_success_preview(path, total_bytes, total_lines, &preview)
 }
 
@@ -214,7 +204,7 @@ fn execute_replace_in_file(
 
         let mut result_lines: Vec<String> = Vec::new();
         for block in blocks.iter() {
-            let truncated = crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display);
+            let truncated = crate::safe_truncate(&block.search, out::truncate_display_limit());
             match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str()) {
                 Ok(new_content) => {
                     content = new_content;
@@ -244,7 +234,7 @@ fn execute_replace_in_file(
         let mut result_lines: Vec<String> = Vec::new();
 
         for block in blocks.iter() {
-            let truncated = crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display);
+            let truncated = crate::safe_truncate(&block.search, out::truncate_display_limit());
             match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str()) {
                 Ok(new_content) => {
                     content = new_content;
@@ -853,10 +843,10 @@ random [MSG:20260219120000] in output\n\
     #[test]
     fn test_truncate_result() {
         let short = "hello";
-        assert_eq!(truncate_result(short), "hello");
+        assert_eq!(out::truncate_result(short), "hello");
 
-        let long = "x".repeat(ApiConfig::get().action.max_result_bytes + 100);
-        let truncated = truncate_result(&long);
+        let long = "x".repeat(102_400 + 100);
+        let truncated = out::truncate_result(&long);
         assert!(truncated.contains("[truncated"));
         assert!(truncated.len() < long.len());
     }

@@ -248,11 +248,11 @@ fn make_memory_status(
     let total = history_size + daily_size + current_size + knowledge_size;
     // Knowledge capacity indicator
     let knowledge_indicator = if knowledge_size < 51200 {
-        crate::messages::knowledge_capacity_ok(knowledge_size)
+        crate::policy::messages::knowledge_capacity_ok(knowledge_size)
     } else if knowledge_size < 61440 {
-        crate::messages::knowledge_capacity_warning(knowledge_size)
+        crate::policy::messages::knowledge_capacity_warning(knowledge_size)
     } else {
-        crate::messages::knowledge_capacity_critical(knowledge_size)
+        crate::policy::messages::knowledge_capacity_critical(knowledge_size)
     };
 
     // Instance identity line
