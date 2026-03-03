@@ -79,7 +79,7 @@ pub enum Action {
     Script { content: String },
     WriteFile { path: String, content: String },
     ReplaceInFile { path: String, blocks: Vec<ReplaceBlock> },
-    Summary { content: String },
+    Summary { content: String, knowledge: Option<String> },
     SetProfile { entries: Vec<(String, String)> },
     CreateInstance { name: String, knowledge: String },
     Forget { target_action_id: String, summary: String },
@@ -146,15 +146,6 @@ enum ActionKind {
     Idle, ReadMsg, SendMsg, Thinking, Script,
     WriteFile, ReplaceInFile, Summary, SetProfile,
     CreateInstance, Forget,
-}
-
-// ---------------------------------------------------------------------------
-// Separator constructors
-// ---------------------------------------------------------------------------
-
-/// Build the action separator prefix: `###ACTION_{token}###-`
-pub fn make_action_separator(token: &str) -> String {
-    format!("###ACTION_{}###-", token)
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +219,15 @@ fn parse_single_action(text: &str, separator_token: &str) -> Result<Action> {
             let blocks = parse_replace_blocks(blocks_text, separator_token)?;
             Ok(Action::ReplaceInFile { path: path.to_string(), blocks })
         }
-        ActionKind::Summary => Ok(Action::Summary { content: rest.to_string() }),
+        ActionKind::Summary => {
+            let knowledge_marker = format!("===KNOWLEDGE_{}===", separator_token);
+            let summary_marker = "===SUMMARY===";
+            let (summary_text, knowledge_text) = crate::inference::beat::parse_summary_dual_output(rest, summary_marker, &knowledge_marker);
+            Ok(Action::Summary {
+                content: summary_text,
+                knowledge: if knowledge_text.trim().is_empty() { None } else { Some(knowledge_text.trim().to_string()) },
+            })
+        }
         ActionKind::SetProfile => parse_set_profile(rest),
         ActionKind::CreateInstance => {
             let (name, knowledge) = split_first_line(rest, "create_instance")?;
@@ -632,7 +631,10 @@ mod tests {
         let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
-            Action::Summary { content } => assert!(content.contains("读了代码")),
+            Action::Summary { content, knowledge } => {
+                assert!(content.contains("读了代码"));
+                assert!(knowledge.is_none());
+            }
             _ => panic!("Expected Summary"),
         }
     }
@@ -703,7 +705,7 @@ mod tests {
             }),
             "replace_in_file → f.rs (2 blocks)"
         );
-        assert_eq!(format!("{}", Action::Summary { content: "test".to_string() }), "summary");
+        assert_eq!(format!("{}", Action::Summary { content: "test".to_string(), knowledge: None }), "summary");
     }
 
     #[test]

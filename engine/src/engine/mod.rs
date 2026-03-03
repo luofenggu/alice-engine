@@ -257,7 +257,6 @@ impl AliceEngine {
             temperature: 0.5,
             log_dir: self.logs_dir.clone(),
             beat_interval_secs: 3,
-            action_separator: settings.action_separator.clone(),
         };
 
         let mut alice = Alice::new(instance, config, self.env_config.clone())?;
@@ -797,7 +796,6 @@ mod tests {
             user_id: "test-user".to_string(),
             privileged: false,
             max_beats: None,
-            action_separator: None,
             session_blocks_limit: None,
             session_block_kb: None,
             history_kb: None,
@@ -821,7 +819,6 @@ mod tests {
             user_id: "test-user".to_string(),
             privileged: false,
             max_beats: None,
-            action_separator: None,
             session_blocks_limit: None,
             session_block_kb: None,
             history_kb: None,
@@ -845,7 +842,6 @@ mod tests {
             user_id: "test-user".to_string(),
             privileged: false,
             max_beats: None,
-            action_separator: None,
             session_blocks_limit: None,
             session_block_kb: None,
             history_kb: None,
@@ -873,21 +869,9 @@ mod tests {
         let settings = doc.load().unwrap();
         assert_eq!(settings.api_key, "sk-test-key");
         assert_eq!(settings.model, "openrouter@anthropic/claude-sonnet-4");
-        assert!(settings.action_separator.is_none());
     }
 
-    #[test]
-    fn test_instance_settings_load_with_action_separator() {
-        let tmp = TempDir::new().unwrap();
-        let settings_path = tmp.path().join("settings.json");
-        std::fs::write(&settings_path,
-            r#"{"api_key":"sk-test","model":"openrouter@google/gemini-flash","action_separator":"fixed123"}"#
-        ).unwrap();
 
-        let doc: Document<InstanceSettings> = Document::open(&settings_path).unwrap();
-        let settings = doc.load().unwrap();
-        assert_eq!(settings.action_separator, Some("fixed123".to_string()));
-    }
 
     #[test]
     fn test_engine_creation() {

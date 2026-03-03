@@ -177,8 +177,6 @@ pub struct AliceConfig {
     pub log_dir: PathBuf,
     /// Beat interval in seconds (sleep between beats when idle)
     pub beat_interval_secs: u64,
-    /// Fixed action separator token. None = random per beat (default).
-    pub action_separator: Option<String>,
 }
 
 impl Default for AliceConfig {
@@ -191,7 +189,6 @@ impl Default for AliceConfig {
             temperature: 0.5,
             log_dir: PathBuf::from("/root/alice-logs"),
             beat_interval_secs: 3,
-            action_separator: None,
         }
     }
 }
@@ -226,10 +223,6 @@ pub struct ActionRecord {
 ///
 /// @TRACE: ACTION, BEAT
 pub struct Transaction {
-    /// Action separator token for this beat (6-char hex)
-    pub separator_token: String,
-    /// Full separator prefix: "###ACTION_{token}###-"
-    pub separator_prefix: String,
     /// All action records in this beat
     pub action_records: Vec<ActionRecord>,
     /// Beat start time
@@ -242,12 +235,9 @@ impl Transaction {
     /// Create a new transaction for a beat.
     ///
     /// @TRACE: BEAT
-    pub fn new(instance_id: &str, separator_token: &str) -> Self {
-        let separator_prefix = format!("###ACTION_{}###-", separator_token);
-        info!("[BEAT-{}] Transaction created, separator: {}", instance_id, separator_token);
+    pub fn new(instance_id: &str) -> Self {
+        info!("[BEAT-{}] Transaction created", instance_id);
         Self {
-            separator_token: separator_token.to_string(),
-            separator_prefix,
             action_records: Vec::new(),
             started_at: Instant::now(),
             instance_id: instance_id.to_string(),
@@ -373,8 +363,6 @@ pub struct Alice {
     pub beat_count: u32,
     /// Maximum beats allowed (None = unlimited). From settings.json "max_beats".
     pub max_beats: Option<u32>,
-    /// Fixed action separator token. None = random per beat.
-    pub action_separator: Option<String>,
     /// Whether this instance has completed its first idle (born = ready for user interaction).
     pub born: bool,
     /// Public host address for URL generation (e.g. "example.com:8081").
@@ -412,7 +400,6 @@ impl Alice {
     /// @TRACE: INSTANCE
     pub fn new(instance: instance::Instance, config: AliceConfig, env_config: Arc<crate::policy::EnvConfig>) -> Result<Self> {
         let user_id = instance.user_id().to_string();
-        let action_separator = config.action_separator.clone();
 
         let llm_config = LlmConfig {
             api_url: config.api_url.clone(),
@@ -439,7 +426,6 @@ impl Alice {
             mock_sync_responses: None,
             beat_count: 0,
             max_beats: None,
-            action_separator,
             born: false,
             host: None,
             extra_configs: Vec::new(),
@@ -735,10 +721,7 @@ impl Alice {
         if unread_count > 0 {
             info!("[BEAT-{}] Hard-control: {} unread, auto-reading", self.instance.id, unread_count);
 
-            let separator_token: String = self.action_separator.clone().unwrap_or_else(|| {
-                (0..6).map(|_| format!("{:x}", rand::random::<u8>() % 16)).collect()
-            });
-            let mut tx = Transaction::new(&self.instance.id, &separator_token);
+            let mut tx = Transaction::new(&self.instance.id);
 
             let doing_text = format!(
                 "{}\n---action executing, result pending---\n",
@@ -785,18 +768,11 @@ impl Alice {
                 self.instance.id, self.inference_failures);
         }
 
-        // 2. Get separator token
-        let separator_token: String = self.action_separator.clone().unwrap_or_else(|| {
-            (0..6)
-                .map(|_| format!("{:x}", rand::random::<u8>() % 16))
-                .collect()
-        });
+        // 2. Create transaction
+        let mut tx = Transaction::new(&self.instance.id);
 
-        // 3. Create transaction
-        let mut tx = Transaction::new(&self.instance.id, &separator_token);
-
-        // 4. Build inference request
-        let request = build_beat_request(self, &separator_token, self.host.as_deref());
+        // 3. Build inference request
+        let request = build_beat_request(self, self.host.as_deref());
 
         // 5. Set up inference log
         let (log_path, log_timestamp) = crate::logging::create_infer_log_path(
@@ -932,7 +908,7 @@ impl Alice {
                             break;
                         }
                     }
-                    StreamItem::Done(text, _usage) => {
+                    StreamItem::Done(_actions, _usage) => {
                         // Reset inference backoff on success
                         if self.inference_failures > 0 {
                             info!("[BACKOFF-{}] Inference succeeded, resetting backoff (was {} failures)",
@@ -941,11 +917,7 @@ impl Alice {
                         self.inference_failures = 0;
                         self.inference_backoff_until = None;
 
-                        info!("[INFER-{}] Inference complete, {} chars output",
-                            self.instance.id, text.len());
-
-
-                        let _ = text;
+                        info!("[INFER-{}] Inference complete", self.instance.id);
                         break;
                     }
                     StreamItem::Error(e) => {
@@ -1199,15 +1171,13 @@ mod tests {
 
     #[test]
     fn test_transaction_creation() {
-        let tx = Transaction::new("test", "abc123");
-        assert_eq!(tx.separator_token, "abc123");
-        assert_eq!(tx.separator_prefix, "###ACTION_abc123###-");
+        let tx = Transaction::new("test");
         assert!(tx.action_records.is_empty());
     }
 
     #[test]
     fn test_transaction_action_recording() {
-        let mut tx = Transaction::new("test", "abc123");
+        let mut tx = Transaction::new("test");
         let action_id = tx.record_doing(
             Action::Idle { timeout_secs: None },
             "idle action doing\n".to_string(),
@@ -1222,7 +1192,7 @@ mod tests {
 
     #[test]
     fn test_build_session_text() {
-        let mut tx = Transaction::new("test", "abc123");
+        let mut tx = Transaction::new("test");
         let id = tx.record_doing(Action::Idle { timeout_secs: None }, "doing idle\n".to_string());
         tx.record_done(&id, "done idle\n".to_string());
 
@@ -1234,7 +1204,7 @@ mod tests {
 
     #[test]
     fn test_generate_action_id_format() {
-        let tx = Transaction::new("test", "abc123");
+        let tx = Transaction::new("test");
         let id = tx.generate_action_id();
         assert!(id.len() >= 20);
         assert!(id.contains('_'));

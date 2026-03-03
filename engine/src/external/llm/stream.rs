@@ -31,7 +31,7 @@ pub enum StreamItem {
     /// A parsed action ready for execution
     Action(Action),
     /// Inference completed successfully, contains full output text and optional usage info
-    Done(String, Option<UsageInfo>),
+    Done(Vec<Action>, Option<UsageInfo>),
     /// Inference encountered an error
     Error(String),
 }
@@ -121,9 +121,9 @@ mod tests {
 
     #[test]
     fn test_stream_item_done() {
-        let item = StreamItem::Done("full output".to_string(), None);
+        let item = StreamItem::Done(vec![Action::Idle { timeout_secs: None }], None);
         match item {
-            StreamItem::Done(text, _) => assert_eq!(text, "full output"),
+            StreamItem::Done(actions, _) => assert_eq!(actions.len(), 1),
             _ => panic!("Expected Done"),
         }
     }
@@ -142,7 +142,7 @@ mod tests {
         let stream = InferenceStream::mock(vec![
             StreamItem::Action(Action::Idle { timeout_secs: None }),
             StreamItem::Action(Action::Thinking { content: "hmm".to_string() }),
-            StreamItem::Done("all done".to_string(), None),
+            StreamItem::Done(vec![Action::Idle { timeout_secs: None }], None),
         ]);
 
         // First item
@@ -159,7 +159,7 @@ mod tests {
 
         // Third item
         match stream.next().unwrap() {
-            StreamItem::Done(text, _) => assert_eq!(text, "all done"),
+            StreamItem::Done(actions, _) => assert_eq!(actions.len(), 1),
             _ => panic!("Expected Done"),
         }
 

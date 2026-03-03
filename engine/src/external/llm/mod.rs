@@ -217,19 +217,26 @@ impl LlmClient {
 
     /// High-level beat inference: renders request, writes input log, starts streaming.
     ///
-    /// External code fills BeatRequest struct fields; this method handles
-    /// render → log → API call → stream parse internally.
+    /// Token is generated internally (self-contained). External code fills
+    /// BeatRequest struct fields; this method handles token generation →
+    /// render → log → API call → stream parse → action vector internally.
     ///
     /// @TRACE: INFER, STREAM
     pub fn infer_beat(
         &self,
-        request: BeatRequest,
+        mut request: BeatRequest,
         log_path: PathBuf,
         log_dir: &Path,
         log_timestamp: &str,
         instance_id: String,
         infer_log_enabled: bool,
     ) -> InferenceStream {
+        // Generate token internally (self-contained)
+        let token: String = (0..6)
+            .map(|_| format!("{:x}", rand::random::<u8>() % 16))
+            .collect();
+        request.action_token = token;
+
         let (system_prompt, user_prompt, _snapshot) = request.render();
 
         // Write input log if enabled
@@ -246,9 +253,10 @@ impl LlmClient {
             ChatMessage::user(&user_prompt),
         ];
 
+        let separator_token = request.action_token.clone();
         self.infer_async(
             messages,
-            &request.action_token,
+            &separator_token,
             log_path,
             instance_id,
         )
@@ -722,8 +730,8 @@ async fn run_inference(
         info!("[INFER-{}] No remaining text (last_parsed_pos={}, full_text.len={})", instance_id, last_parsed_pos, full_text.len());
     }
 
-    // Signal completion with usage info
-    let _ = tx.send(StreamItem::Done(full_text, collected_usage));
+    // Signal completion — all actions already sent via streaming
+    let _ = tx.send(StreamItem::Done(Vec::new(), collected_usage));
 
     Ok(())
 }

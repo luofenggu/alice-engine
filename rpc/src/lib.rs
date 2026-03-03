@@ -42,8 +42,6 @@ pub struct InstanceSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_beats: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub action_separator: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_blocks_limit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_block_kb: Option<u32>,
@@ -76,8 +74,6 @@ pub struct SettingsUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_beats: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub action_separator: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_blocks_limit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_block_kb: Option<u32>,
@@ -104,7 +100,7 @@ impl SettingsUpdate {
         if let Some(ref v) = self.model { s.model = v.clone(); }
         if let Some(v) = self.privileged { s.privileged = v; }
         if let Some(v) = self.max_beats { s.max_beats = Some(v); }
-        if let Some(ref v) = self.action_separator { s.action_separator = Some(v.clone()); }
+
         if let Some(v) = self.session_blocks_limit { s.session_blocks_limit = Some(v); }
         if let Some(v) = self.session_block_kb { s.session_block_kb = Some(v); }
         if let Some(v) = self.history_kb { s.history_kb = Some(v); }

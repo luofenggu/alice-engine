@@ -62,7 +62,7 @@ pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) 
         Action::Script { content } => execute_script(alice, tx, content),
         Action::WriteFile { path, content } => execute_write_file(alice, tx, path, content),
         Action::ReplaceInFile { path, blocks } => execute_replace_in_file(alice, tx, path, blocks),
-        Action::Summary { content } => execute_summary(alice, tx, content),
+        Action::Summary { content, knowledge } => execute_summary(alice, tx, content, knowledge.clone()),
 
         Action::SetProfile { entries } => execute_set_profile(alice, tx, entries),
         Action::CreateInstance { name, knowledge } => execute_create_instance(alice, tx, name, knowledge),
@@ -275,7 +275,7 @@ fn execute_replace_in_file(
 /// 4. Build JSONL session entry with summary part
 /// 5. Snapshot + rewrite knowledge.md with knowledge part
 /// 6. Append session block + clear current
-fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) -> Result<String> {
+fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str, knowledge: Option<String>) -> Result<String> {
     info!("[ACTION-{}] summary", tx.instance_id);
 
     let current = alice.instance.memory.current.read().unwrap();
@@ -283,11 +283,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
         return Ok(out::summary_empty());
     }
 
-    // Parse dual output: find ===KNOWLEDGE_TOKEN=== on its own line
-    let knowledge_marker = format!("===KNOWLEDGE_{}===", tx.separator_token);
-    let summary_marker = concat!("=", "=", "=", "SUMMARY", "=", "=", "=");
-    
-    let (summary_text, knowledge_text) = crate::inference::beat::parse_summary_dual_output(raw_output, summary_marker, &knowledge_marker);
+    let summary_text = raw_output;
 
     if summary_text.trim().is_empty() {
         warn!("[ACTION-{}] summary: empty summary text", tx.instance_id);
@@ -321,10 +317,15 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
 
     // === Atomic: snapshot + knowledge update + session block + clear current ===
     let knowledge_info;
-    if !knowledge_text.trim().is_empty() {
-        alice.instance.memory.knowledge.write(knowledge_text.trim())?;
-        knowledge_info = out::knowledge_rewritten(knowledge_text.trim().len());
-        info!("[ACTION-{}] knowledge rewritten ({} chars)", tx.instance_id, knowledge_text.trim().len());
+    if let Some(ref k) = knowledge {
+        if !k.trim().is_empty() {
+            alice.instance.memory.knowledge.write(k.trim())?;
+            knowledge_info = out::knowledge_rewritten(k.trim().len());
+            info!("[ACTION-{}] knowledge rewritten ({} chars)", tx.instance_id, k.trim().len());
+        } else {
+            warn!("[ACTION-{}] summary: empty knowledge section, skipping knowledge update", tx.instance_id);
+            knowledge_info = out::knowledge_skipped();
+        }
     } else {
         warn!("[ACTION-{}] summary: no knowledge section found, skipping knowledge update", tx.instance_id);
         knowledge_info = out::knowledge_skipped();
@@ -475,7 +476,7 @@ mod tests {
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let mut alice = Alice::new(instance, config, env_config).unwrap();
         alice.privileged = true;
-        let tx = Transaction::new("test", "abc123");
+        let tx = Transaction::new("test");
         (alice, tx, tmp)
     }
 
@@ -580,7 +581,7 @@ mod tests {
     #[test]
     fn test_execute_summary_empty_current() {
         let (mut alice, mut tx, _tmp) = setup();
-        let action = Action::Summary { content: "some summary".to_string() };
+        let action = Action::Summary { content: "some summary".to_string(), knowledge: None };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
         assert!(result.contains("nothing to summarize"));
     }
@@ -603,10 +604,9 @@ mod tests {
              ---------行为编号[20260223160100_bbbbbb]结束---------\n"
         ).unwrap();
 
-        // Dual output format: summary + knowledge
-        let dual_output = "===SUMMARY===\nAlice read a greeting and replied\n===KNOWLEDGE_abc123===\n# Test Knowledge\n- item 1";
         let action = Action::Summary {
-            content: dual_output.to_string(),
+            content: "Alice read a greeting and replied".to_string(),
+            knowledge: Some("# Test Knowledge\n- item 1".to_string()),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
         assert!(result.contains("小结完成"));
@@ -645,7 +645,8 @@ mod tests {
         ).unwrap();
 
         let action = Action::Summary {
-            content: "===SUMMARY===\ntest summary\n===KNOWLEDGE_abc123===\n# Knowledge".to_string(),
+            content: "test summary".to_string(),
+            knowledge: Some("# Knowledge".to_string()),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
         assert!(result.contains("小结完成"));

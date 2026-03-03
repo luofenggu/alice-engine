@@ -70,7 +70,6 @@ pub fn render_session_block(jsonl_content: &str, alice: &Alice) -> String {
 /// The caller passes this to LlmClient which handles rendering and inference internally.
 pub fn build_beat_request(
     alice: &Alice,
-    action_token: &str,
     host: Option<&str>,
 ) -> BeatRequest {
     let knowledge_content = load_knowledge_file(alice);
@@ -90,7 +89,7 @@ pub fn build_beat_request(
     let unread_count = alice.count_unread_messages();
 
     BeatRequest {
-        action_token: action_token.to_string(),
+        action_token: String::new(), // filled by infer_beat internally
         instance_id: alice.instance.id.clone(),
         instance_name: alice.instance_name.clone(),
         shell_env: alice.env_config.shell_env.clone(),
@@ -209,7 +208,8 @@ mod tests {
     #[test]
     fn test_build_beat_request_empty_memory() {
         let (alice, _tmp) = setup_alice();
-        let request = build_beat_request(&alice, "abc", None);
+        let mut request = build_beat_request(&alice, None);
+        request.action_token = "abc".to_string();
         let (system, user, _) = request.render();
         assert!(system.contains("###ACTION_abc###-"));
         assert!(user.contains("(空)"));
@@ -225,7 +225,7 @@ mod tests {
         let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
         alice.instance.memory.append_session_block("20260223120000", jsonl).unwrap();
 
-        let request = build_beat_request(&alice, "tok", None);
+        let request = build_beat_request(&alice, None);
         let (_, user, _) = request.render();
         assert!(user.contains("24007 [20260223120000]: hi there"));
         assert!(user.contains("[总结] User said hi"));
@@ -263,7 +263,7 @@ mod tests {
     fn test_build_beat_request_with_knowledge() {
         let (alice, _tmp) = setup_alice();
         alice.instance.memory.knowledge.write("# 泛准则\n- 谨慎加信任").unwrap();
-        let request = build_beat_request(&alice, "tok", None);
+        let request = build_beat_request(&alice, None);
         let (_, user, _) = request.render();
         assert!(user.contains("### 要点与知识 ###"));
         assert!(user.contains("谨慎加信任"));

@@ -66,9 +66,6 @@ pub fn describe_settings_change(
     if old.safety_cooldown_secs != new.safety_cooldown_secs {
         changes.push(format!("safety_cooldown_secs: {:?}", new.safety_cooldown_secs));
     }
-    if old.action_separator != new.action_separator {
-        changes.push(format!("action_separator: {:?}", new.action_separator));
-    }
 
     if changes.is_empty() {
         None
