@@ -559,17 +559,13 @@ impl Alice {
         // Read current history
         let current_history = self.instance.memory.history.read()?;
 
-        // Build LLM prompt
-        let history_kb = self.history_kb;
-        let system_msg = crate::safe_render(crate::prompt::HISTORY_COMPRESS_PROMPT, &[
-            ("{{HISTORY_KB}}", &history_kb.to_string()),
-        ]);
-
-        let user_msg = if current_history.is_empty() {
-            rendered_block.clone()
-        } else {
-            format!("{}\n\n{}", current_history, rendered_block)
+        // Build LLM prompt via CompressRequest
+        let request = crate::inference::compress::CompressRequest {
+            history_kb: self.history_kb as usize,
+            session_content: rendered_block.clone(),
+            current_history: current_history.clone(),
         };
+        let (system_msg, user_msg) = request.render();
 
         let messages = vec![
             crate::llm::ChatMessage::system(&system_msg),
@@ -638,17 +634,13 @@ impl Alice {
         // 2. Read current history (from memory handle)
         let current_history = self.instance.memory.history.read()?;
 
-        // 3. Build LLM prompt for compression
-        let history_kb = self.history_kb;
-        let system_msg = crate::safe_render(crate::prompt::HISTORY_COMPRESS_PROMPT, &[
-            ("{{HISTORY_KB}}", &history_kb.to_string()),
-        ]);
-
-        let user_msg = if current_history.is_empty() {
-            rendered_block.clone()
-        } else {
-            format!("{}\n\n{}", current_history, rendered_block)
+        // 3. Build LLM prompt via CompressRequest
+        let request = crate::inference::compress::CompressRequest {
+            history_kb: self.history_kb as usize,
+            session_content: rendered_block.clone(),
+            current_history: current_history.clone(),
         };
+        let (system_msg, user_msg) = request.render();
 
         let messages = vec![
             crate::llm::ChatMessage::system(&system_msg),

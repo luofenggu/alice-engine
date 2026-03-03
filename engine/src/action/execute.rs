@@ -12,7 +12,6 @@ use chrono::Local;
 use super::strip_remember_markers;
 
 use std::path::PathBuf;
-use crate::policy::ApiConfig;
 
 use crate::core::{Alice, Transaction};
 use crate::external::shell::Shell;
@@ -288,14 +287,14 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     let knowledge_marker = format!("===KNOWLEDGE_{}===", tx.separator_token);
     let summary_marker = concat!("=", "=", "=", "SUMMARY", "=", "=", "=");
     
-    let (summary_text, knowledge_text) = parse_summary_dual_output(raw_output, summary_marker, &knowledge_marker);
+    let (summary_text, knowledge_text) = crate::inference::beat::parse_summary_dual_output(raw_output, summary_marker, &knowledge_marker);
 
     if summary_text.trim().is_empty() {
         warn!("[ACTION-{}] summary: empty summary text", tx.instance_id);
     }
 
     // Extract MSG IDs from current text
-    let msg_ids = extract_msg_ids(&current);
+    let msg_ids = crate::inference::beat::extract_msg_ids(&current);
     let first_msg = msg_ids.first().cloned().unwrap_or_default();
     let last_msg = msg_ids.last().cloned().unwrap_or_default();
 
@@ -377,89 +376,6 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
 
     Ok(String::new())
 }
-
-/// Token-bearing marker ensures uniqueness, preventing self-reference.
-/// Also strips leading ===SUMMARY=== marker if present.
-/// Returns (summary_text, knowledge_text).
-fn parse_summary_dual_output(raw: &str, summary_marker: &str, knowledge_marker: &str) -> (String, String) {
-    // Find first knowledge marker on its own line (token ensures uniqueness)
-    let lines: Vec<&str> = raw.lines().collect();
-    let mut knowledge_line_idx: Option<usize> = None;
-    
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim() == knowledge_marker {
-            knowledge_line_idx = Some(i);
-            break;
-        }
-    }
-
-    let (summary_part, knowledge_part) = match knowledge_line_idx {
-        Some(idx) => {
-            let summary = lines[..idx].join("\n");
-            let knowledge = lines[idx + 1..].join("\n");
-            (summary, knowledge)
-        }
-        None => {
-            // No knowledge marker found, treat entire output as summary
-            (raw.to_string(), String::new())
-        }
-    };
-
-    // Strip leading ===SUMMARY=== marker if present
-    let summary_part = {
-        let trimmed = summary_part.trim_start();
-        if trimmed.starts_with(summary_marker) {
-            let after = &trimmed[summary_marker.len()..];
-            after.trim_start_matches('\n').to_string()
-        } else {
-            summary_part
-        }
-    };
-
-    (summary_part, knowledge_part)
-}
-
-// MSG_SEND_CONTEXT and MSG_READ_CONTEXT moved to action_output.rs
-
-/// Extract MSG IDs from current.txt content.
-/// Only matches trusted markers (send success / read_msg format).
-/// Returns IDs in **appearance order** (not sorted), to avoid
-/// stale timestamps in exec results from expanding the range.
-pub fn extract_msg_ids(text: &str) -> Vec<String> {
-    let mut ids = Vec::new();
-    let marker = "[MSG:";
-    let send_context = out::MSG_SEND_CONTEXT;
-    let read_context = out::MSG_READ_CONTEXT;
-    let mut search_from = 0;
-
-    while let Some(start) = text[search_from..].find(marker) {
-        let bracket_pos = search_from + start; // absolute position of '['
-        let abs_start = bracket_pos + marker.len(); // position after "MSG:"
-        if let Some(end) = text[abs_start..].find(']') {
-            let candidate = &text[abs_start..abs_start + end];
-            if candidate.len() == 14 && candidate.chars().all(|c| c.is_ascii_digit()) {
-                let after_bracket = abs_start + end + 1; // position after ']'
-                // Check send marker: "send success [MSG:xxx]"
-                // Use .get() for safe slicing — bracket_pos - len may land inside a multi-byte char
-                let is_send = bracket_pos >= send_context.len()
-                    && text.get(bracket_pos - send_context.len()..bracket_pos)
-                        .map_or(false, |s| s == send_context);
-                // Check read marker: "[MSG:xxx]发来一条消息："
-                let is_read = text.get(after_bracket..).map_or(false, |s| s.starts_with(read_context));
-                if (is_send || is_read) && !ids.contains(&candidate.to_string()) {
-                    ids.push(candidate.to_string());
-                }
-            }
-            search_from = abs_start + end + 1;
-        } else {
-            break;
-        }
-    }
-
-    ids
-}
-
-
 
 fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, entries: &[(String, String)]) -> Result<String> {
     info!("[ACTION-{}] set_profile ({} entries)", tx.instance_id, entries.len());
@@ -710,104 +626,6 @@ mod tests {
         assert!(block_content.contains("Alice read a greeting and replied"));
     }
 
-
-
-    #[test]
-    fn test_extract_msg_ids() {
-        let text = "24007 [MSG:20260223155500]发来一条消息：\nhello\n\
-                    send success [MSG:20260223160100]\n\
-                    another [MSG:20260223155500] duplicate\n";
-
-        let ids = extract_msg_ids(text);
-        // Should be deduplicated, in appearance order
-        assert_eq!(ids, vec!["20260223155500", "20260223160100"]);
-    }
-
-    #[test]
-    fn test_extract_msg_ids_empty() {
-        let ids = extract_msg_ids("");
-        assert!(ids.is_empty());
-    }
-
-    #[test]
-    fn test_extract_msg_ids_no_markers() {
-        let ids = extract_msg_ids("no markers here [MSG:short] [MSG:notdigits12345]");
-        assert!(ids.is_empty());
-    }
-
-    #[test]
-    fn test_extract_msg_ids_ignores_fake_markers_in_exec_result() {
-        // Simulate current.txt with exec result containing old [MSG:] markers
-        let text = "\
----------行为编号[xxx]开始---------\n\
-24007 [MSG:20260225100000]发来一条消息：\nhello\n\
----action executing, result pending---\n\
-send success [MSG:20260225100100]\n\
----------行为编号[xxx]结束---------\n\
-\n\
----------行为编号[yyy]开始---------\n\
-execute script\n\
----action executing, result pending---\n\n\
----exec result (0.5s)---\n\
-grep output: 24007 [MSG:20260220080000]发来一条消息：\n\
-old log: send success [MSG:20260220090000]\n\
-random [MSG:20260219120000] in output\n\
----------行为编号[yyy]结束---------\n";
-
-        let ids = extract_msg_ids(text);
-        // Should only match the REAL markers, not the ones in exec result
-        // The exec result contains fake markers that look like real ones,
-        // but they are from grep output of old logs
-        // Real markers: read at 20260225100000, send at 20260225100100
-        // Fake markers in exec result also match the pattern... 
-        // Actually the fake ones DO match because they have the right context!
-        // "24007 [MSG:20260220080000]发来一条消息：" matches READ pattern
-        // "send success [MSG:20260220090000]" matches SEND pattern
-        // This is the remaining risk - exec result can contain full-context markers
-        // But with appearance order (not sorted), first() and last() are the real ones
-        assert_eq!(ids[0], "20260225100000"); // first real marker
-        assert_eq!(*ids.last().unwrap(), "20260220090000"); // unfortunately fake marker is last
-        // The key defense: appearance order means first() is always the real first marker
-    }
-
-    #[test]
-    fn test_extract_msg_ids_appearance_order_not_sorted() {
-        // If a later message has an earlier timestamp (shouldn't happen normally,
-        // but tests that we use appearance order)
-        let text = "send success [MSG:20260225120000]\n\
-                    24007 [MSG:20260225110000]发来一条消息：\nhello\n";
-
-        let ids = extract_msg_ids(text);
-        // Appearance order: 120000 first, 110000 second
-        assert_eq!(ids, vec!["20260225120000", "20260225110000"]);
-    }
-
-    #[test]
-    fn test_extract_msg_ids_utf8_boundary_safe() {
-        // Regression test: Chinese chars before [MSG:] caused panic
-        // "含" is 3 bytes, bracket_pos - 13 could land inside a multi-byte char
-        let text = "这是一段包含中文的内容send success [MSG:20260225170000]\n另外还有 [MSG:20260225170100]发来一条消息：\nhello\n";
-        let ids = extract_msg_ids(text);
-        assert_eq!(ids, vec!["20260225170000", "20260225170100"]);
-
-        // Pure Chinese before marker - no "send success" prefix
-        let text2 = "纯中文内容[MSG:20260225170000]\n";
-        let ids2 = extract_msg_ids(text2);
-        assert!(ids2.is_empty()); // No trusted context, should be rejected
-    }
-
-    #[test]
-    fn test_extract_msg_ids_rejects_bare_markers() {
-        // Bare [MSG:xxx] without send/read context should be ignored
-        let text = "some text [MSG:20260225100000] more text\n\
-                    thinking about [MSG:20260225110000] stuff\n\
-                    send success [MSG:20260225120000]\n";
-
-        let ids = extract_msg_ids(text);
-        // Only the send success one should match
-        assert_eq!(ids, vec!["20260225120000"]);
-    }
-
     #[test]
     fn test_summary_creates_new_block_when_full() {
         let (mut alice, mut tx, _tmp) = setup();
@@ -858,131 +676,6 @@ random [MSG:20260219120000] in output\n\
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
         assert!(result.contains("[exit code: 42]"));
     }
-
-    // ─── parse_summary_dual_output tests ───────────────────────────
-
-    #[test]
-    fn test_parse_dual_output_basic() {
-        let sm = "===SUMMARY===";
-        let km = "===KNOWLEDGE_abc123===";
-        let input = "===SUMMARY===
-This is summary
-
-===KNOWLEDGE_abc123===
-# Knowledge
-Some content";
-        let (s, k) = parse_summary_dual_output(input, sm, km);
-        assert_eq!(s.trim(), "This is summary");
-        assert_eq!(k.trim(), "# Knowledge\nSome content");
-    }
-
-    #[test]
-    fn test_parse_dual_output_no_knowledge() {
-        let sm = "===SUMMARY===";
-        let km = "===KNOWLEDGE_abc123===";
-        let input = "===SUMMARY===
-Just a summary, no knowledge section";
-        let (s, k) = parse_summary_dual_output(input, sm, km);
-        assert!(s.contains("Just a summary"));
-        assert!(k.trim().is_empty());
-    }
-
-    #[test]
-    fn test_parse_dual_output_no_markers() {
-        let sm = "===SUMMARY===";
-        let km = "===KNOWLEDGE_abc123===";
-        let input = "Plain text without any markers";
-        let (s, k) = parse_summary_dual_output(input, sm, km);
-        assert_eq!(s, "Plain text without any markers");
-        assert!(k.is_empty());
-    }
-
-    #[test]
-    fn test_parse_dual_output_token_prevents_self_reference() {
-        // Knowledge content mentions old token markers - should not interfere
-        let sm = "===SUMMARY===";
-        let km = "===KNOWLEDGE_newtoken===";
-        let input = "===SUMMARY===
-Discussed the separator
-
-===KNOWLEDGE_newtoken===
-# Design
-Old format used ===KNOWLEDGE_oldtoken=== as separator
-And even ===KNOWLEDGE=== without token
-# All knowledge preserved";
-        let (s, k) = parse_summary_dual_output(input, sm, km);
-        // First ===KNOWLEDGE_newtoken=== is the real separator
-        // Old tokens in knowledge content don\'t match
-        assert!(s.contains("Discussed the separator"));
-        assert!(k.contains("# Design"));
-        assert!(k.contains("Old format used"));
-        assert!(k.contains("# All knowledge preserved"));
-    }
-
-    #[test]
-    fn test_parse_dual_output_knowledge_in_inline_text() {
-        let sm = "===SUMMARY===";
-        let km = "===KNOWLEDGE_abc123===";
-        let input = "===SUMMARY===
-We discussed ===KNOWLEDGE_abc123=== format
-No actual knowledge section";
-        let (s, k) = parse_summary_dual_output(input, sm, km);
-        assert!(s.contains("We discussed"));
-        assert!(k.trim().is_empty());
-    }
-
-    #[test]
-    fn test_parse_dual_output_multiline_knowledge() {
-        let sm = "===SUMMARY===";
-        let km = "===KNOWLEDGE_abc123===";
-        let input = "===SUMMARY===
-Summary line 1
-Summary line 2
-
-===KNOWLEDGE_abc123===
-# Title
-
-## Section 1
-Content 1
-
-## Section 2
-Content 2";
-        let (s, k) = parse_summary_dual_output(input, sm, km);
-        assert!(s.contains("Summary line 1"));
-        assert!(s.contains("Summary line 2"));
-        assert!(k.contains("# Title"));
-        assert!(k.contains("## Section 1"));
-        assert!(k.contains("## Section 2"));
-    }
-
-    #[test]
-    fn test_parse_dual_output_only_knowledge() {
-        let sm = "===SUMMARY===";
-        let km = "===KNOWLEDGE_abc123===";
-        let input = "Some summary without marker
-
-===KNOWLEDGE_abc123===
-# Knowledge
-Content";
-        let (s, k) = parse_summary_dual_output(input, sm, km);
-        assert!(s.contains("Some summary without marker"));
-        assert!(k.contains("# Knowledge"));
-    }
-
-    #[test]
-    fn test_parse_dual_output_empty_knowledge() {
-        let sm = "===SUMMARY===";
-        let km = "===KNOWLEDGE_abc123===";
-        let input = "===SUMMARY===
-Summary content
-
-===KNOWLEDGE_abc123===
-";
-        let (s, k) = parse_summary_dual_output(input, sm, km);
-        assert!(s.contains("Summary content"));
-        assert!(k.trim().is_empty());
-    }
-
 }
 
 
