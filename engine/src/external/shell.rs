@@ -134,6 +134,20 @@ impl Shell {
         }
     }
 
+    /// Detect whether a sandbox user exists for the given instance ID.
+    /// Returns `Some("agent-{id}")` if the system user exists, `None` otherwise.
+    pub fn detect_sandbox_user(instance_id: &str) -> Option<String> {
+        let user = format!("agent-{}", instance_id);
+        let exists = std::process::Command::new("id")
+            .arg(&user)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if exists { Some(user) } else { None }
+    }
+
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout_duration = timeout;
         self

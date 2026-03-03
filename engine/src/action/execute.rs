@@ -44,15 +44,7 @@ fn make_shell(alice: &Alice) -> Shell {
     let sandbox_user = if alice.privileged {
         None
     } else {
-        let user = format!("agent-{}", alice.instance.id);
-        let user_exists = std::process::Command::new("id")
-            .arg(&user)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if user_exists { Some(user) } else { None }
+        Shell::detect_sandbox_user(&alice.instance.id)
     };
     Shell::new(alice.instance.workspace.clone(), sandbox_user)
 }
@@ -238,15 +230,17 @@ fn execute_replace_in_file(
         let mut result_lines: Vec<String> = Vec::new();
         let mut total_replaced = 0;
         for block in blocks.iter() {
-            let count = content.matches(block.search.as_str()).count();
-            if count != 1 {
-                result_lines.push(out::replace_match_error(
-                    &crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display), count));
-                continue;
+            let truncated = crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display);
+            match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str()) {
+                Ok(new_content) => {
+                    content = new_content;
+                    total_replaced += 1;
+                    result_lines.push(out::replace_block_success(&truncated));
+                }
+                Err(count) => {
+                    result_lines.push(out::replace_match_error(&truncated, count));
+                }
             }
-            content = content.replacen(block.search.as_str(), block.replace.as_str(), 1);
-            total_replaced += 1;
-            result_lines.push(out::replace_block_success(&crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display)));
         }
 
         std::fs::write(&abs_path, &content)
@@ -268,15 +262,17 @@ fn execute_replace_in_file(
         let mut total_replaced = 0;
 
         for block in blocks.iter() {
-            let count = content.matches(block.search.as_str()).count();
-            if count != 1 {
-                result_lines.push(out::replace_match_error(
-                    &crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display), count));
-                continue;
+            let truncated = crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display);
+            match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str()) {
+                Ok(new_content) => {
+                    content = new_content;
+                    total_replaced += 1;
+                    result_lines.push(out::replace_block_success(&truncated));
+                }
+                Err(count) => {
+                    result_lines.push(out::replace_match_error(&truncated, count));
+                }
             }
-            content = content.replacen(block.search.as_str(), block.replace.as_str(), 1);
-            total_replaced += 1;
-            result_lines.push(out::replace_block_success(&crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display)));
         }
 
         let shell = make_shell(alice);
