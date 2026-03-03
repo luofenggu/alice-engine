@@ -8,9 +8,15 @@ use std::collections::HashMap;
 pub struct EngineConfig {
     pub engine: EnginePolicyConfig,
     pub memory: MemoryPolicyConfig,
+    pub streaming: StreamingConfig,
     pub rpc: RpcConfig,
     pub file_browse: FileBrowseConfig,
     pub llm: LlmPolicyConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamingConfig {
+    pub poll_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

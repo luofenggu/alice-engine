@@ -23,6 +23,9 @@ inference_backoff_base_secs = 10
 inference_backoff_max_exponent = 5
 inference_backoff_cap_secs = 300
 
+[streaming]
+poll_interval_ms = 200
+
 [memory]
 session_blocks_limit = 4
 session_block_kb = 2

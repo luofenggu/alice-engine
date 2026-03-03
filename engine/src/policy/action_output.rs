@@ -247,14 +247,29 @@ pub fn instance_created(id: &str, name: &str, knowledge_bytes: usize) -> String 
 // ─── Action block formatting ─────────────────────────────────────
 
 /// Format a complete action block (start + doing + done + end).
-pub fn action_block_full(action_id: &str, doing_text: &str, done_text: &str) -> String {
+pub fn action_block_full(action_id: &str, doing_text: &str, done_text: Option<&str>) -> String {
     format!(
         "{}\n{}{}\n{}\n",
         action_block_start(action_id),
         doing_text,
-        done_text,
+        done_text.unwrap_or(""),
         action_block_end(action_id),
     )
+}
+
+/// Build the "doing" text for an action (description + executing marker).
+pub fn build_doing_text(action: &Action) -> String {
+    format!("{}\n{}", build_doing_description(action), action_executing())
+}
+
+/// Build the "done" text for an action result.
+/// Returns empty string for empty output, or newline-prefixed output.
+pub fn build_done_text(output: &str) -> String {
+    if output.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", output)
+    }
 }
 
 /// Format the "action executing" pending marker.

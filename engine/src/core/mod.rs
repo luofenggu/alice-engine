@@ -256,15 +256,11 @@ impl Transaction {
     pub fn build_session_text(&self) -> String {
         let mut text = String::new();
         for record in &self.action_records {
-            text.push_str(&action_output::action_block_start(&record.action_id));
-            text.push_str("\n");
-            text.push_str(&record.doing_text);
-            if let Some(done) = &record.done_text {
-                text.push_str(done);
-            }
-            text.push_str("\n");
-            text.push_str(&action_output::action_block_end(&record.action_id));
-            text.push_str("\n");
+            text.push_str(&action_output::action_block_full(
+                &record.action_id,
+                &record.doing_text,
+                record.done_text.as_deref(),
+            ));
         }
         text
     }
@@ -349,6 +345,8 @@ pub struct Alice {
     pub safety_max_consecutive_beats: u32,
     /// Safety valve: cooldown duration in seconds after triggering.
     pub safety_cooldown_secs: u64,
+    /// Stream poll interval in milliseconds.
+    pub stream_poll_interval_ms: u64,
 }
 
 impl Alice {
@@ -387,6 +385,7 @@ impl Alice {
             history_kb: crate::policy::EngineConfig::get().memory.history_kb,
             safety_max_consecutive_beats: crate::policy::EngineConfig::get().memory.safety_max_consecutive_beats,
             safety_cooldown_secs: crate::policy::EngineConfig::get().memory.safety_cooldown_secs,
+            stream_poll_interval_ms: crate::policy::EngineConfig::get().streaming.poll_interval_ms,
             env_config,
         })
     }
@@ -628,17 +627,13 @@ impl Alice {
 
             let mut tx = Transaction::new(&self.instance.id);
 
-            let doing_text = format!(
-                "{}\n{}",
-                action_output::build_doing_description(&Action::ReadMsg),
-                action_output::action_executing(),
-            );
+            let doing_text = action_output::build_doing_text(&Action::ReadMsg);
             let action_id = tx.record_doing(Action::ReadMsg, doing_text);
 
             let result = execute_action(&Action::ReadMsg, self, &mut tx);
             let done_text = match result {
                 Ok(ref output) if output.is_empty() => String::new(),
-                Ok(output) => format!("\n{}", output),
+                Ok(output) => action_output::build_done_text(&output),
                 Err(e) => action_output::action_error(&e),
             };
             tx.record_done(&action_id, done_text);
@@ -647,7 +642,7 @@ impl Alice {
                 let action_text = action_output::action_block_full(
                     &record.action_id,
                     &record.doing_text,
-                    record.done_text.as_deref().unwrap_or(""),
+                    record.done_text.as_deref(),
                 );
                 self.instance.memory.append_current(&action_text).ok();
             }
@@ -730,7 +725,7 @@ impl Alice {
                 break;
             }
 
-            match stream.next_or_timeout(std::time::Duration::from_millis(200)) {
+            match stream.next_or_timeout(std::time::Duration::from_millis(self.stream_poll_interval_ms)) {
                 RecvResult::Timeout => continue,
                 RecvResult::Disconnected => {
                     let backoff = self.set_inference_backoff();
@@ -754,11 +749,7 @@ impl Alice {
                         }
 
                         // Build doing text
-                        let doing_text = format!(
-                            "{}\n{}",
-                            action_output::build_doing_description(&action),
-                            action_output::action_executing(),
-                        );
+                        let doing_text = action_output::build_doing_text(&action);
 
                         let action_id = tx.record_doing(action.clone(), doing_text);
 
@@ -782,7 +773,7 @@ impl Alice {
                         // Record done
                         let done_text = match result {
                             Ok(ref output) if output.is_empty() => String::new(),
-                            Ok(output) => format!("\n{}", output),
+                            Ok(output) => action_output::build_done_text(&output),
                             Err(e) => action_output::action_error(&e),
                         };
                         tx.record_done(&action_id, done_text);
@@ -792,7 +783,7 @@ impl Alice {
                             let action_text = action_output::action_block_full(
                                 &record.action_id,
                                 &record.doing_text,
-                                record.done_text.as_deref().unwrap_or(""),
+                                record.done_text.as_deref(),
                             );
                             self.instance.memory.append_current(&action_text).ok();
                         }
