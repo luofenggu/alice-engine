@@ -1,3 +1,4 @@
+pub mod llm;
 pub mod shell;
 pub mod skeleton;
 

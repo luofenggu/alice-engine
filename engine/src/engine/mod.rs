@@ -263,9 +263,9 @@ impl AliceEngine {
         let mut alice = Alice::new(instance, config, self.env_config.clone())?;
 
         // Build extra model configs for failover
-        let extra_configs: Vec<crate::llm::LlmConfig> = settings.extra_models.iter().map(|em| {
+        let extra_configs: Vec<crate::external::llm::LlmConfig> = settings.extra_models.iter().map(|em| {
             let (url, model_id) = parse_model_str(&em.model);
-            crate::llm::LlmConfig {
+            crate::external::llm::LlmConfig {
                 api_url: url,
                 api_key: em.api_key.clone(),
                 model: model_id,
@@ -541,9 +541,9 @@ impl AliceEngine {
                     }
 
                     // Hot-reload extra_models
-                    let new_extra_configs: Vec<crate::llm::LlmConfig> = s.extra_models.iter().map(|em| {
+                    let new_extra_configs: Vec<crate::external::llm::LlmConfig> = s.extra_models.iter().map(|em| {
                         let (api_url, model_id) = parse_model_str(&em.model);
-                        crate::llm::LlmConfig {
+                        crate::external::llm::LlmConfig {
                             api_url,
                             api_key: em.api_key.clone(),
                             model: model_id,

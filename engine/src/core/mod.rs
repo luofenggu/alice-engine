@@ -48,7 +48,7 @@ use chrono::Local;
 use crate::inference::Action;
 use crate::action::execute::execute_action;
 use crate::persist::instance;
-use crate::llm::{LlmClient, LlmConfig, InferenceStream, StreamItem, RecvResult};
+use crate::external::llm::{LlmClient, LlmConfig, InferenceStream, StreamItem, RecvResult};
 use crate::prompt::build_beat_request;
 
 // ─── Sequence Guard ──────────────────────────────────────────────
@@ -385,7 +385,7 @@ pub struct Alice {
     /// Backoff deadline: skip inference until this instant.
     inference_backoff_until: Option<Instant>,
     /// Extra LLM configurations for failover (manual switch via API).
-    pub extra_configs: Vec<crate::llm::LlmConfig>,
+    pub extra_configs: Vec<crate::external::llm::LlmConfig>,
     /// Active config index: 0 = primary, 1+ = extra_configs[index-1].
     pub active_config_index: usize,
     /// Display name from settings.json (e.g. "小白", "牧星").
@@ -501,7 +501,7 @@ impl Alice {
         &mut self,
         request: crate::inference::compress::CompressRequest,
         max_tokens: u32,
-    ) -> anyhow::Result<(String, Option<crate::llm::UsageInfo>)> {
+    ) -> anyhow::Result<(String, Option<crate::external::llm::UsageInfo>)> {
         if let Some(ref mut mocks) = self.mock_sync_responses {
             if let Some(response) = mocks.pop_front() {
                 info!("[INFER-SYNC-{}] Using mock response ({} chars)", self.instance.id, response.len());
@@ -1024,7 +1024,7 @@ pub struct RollTask {
     pub oldest_block: String,
     pub request: crate::inference::compress::CompressRequest,
     pub instance_id: String,
-    pub llm_config: crate::llm::LlmConfig,
+    pub llm_config: crate::external::llm::LlmConfig,
 }
 
 /// Prepare history rolling if needed (fast, non-blocking).
@@ -1036,7 +1036,7 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     use anyhow::Context;
 
     // Create a temporary LLM client for this task
-    let llm_client = crate::llm::LlmClient::new(task.llm_config);
+    let llm_client = crate::external::llm::LlmClient::new(task.llm_config);
 
     info!("[ROLL-{}] Background: calling LLM for history compression", task.instance_id);
     let (new_history, usage) = llm_client.infer_compress(
