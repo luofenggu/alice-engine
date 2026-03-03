@@ -8,13 +8,6 @@
 use crate::core::Alice;
 use crate::inference::beat::BeatRequest;
 
-// Re-export protocol types that external code references via crate::prompt::
-pub use crate::inference::beat::{KNOWLEDGE_FILE, MemorySnapshot};
-#[cfg(feature = "welcome-letter")]
-pub use crate::inference::beat::WELCOME_LETTER;
-pub use crate::inference::beat::INITIAL_HISTORY;
-pub use crate::inference::compress::CompressRequest;
-
 // ---------------------------------------------------------------------------
 // Session block rendering (depends on Alice for chat DB access)
 // ---------------------------------------------------------------------------
@@ -71,16 +64,15 @@ pub fn render_session_block(jsonl_content: &str, alice: &Alice) -> String {
 // Prompt builder — extracts data from Alice, delegates rendering to inference
 // ---------------------------------------------------------------------------
 
-/// Build the system prompt and user prompt for one React beat.
+/// Build a BeatRequest from Alice's current state.
 ///
-/// Reads memory from Alice's state, constructs a BeatRequest,
-/// and delegates rendering to the inference module.
-/// Returns `(system_prompt, user_prompt, memory_snapshot)`.
-pub fn build_prompts(
+/// Reads memory, chat, config from Alice and assembles a BeatRequest struct.
+/// The caller passes this to LlmClient which handles rendering and inference internally.
+pub fn build_beat_request(
     alice: &Alice,
     action_token: &str,
     host: Option<&str>,
-) -> (String, String, MemorySnapshot) {
+) -> BeatRequest {
     let knowledge_content = load_knowledge_file(alice);
 
     let history_content = {
@@ -97,7 +89,7 @@ pub fn build_prompts(
 
     let unread_count = alice.count_unread_messages();
 
-    let request = BeatRequest {
+    BeatRequest {
         action_token: action_token.to_string(),
         instance_id: alice.instance.id.clone(),
         instance_name: alice.instance_name.clone(),
@@ -109,9 +101,7 @@ pub fn build_prompts(
         daily_rendered,
         current_content,
         unread_count: unread_count.try_into().unwrap_or(0),
-    };
-
-    request.render()
+    }
 }
 
 /// Load knowledge from memory for injection into prompt.
@@ -217,24 +207,26 @@ mod tests {
     }
 
     #[test]
-    fn test_build_prompts_empty_memory() {
+    fn test_build_beat_request_empty_memory() {
         let (alice, _tmp) = setup_alice();
-        let (system, user, snapshot) = build_prompts(&alice, "abc", None);
+        let request = build_beat_request(&alice, "abc", None);
+        let (system, user, _) = request.render();
         assert!(system.contains("###ACTION_abc###-"));
         assert!(user.contains("(空)"));
-        assert_eq!(snapshot.history, "(空)");
-        assert_eq!(snapshot.current, "(空)");
+        assert_eq!(request.history_content, "(空)");
+        assert_eq!(request.current_content, "(空)");
     }
 
     #[test]
-    fn test_build_prompts_with_session_block() {
+    fn test_build_beat_request_with_session_block() {
         let (mut alice, _tmp) = setup_alice();
         alice.instance.memory.history.write("some history").unwrap();
         alice.instance.chat.write_user_message("24007", "hi there", "20260223120000").unwrap();
         let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
         alice.instance.memory.append_session_block("20260223120000", jsonl).unwrap();
 
-        let (_, user, _) = build_prompts(&alice, "tok", None);
+        let request = build_beat_request(&alice, "tok", None);
+        let (_, user, _) = request.render();
         assert!(user.contains("24007 [20260223120000]: hi there"));
         assert!(user.contains("[总结] User said hi"));
     }
@@ -268,10 +260,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_prompts_with_knowledge() {
+    fn test_build_beat_request_with_knowledge() {
         let (alice, _tmp) = setup_alice();
         alice.instance.memory.knowledge.write("# 泛准则\n- 谨慎加信任").unwrap();
-        let (_, user, _) = build_prompts(&alice, "tok", None);
+        let request = build_beat_request(&alice, "tok", None);
+        let (_, user, _) = request.render();
         assert!(user.contains("### 要点与知识 ###"));
         assert!(user.contains("谨慎加信任"));
     }

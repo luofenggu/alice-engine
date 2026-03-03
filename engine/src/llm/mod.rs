@@ -32,7 +32,9 @@ use anyhow::{Result, Context};
 use tracing::{info, warn, error};
 use serde::{Deserialize, Serialize};
 
-use crate::action::parse_actions;
+use crate::inference::parse_actions;
+use crate::inference::beat::BeatRequest;
+use crate::inference::compress::CompressRequest;
 /// Token usage info from LLM response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageInfo {
@@ -204,17 +206,72 @@ impl LlmClient {
         })
     }
 
-    /// Start an async inference, returning a stream for consuming actions.
+    /// High-level beat inference: renders request, writes input log, starts streaming.
     ///
-    /// This spawns a background thread that:
-    /// 1. Sends HTTP POST to OpenRouter
-    /// 2. Reads SSE stream
-    /// 3. Detects action separators and parses actions
-    /// 4. Sends parsed actions through a channel
-    /// 5. Appends raw output to the log file
+    /// External code fills BeatRequest struct fields; this method handles
+    /// render → log → API call → stream parse internally.
     ///
     /// @TRACE: INFER, STREAM
-    pub fn infer_async(
+    pub fn infer_beat(
+        &self,
+        request: BeatRequest,
+        log_path: PathBuf,
+        log_dir: &Path,
+        log_timestamp: &str,
+        instance_id: String,
+        infer_log_enabled: bool,
+    ) -> InferenceStream {
+        let (system_prompt, user_prompt, _snapshot) = request.render();
+
+        // Write input log if enabled
+        if infer_log_enabled {
+            crate::logging::write_infer_input_log(
+                log_dir, &instance_id, log_timestamp,
+                &self.config.model, &self.config.api_url,
+                &system_prompt, &user_prompt,
+            );
+        }
+
+        let messages = vec![
+            ChatMessage::system(&system_prompt),
+            ChatMessage::user(&user_prompt),
+        ];
+
+        self.infer_async(
+            messages,
+            &request.action_token,
+            log_path,
+            instance_id,
+        )
+    }
+
+    /// High-level compress inference: renders request, calls sync API.
+    ///
+    /// External code fills CompressRequest struct fields; this method handles
+    /// render → API call internally.
+    ///
+    /// @TRACE: INFER
+    pub fn infer_compress(
+        &self,
+        request: CompressRequest,
+        max_tokens: u32,
+        instance_id: &str,
+    ) -> Result<(String, Option<UsageInfo>)> {
+        let (system_msg, user_msg) = request.render();
+        let messages = vec![
+            ChatMessage::system(&system_msg),
+            ChatMessage::user(&user_msg),
+        ];
+        self.infer_sync(messages, max_tokens, instance_id)
+    }
+
+    /// Start an async inference, returning a stream for consuming actions.
+    ///
+    /// Low-level method: accepts pre-built messages. Prefer `infer_beat()` which
+    /// handles request rendering internally.
+    ///
+    /// @TRACE: INFER, STREAM
+    fn infer_async(
         &self,
         messages: Vec<ChatMessage>,
         separator_token: &str,

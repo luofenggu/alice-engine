@@ -45,11 +45,11 @@ use anyhow::Result;
 use tracing::{info, warn};
 use chrono::Local;
 
-use crate::action::Action;
+use crate::inference::Action;
 use crate::action::execute::execute_action;
 use crate::persist::instance;
-use crate::llm::{LlmClient, LlmConfig, ChatMessage, InferenceStream, StreamItem, RecvResult};
-use crate::prompt::build_prompts;
+use crate::llm::{LlmClient, LlmConfig, InferenceStream, StreamItem, RecvResult};
+use crate::prompt::build_beat_request;
 
 // ─── Sequence Guard ──────────────────────────────────────────────
 
@@ -495,11 +495,11 @@ impl Alice {
         self.mock_sync_responses.as_ref().map_or(false, |q| !q.is_empty())
     }
 
-    /// Sync inference with mock support. Used by capture and compress.
+    /// Sync compress inference with mock support.
     /// In test mode, consumes from mock_sync_responses. In production, calls LLM.
-    pub fn infer_sync_or_mock(
+    pub fn infer_compress_or_mock(
         &mut self,
-        messages: Vec<crate::llm::ChatMessage>,
+        request: crate::inference::compress::CompressRequest,
         max_tokens: u32,
     ) -> anyhow::Result<(String, Option<crate::llm::UsageInfo>)> {
         if let Some(ref mut mocks) = self.mock_sync_responses {
@@ -508,7 +508,7 @@ impl Alice {
                 return Ok((response, None));
             }
         }
-        self.llm_client.infer_sync(messages, max_tokens, &self.instance.id)
+        self.llm_client.infer_compress(request, max_tokens, &self.instance.id)
     }
 
     // ─── Sessions access ────────────────────────────────────────
@@ -565,12 +565,6 @@ impl Alice {
             session_content: rendered_block.clone(),
             current_history: current_history.clone(),
         };
-        let (system_msg, user_msg) = request.render();
-
-        let messages = vec![
-            crate::llm::ChatMessage::system(&system_msg),
-            crate::llm::ChatMessage::user(&user_msg),
-        ];
 
         // Clone LLM config for background thread
         let llm_config = self.llm_client.config.clone();
@@ -578,7 +572,7 @@ impl Alice {
         Ok(Some(RollTask {
             sessions_dir: self.instance.memory.sessions_dir().to_path_buf(),
             oldest_block: oldest_block.clone(),
-            messages,
+            request,
             instance_id: self.instance.id.clone(),
             llm_config,
         }))
@@ -634,23 +628,17 @@ impl Alice {
         // 2. Read current history (from memory handle)
         let current_history = self.instance.memory.history.read()?;
 
-        // 3. Build LLM prompt via CompressRequest
+        // 3. Build LLM request via CompressRequest
         let request = crate::inference::compress::CompressRequest {
             history_kb: self.history_kb as usize,
             session_content: rendered_block.clone(),
             current_history: current_history.clone(),
         };
-        let (system_msg, user_msg) = request.render();
-
-        let messages = vec![
-            crate::llm::ChatMessage::system(&system_msg),
-            crate::llm::ChatMessage::user(&user_msg),
-        ];
 
         // 4. Call LLM (synchronous, blocking)
         info!("[ROLL-{}] Calling LLM for history compression", self.instance.id);
-        let (new_history, usage) = self.infer_sync_or_mock(
-            messages,
+        let (new_history, usage) = self.infer_compress_or_mock(
+            request,
             4096,
         )?;
 
@@ -807,32 +795,14 @@ impl Alice {
         // 3. Create transaction
         let mut tx = Transaction::new(&self.instance.id, &separator_token);
 
-        // 4. Build prompts
-        let (system_prompt, user_prompt, _snapshot) = build_prompts(
-            self,
-            &separator_token,
-            self.host.as_deref(),
-        );
-
-        let messages = vec![
-            ChatMessage::system(&system_prompt),
-            ChatMessage::user(&user_prompt),
-        ];
+        // 4. Build inference request
+        let request = build_beat_request(self, &separator_token, self.host.as_deref());
 
         // 5. Set up inference log
         let (log_path, log_timestamp) = crate::logging::create_infer_log_path(
             &self.config.log_dir, &self.instance.id,
         );
         self.current_infer_log_path = Some(log_path.clone());
-
-        // Write input log (only if enabled via env config)
-        if self.env_config.infer_log_enabled {
-            crate::logging::write_infer_input_log(
-                &self.config.log_dir, &self.instance.id, &log_timestamp,
-                &self.config.model, &self.config.api_url,
-                &system_prompt, &user_prompt,
-            );
-        }
 
         // Mark born on first inference start (not just first idle)
         if !self.born {
@@ -861,11 +831,13 @@ impl Alice {
             InferenceStream::mock(streams.pop_front().unwrap_or_default())
         } else {
             info!("[INFER-{}] Starting inference", self.instance.id);
-            self.llm_client.infer_async(
-                messages,
-                &separator_token,
+            self.llm_client.infer_beat(
+                request,
                 log_path.clone(),
+                &self.config.log_dir,
+                &log_timestamp,
                 self.instance.id.clone(),
+                self.env_config.infer_log_enabled,
             )
         };
 
@@ -1017,7 +989,7 @@ pub fn build_doing_description(action: &Action) -> String {
         Action::WriteFile { path, content } => {
             #[cfg(feature = "remember")]
             {
-                match crate::action::extract_remember_fragments(content) {
+                match crate::inference::extract_remember_fragments(content) {
                     Some(fragments) => format!("write file [{}]\n[以下仅为REMEMBER标记的关键片段，非完整文件内容]\n{}", path, fragments),
                     None => format!("write file [{}]", path),
                 }
@@ -1050,7 +1022,7 @@ pub fn build_doing_description(action: &Action) -> String {
 pub struct RollTask {
     pub sessions_dir: std::path::PathBuf,
     pub oldest_block: String,
-    pub messages: Vec<crate::llm::ChatMessage>,
+    pub request: crate::inference::compress::CompressRequest,
     pub instance_id: String,
     pub llm_config: crate::llm::LlmConfig,
 }
@@ -1067,8 +1039,8 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     let llm_client = crate::llm::LlmClient::new(task.llm_config);
 
     info!("[ROLL-{}] Background: calling LLM for history compression", task.instance_id);
-    let (new_history, usage) = llm_client.infer_sync(
-        task.messages,
+    let (new_history, usage) = llm_client.infer_compress(
+        task.request,
         4096,
         &task.instance_id,
     )?;

@@ -95,7 +95,7 @@ impl Instance {
         // Write initial knowledge if provided
         if let Some(k) = knowledge {
             if !k.is_empty() {
-                let knowledge_file = memory_dir.join(crate::prompt::KNOWLEDGE_FILE);
+                let knowledge_file = memory_dir.join(crate::inference::beat::KNOWLEDGE_FILE);
                 crate::atomic_write(&knowledge_file, k)?;
             }
         }
@@ -148,7 +148,7 @@ impl Instance {
             .with_context(|| format!("Failed to create data dir: {}", data_dir.display()))?;
 
         // One-time migration: keypoints.md + knowledge/*.md → knowledge.md
-        let knowledge_file = memory_dir.join(crate::prompt::KNOWLEDGE_FILE);
+        let knowledge_file = memory_dir.join(crate::inference::beat::KNOWLEDGE_FILE);
         if !knowledge_file.exists() {
             Self::migrate_knowledge(&knowledge_dir, &knowledge_file, &id)?;
         }

@@ -9,13 +9,13 @@ use anyhow::{Result, bail, Context};
 use tracing::{info, warn};
 use chrono::Local;
 #[cfg(feature = "remember")]
-use super::strip_remember_markers;
+use crate::inference::strip_remember_markers;
 
 use std::path::PathBuf;
 
 use crate::core::{Alice, Transaction};
 use crate::external::shell::Shell;
-use super::{Action, ReplaceBlock};
+use crate::inference::{Action, ReplaceBlock};
 use crate::policy::action_output as out;
 
 /// Resolve an action path to an absolute path.

@@ -326,7 +326,7 @@ impl AliceEngine {
             let timestamp = ChatHistory::now_timestamp();
             alice.instance.chat.write_user_message(
                 "system",
-                crate::prompt::WELCOME_LETTER,
+                crate::inference::beat::WELCOME_LETTER,
                 &timestamp,
             ).ok();
             info!("[INSTANCE] Welcome letter inserted for {}", name);
@@ -334,7 +334,7 @@ impl AliceEngine {
 
         // Write initial memory (imprint learning) on first creation
         if alice.instance.memory.history.read()?.is_empty() {
-            alice.instance.memory.history.write(crate::prompt::INITIAL_HISTORY).ok();
+            alice.instance.memory.history.write(crate::inference::beat::INITIAL_HISTORY).ok();
             info!("[INSTANCE] Initial history written for {}", name);
         }
 

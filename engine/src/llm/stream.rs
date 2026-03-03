@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::action::Action;
+use crate::inference::Action;
 use super::UsageInfo;
 
 // ---------------------------------------------------------------------------
