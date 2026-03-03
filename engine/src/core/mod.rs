@@ -158,28 +158,7 @@ impl Action {
 
 // ─── Configuration ───────────────────────────────────────────────
 
-/// Agent instance configuration.
-///
-/// @TRACE: INSTANCE
-#[derive(Debug, Clone)]
-pub struct AliceConfig {
-    /// LLM model identifier (e.g. "openrouter@anthropic/claude-sonnet-4")
-    pub model: String,
-    /// API key for authentication
-    pub api_key: String,
-    /// Log directory path
-    pub log_dir: PathBuf,
-}
 
-impl Default for AliceConfig {
-    fn default() -> Self {
-        Self {
-            model: String::new(),
-            api_key: String::new(),
-            log_dir: PathBuf::from("/root/alice-logs"),
-        }
-    }
-}
 
 // ─── Action Record ───────────────────────────────────────────────
 
@@ -319,8 +298,8 @@ pub struct Alice {
     pub instance: instance::Instance,
     /// User ID this instance belongs to (cached from settings).
     pub user_id: String,
-    /// Instance configuration
-    pub config: AliceConfig,
+    /// Log directory path
+    pub log_dir: PathBuf,
     /// Environment configuration (shared, read-only after startup).
     pub env_config: Arc<crate::policy::EnvConfig>,
     /// Current inference log path (Some = inferring, None = idle)
@@ -380,20 +359,16 @@ impl Alice {
     /// Create a new Alice instance from an instance directory.
     ///
     /// @TRACE: INSTANCE
-    pub fn new(instance: instance::Instance, config: AliceConfig, env_config: Arc<crate::policy::EnvConfig>) -> Result<Self> {
+    pub fn new(instance: instance::Instance, log_dir: PathBuf, llm_config: LlmConfig, env_config: Arc<crate::policy::EnvConfig>) -> Result<Self> {
         let user_id = instance.user_id().to_string();
 
-        let llm_config = LlmConfig {
-            model: config.model.clone(),
-            api_key: config.api_key.clone(),
-        };
         let llm_client = LlmClient::new(llm_config);
 
         info!("[INSTANCE-{}] Alice created for user {} at {}", instance.id, user_id, instance.instance_dir.display());
         Ok(Self {
             instance,
             user_id,
-            config,
+            log_dir,
             current_infer_log_path: None,
             llm_client,
             last_was_idle: false,
@@ -723,7 +698,7 @@ impl Alice {
 
         // 5. Set up inference log
         let (log_path, log_timestamp) = crate::logging::create_infer_log_path(
-            &self.config.log_dir, &self.instance.id,
+            &self.log_dir, &self.instance.id,
         );
         self.current_infer_log_path = Some(log_path.clone());
 
@@ -753,7 +728,7 @@ impl Alice {
             self.llm_client.infer_beat(
                 request,
                 log_path.clone(),
-                &self.config.log_dir,
+                &self.log_dir,
                 &log_timestamp,
                 self.instance.id.clone(),
                 self.env_config.infer_log_enabled,
@@ -972,12 +947,10 @@ mod tests {
         // Instance::open creates all subdirectories automatically
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
-        let config = AliceConfig {
-            log_dir: tmp.path().join("logs"),
-            ..Default::default()
-        };
+        let log_dir = tmp.path().join("logs");
+        let llm_config = LlmConfig { model: String::new(), api_key: String::new() };
         let env_config = Arc::new(crate::policy::EnvConfig::from_env());
-        let alice = Alice::new(instance, config, env_config).unwrap();
+        let alice = Alice::new(instance, log_dir, llm_config, env_config).unwrap();
         (alice, tmp)
     }
 

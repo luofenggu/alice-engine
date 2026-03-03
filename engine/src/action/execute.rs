@@ -459,7 +459,7 @@ fn execute_create_instance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::AliceConfig;
+
     use tempfile::TempDir;
 
     fn setup() -> (Alice, Transaction, TempDir) {
@@ -472,9 +472,8 @@ mod tests {
         // Instance::open creates all subdirectories automatically
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
-        let config = AliceConfig::default();
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let mut alice = Alice::new(instance, config, env_config).unwrap();
+        let mut alice = Alice::new(instance, tmp.path().join("logs"), crate::external::llm::LlmConfig { model: String::new(), api_key: String::new() }, env_config).unwrap();
         alice.privileged = true;
         let tx = Transaction::new("test");
         (alice, tx, tmp)

@@ -53,7 +53,7 @@ pub use stream::{InferenceStream, StreamItem, RecvResult};
 /// Configuration for the LLM provider.
 ///
 /// @TRACE: INFER
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LlmConfig {
     /// Raw model string (e.g. "openrouter@anthropic/claude-opus-4.6")
     /// Provider resolution and API URL lookup happen at call time in external/llm.

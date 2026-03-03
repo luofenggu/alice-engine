@@ -146,7 +146,7 @@ pub fn render_all_session_blocks(alice: &Alice) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::AliceConfig;
+
     use tempfile::TempDir;
 
     fn setup_alice() -> (Alice, TempDir) {
@@ -154,12 +154,8 @@ mod tests {
         let settings_path = tmp.path().join("settings.json");
         std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
-        let config = AliceConfig {
-            log_dir: tmp.path().join("logs"),
-            ..Default::default()
-        };
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let alice = Alice::new(instance, config, env_config).unwrap();
+        let alice = Alice::new(instance, tmp.path().join("logs"), Default::default(), env_config).unwrap();
         (alice, tmp)
     }
 

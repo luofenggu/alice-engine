@@ -35,7 +35,7 @@ use anyhow::{Result, Context};
 use tracing::{info, warn, error};
 
 use crate::util::Counter;
-use crate::core::{Alice, AliceConfig};
+use crate::core::Alice;
 use crate::persist::instance::{InstanceStore, InstanceSettingsExt};
 use crate::core::signal::SignalHub;
 
@@ -150,14 +150,12 @@ impl AliceEngine {
         settings.apply_env_fallbacks(&self.env_config);
         settings.validate()?;
 
-        let config = AliceConfig {
+        let llm_config = crate::external::llm::LlmConfig {
             model: settings.model.clone(),
             api_key: settings.api_key.clone(),
-            log_dir: self.logs_dir.clone(),
-
         };
 
-        let mut alice = Alice::new(instance, config, self.env_config.clone())?;
+        let mut alice = Alice::new(instance, self.logs_dir.clone(), llm_config, self.env_config.clone())?;
 
         alice.instance_name = settings.name;
 
@@ -373,14 +371,12 @@ impl AliceEngine {
                     }
 
                     // Hot-reload model and api_key
-                    if !s.model.is_empty() && s.model != alice.config.model {
-                        info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.config.model, s.model);
-                        alice.config.model = s.model.clone();
+                    if !s.model.is_empty() && s.model != alice.llm_client.config.model {
+                        info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.llm_client.config.model, s.model);
                         alice.llm_client.config.model = s.model.clone();
                     }
-                    if !s.api_key.is_empty() && s.api_key != alice.config.api_key {
+                    if !s.api_key.is_empty() && s.api_key != alice.llm_client.config.api_key {
                         info!("[HOT-RELOAD-{}] API key changed", instance_id);
-                        alice.config.api_key = s.api_key.clone();
                         alice.llm_client.config.api_key = s.api_key.clone();
                     }
 
