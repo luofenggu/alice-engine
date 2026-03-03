@@ -6,7 +6,7 @@ For exempt directories (persist/external/policy), exempts internal literals
 but detects escape through pub fn return paths.
 
 Usage:
-    python3 guardian.py <dir> [--full] [--exclude dir1,dir2]
+    python3 guardian.py <dir> [--brief] [--exclude dir1,dir2]
 """
 
 import sys, os, argparse, re
@@ -620,7 +620,7 @@ def scan_file(filepath, source_bytes, parser):
 def main():
     ap = argparse.ArgumentParser(description='Guardian: Rust literal escape detector')
     ap.add_argument('directory', help='Directory to scan')
-    ap.add_argument('--full', action='store_true', help='Show all violations (default: summary)')
+    ap.add_argument('--brief', action='store_true', help='Show only first 3 violations per file')
     ap.add_argument('--exclude', default='', help='Comma-separated directories to exclude')
     args = ap.parse_args()
 
@@ -663,12 +663,12 @@ def main():
     for filepath, violations in file_results:
         rel = os.path.relpath(filepath)
         print('\n--- {} ({}) ---'.format(rel, len(violations)))
-        show = violations if args.full else violations[:3]
+        show = violations[:3] if args.brief else violations
         for f in show:
             esc_mark = ' [ESCAPE!]' if f['escape'] else ''
             print('  L{:<5} [{:<6}] {:<30} {}{}'.format(
                 f['line'], f['kind'], f['value'], f['context'][:60], esc_mark))
-        if not args.full and len(violations) > 3:
+        if args.brief and len(violations) > 3:
             print('  ... and {} more'.format(len(violations) - 3))
 
     # Summary
