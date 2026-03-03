@@ -19,6 +19,9 @@ disk_min_available_mb = 100
 sandbox_user_prefix = "agent-"
 test_instance_prefix = "test-"
 test_instance_max_beats = 10
+inference_backoff_base_secs = 10
+inference_backoff_max_exponent = 5
+inference_backoff_cap_secs = 300
 
 [memory]
 session_blocks_limit = 4

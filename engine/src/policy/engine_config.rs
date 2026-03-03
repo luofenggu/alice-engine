@@ -24,6 +24,9 @@ pub struct EnginePolicyConfig {
     pub sandbox_user_prefix: String,
     pub test_instance_prefix: String,
     pub test_instance_max_beats: u32,
+    pub inference_backoff_base_secs: u64,
+    pub inference_backoff_max_exponent: u32,
+    pub inference_backoff_cap_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -354,7 +354,7 @@ pub struct Alice {
     /// Set by AliceEngine from ALICE_HOST env var.
     pub host: Option<String>,
     /// Consecutive inference failure count (for exponential backoff).
-    inference_failures: u32,
+    inference_failures: Counter<u32>,
     /// Backoff deadline: skip inference until this instant.
     inference_backoff_until: Option<Instant>,
     /// Extra LLM configurations for failover (manual switch via API).
@@ -409,7 +409,7 @@ impl Alice {
             host: None,
             instance_name: None,
             signals: None,
-            inference_failures: 0,
+            inference_failures: Counter::<u32>::new(),
             inference_backoff_until: None,
             session_blocks_limit: crate::policy::EngineConfig::get().memory.session_blocks_limit,
             session_block_kb: crate::policy::EngineConfig::get().memory.session_block_kb,
@@ -611,14 +611,19 @@ impl Alice {
         self.instance.chat.count_unread_user_messages().unwrap_or(0)
     }
 
-    /// Set inference backoff after a failure.
-    /// Exponential backoff: min(10 * 2^(n-1), 300) seconds.
-    fn set_inference_backoff(&mut self) {
-        self.inference_failures += 1;
-        let backoff_secs = std::cmp::min(10u64 * (1u64 << (self.inference_failures - 1).min(5)), 300);
+    /// Set inference backoff after a failure. Returns the backoff duration in seconds.
+    fn set_inference_backoff(&mut self) -> u64 {
+        self.inference_failures.increment();
+        let policy = &crate::policy::EngineConfig::get().engine;
+        let backoff_secs = self.inference_failures.exponential_backoff(
+            policy.inference_backoff_base_secs,
+            policy.inference_backoff_max_exponent,
+            policy.inference_backoff_cap_secs,
+        );
         self.inference_backoff_until = Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
         warn!("[BACKOFF-{}] Inference failed ({} consecutive), backing off {}s",
-            self.instance.id, self.inference_failures, backoff_secs);
+            self.instance.id, self.inference_failures.value(), backoff_secs);
+        backoff_secs
     }
 
     /// Unified anomaly notification: write to both agent memory and user-visible chat.
@@ -702,12 +707,12 @@ impl Alice {
             if Instant::now() < deadline {
                 let remaining = deadline.duration_since(Instant::now());
                 info!("[BACKOFF-{}] Inference backoff active, {:.0}s remaining (failures={})",
-                    self.instance.id, remaining.as_secs_f64(), self.inference_failures);
+                    self.instance.id, remaining.as_secs_f64(), self.inference_failures.value());
                 return Ok(());
             }
             self.inference_backoff_until = None;
             info!("[BACKOFF-{}] Backoff expired, retrying inference (failures={})",
-                self.instance.id, self.inference_failures);
+                self.instance.id, self.inference_failures.value());
         }
 
         // 2. Create transaction
@@ -771,9 +776,8 @@ impl Alice {
             match stream.next_or_timeout(std::time::Duration::from_millis(200)) {
                 RecvResult::Timeout => continue,
                 RecvResult::Disconnected => {
-                    self.set_inference_backoff();
-                    anyhow::bail!("推理连接异常断开，将在{}秒后重试。",
-                        std::cmp::min(10u64 * (1u64 << (self.inference_failures - 1).min(5)), 300));
+                    let backoff = self.set_inference_backoff();
+                    anyhow::bail!("推理连接异常断开，将在{}秒后重试。", backoff);
                 }
                 RecvResult::Item(item) => match item {
                     StreamItem::Action(action) => {
@@ -844,20 +848,19 @@ impl Alice {
                     }
                     StreamItem::Done(_actions, _usage) => {
                         // Reset inference backoff on success
-                        if self.inference_failures > 0 {
+                        if self.inference_failures.value() > 0 {
                             info!("[BACKOFF-{}] Inference succeeded, resetting backoff (was {} failures)",
-                                self.instance.id, self.inference_failures);
+                                self.instance.id, self.inference_failures.value());
                         }
-                        self.inference_failures = 0;
+                        self.inference_failures.reset();
                         self.inference_backoff_until = None;
 
                         info!("[INFER-{}] Inference complete", self.instance.id);
                         break;
                     }
                     StreamItem::Error(e) => {
-                        self.set_inference_backoff();
-                        anyhow::bail!("推理过程出错: {}，将在{}秒后重试。", e,
-                            std::cmp::min(10u64 * (1u64 << (self.inference_failures - 1).min(5)), 300));
+                        let backoff = self.set_inference_backoff();
+                        anyhow::bail!("推理过程出错: {}，将在{}秒后重试。", e, backoff);
                     }
                 },
 

@@ -9,6 +9,14 @@ impl Counter<u32> {
     pub fn increment(&mut self) { self.0 += 1; }
     pub fn reset(&mut self) { self.0 = 0; }
     pub fn value(&self) -> u32 { self.0 }
+
+    /// Exponential backoff: min(base * 2^(min(count-1, max_exp)), cap).
+    /// Returns 0 if counter is at zero.
+    pub fn exponential_backoff(&self, base: u64, max_exponent: u32, cap: u64) -> u64 {
+        if self.0 == 0 { return 0; }
+        let exp = (self.0 - 1).min(max_exponent);
+        std::cmp::min(base * (1u64 << exp), cap)
+    }
 }
 
 impl Counter<u64> {
