@@ -48,8 +48,6 @@ pub struct ObserveData {
     pub recent_actions: Vec<String>,
     pub idle_timeout_secs: Option<i64>,
     pub idle_since: Option<i64>,
-    pub active_model: i64,
-    pub model_count: i64,
 }
 
 // ============================================================
@@ -90,14 +88,6 @@ pub async fn interrupt_instance(instance_id: String) -> Result<bool, ServerFnErr
     Ok(result.success)
 }
 
-#[server(SwitchModelInstance)]
-pub async fn switch_model_instance(instance_id: String, model_index: i64) -> Result<bool, ServerFnError> {
-    let client = rpc_client().await?;
-    let result = client.switch_model(rpc_ctx(), instance_id, model_index as u32).await
-        .map_err(|e| ServerFnError::new(format!("[RPC] switch_model: {}", e)))?;
-    Ok(result.success)
-}
-
 #[server(ObserveInstance)]
 pub async fn observe_instance(instance_id: String) -> Result<ObserveData, ServerFnError> {
     let client = rpc_client().await?;
@@ -117,8 +107,7 @@ pub async fn observe_instance(instance_id: String) -> Result<ObserveData, Server
         recent_actions: result.recent_actions,
         idle_timeout_secs: result.idle_timeout_secs,
         idle_since: result.idle_since,
-        active_model: result.active_model,
-        model_count: result.model_count,
+
     })
 }
 
@@ -1075,11 +1064,7 @@ fn ChatPage() -> impl IntoView {
                                         let drawer_id = settings_id.clone();
                                         let del_id = settings_id.clone();
                                         let del_name = settings_name.clone();
-                                        let model_info = observe_data.get().map(|d| {
-                                            format!("Model {}/{}", d.active_model + 1, d.model_count)
-                                        }).unwrap_or_else(|| "—".to_string());
                                         let is_inferring = observe_data.get().as_ref().map(|d| d.inferring).unwrap_or(false);
-                                        let has_multi_model = observe_data.get().as_ref().map(|d| d.model_count > 1).unwrap_or(false);
                                         view! {
                                             <div class="settings-overlay" on:click=move |_| set_show_settings.set(false)>
                                                 <div class="settings-drawer" on:click=move |ev| {
@@ -1109,10 +1094,7 @@ fn ChatPage() -> impl IntoView {
                                                                 {drawer_color}
                                                             </span>
                                                         </div>
-                                                        <div class="settings-row">
-                                                            <span class="settings-label">"Model"</span>
-                                                            <span class="settings-value">{model_info}</span>
-                                                        </div>
+
                                                     </div>
                                                     <div class="settings-ops">
                                                         {if is_inferring {
@@ -1133,41 +1115,7 @@ fn ChatPage() -> impl IntoView {
                                                         } else {
                                                             view! { <span></span> }.into_any()
                                                         }}
-                                                        {if has_multi_model {
-                                                            let (switching, set_switching) = signal(false);
-                                                            view! {
-                                                                <button class="ops-menu-item ops-switch"
-                                                                    disabled=move || switching.get()
-                                                                    on:click=move |_| {
-                                                                    if switching.get() { return; }
-                                                                    if let Some(inst) = current_instance.get() {
-                                                                        if let Some(ref d) = observe_data.get() {
-                                                                            let id = inst.id.clone();
-                                                                            let next = (d.active_model + 1) % d.model_count;
-                                                                            set_switching.set(true);
-                                                                            leptos::task::spawn_local(async move {
-                                                                                let _ = switch_model_instance(id, next).await;
-                                                                                set_switching.set(false);
-                                                                                set_show_settings.set(false);
-                                                                            });
-                                                                        }
-                                                                    }
-                                                                }>
-                                                                    <span class="ops-icon">"🤖"</span>
-                                                                    <span>{move || {
-                                                                        if switching.get() {
-                                                                            "Switching...".to_string()
-                                                                        } else {
-                                                                            observe_data.get().map(|d| {
-                                                                                format!("Switch Model ({}→{})", d.active_model + 1, (d.active_model + 1) % d.model_count + 1)
-                                                                            }).unwrap_or_else(|| "Switch Model".to_string())
-                                                                        }
-                                                                    }}</span>
-                                                                </button>
-                                                            }.into_any()
-                                                        } else {
-                                                            view! { <span></span> }.into_any()
-                                                        }}
+
                                                         <button class="ops-menu-item danger" on:click=move |_| {
                                                             #[cfg(feature = "hydrate")]
                                                             {

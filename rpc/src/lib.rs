@@ -15,15 +15,6 @@ pub const RPC_SOCKET_PATH: &str = "/opt/alice/engine/alice-rpc.sock";
 // 共享类型 — 改了字段两边编译不过
 // ============================================================
 
-/// A model entry in extra_models array.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct ExtraModel {
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub model: String,
-}
-
 /// Per-instance settings loaded from instance root settings.json.
 ///
 /// This is the declarative contract for settings.json structure.
@@ -51,8 +42,6 @@ pub struct InstanceSettings {
     pub safety_max_consecutive_beats: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety_cooldown_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_models: Vec<ExtraModel>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,8 +73,6 @@ pub struct SettingsUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety_cooldown_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub extra_models: Option<Vec<ExtraModel>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
@@ -106,7 +93,6 @@ impl SettingsUpdate {
         if let Some(v) = self.history_kb { s.history_kb = Some(v); }
         if let Some(v) = self.safety_max_consecutive_beats { s.safety_max_consecutive_beats = Some(v); }
         if let Some(v) = self.safety_cooldown_secs { s.safety_cooldown_secs = Some(v); }
-        if let Some(ref v) = self.extra_models { s.extra_models = v.clone(); }
         if let Some(ref v) = self.name { s.name = Some(v.clone()); }
         if let Some(ref v) = self.color { s.color = Some(v.clone()); }
         if let Some(ref v) = self.avatar { s.avatar = Some(v.clone()); }
@@ -173,12 +159,6 @@ pub struct ObserveResult {
     pub idle_timeout_secs: Option<i64>,
     /// 空闲开始时间戳
     pub idle_since: Option<i64>,
-    /// 当前活跃模型索引
-    #[serde(default)]
-    pub active_model: i64,
-    /// 可用模型总数
-    #[serde(default)]
-    pub model_count: i64,
 }
 
 /// 操作结果
@@ -268,9 +248,6 @@ pub trait AliceEngine {
 
     /// 中断当前推理
     async fn interrupt(instance_id: String) -> ActionResult;
-
-    /// 切换LLM模型
-    async fn switch_model(instance_id: String, model_index: u32) -> ActionResult;
 
     // --- 设置 ---
     /// 获取实例设置

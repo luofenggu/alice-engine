@@ -159,14 +159,6 @@ impl AliceEngine {
 
         let mut alice = Alice::new(instance, config, self.env_config.clone())?;
 
-        // Build extra model configs for failover
-        let extra_configs: Vec<crate::external::llm::LlmConfig> = settings.extra_models.iter().map(|em| {
-            crate::external::llm::LlmConfig {
-                model: em.model.clone(),
-                api_key: em.api_key.clone(),
-            }
-        }).collect();
-        alice.extra_configs = extra_configs;
         alice.instance_name = settings.name;
 
         alice.privileged = settings.privileged;
@@ -392,31 +384,6 @@ impl AliceEngine {
                         alice.llm_client.config.api_key = s.api_key.clone();
                     }
 
-                    // Hot-reload extra_models
-                    let new_extra_configs: Vec<crate::external::llm::LlmConfig> = s.extra_models.iter().map(|em| {
-                        crate::external::llm::LlmConfig {
-                            model: em.model.clone(),
-                            api_key: em.api_key.clone(),
-                        }
-                    }).collect();
-                    if new_extra_configs.len() != alice.extra_configs.len() {
-                        info!("[HOT-RELOAD-{}] Extra models changed: {} -> {} entries",
-                            instance_id, alice.extra_configs.len(), new_extra_configs.len());
-                        if alice.active_config_index > 0 && alice.active_config_index > new_extra_configs.len() {
-                            let _ = alice.switch_model(0);
-                        }
-                        alice.extra_configs = new_extra_configs;
-                    } else {
-                        let changed = new_extra_configs.iter().zip(alice.extra_configs.iter())
-                            .any(|(a, b)| a.model != b.model || a.api_key != b.api_key);
-                        if changed {
-                            info!("[HOT-RELOAD-{}] Extra models content changed", instance_id);
-                            if alice.active_config_index > 0 {
-                                let _ = alice.switch_model(0);
-                            }
-                            alice.extra_configs = new_extra_configs;
-                        }
-                    }
                 }
                 Err(_) => {
                     // reload failed = file missing or corrupted, instance likely deleted
@@ -430,8 +397,6 @@ impl AliceEngine {
                 // Write idle status here (not in beat()) so observe never sees
                 // a false "idle" between consecutive beats in a reasoning chain.
                 if let Some(ref signals) = alice.signals {
-                    let model_count = 1 + alice.extra_configs.len();
-                    let active_model = alice.active_config_index;
                     let born = alice.born;
                     let idle_timeout = alice.idle_timeout_secs;
                     let idle_since = alice.idle_since;
@@ -439,8 +404,6 @@ impl AliceEngine {
                         s.inferring = false;
                         s.born = born;
                         s.last_beat = std::time::Instant::now();
-                        s.active_model = active_model;
-                        s.model_count = model_count;
                         s.idle_timeout_secs = idle_timeout;
                         s.idle_since = idle_since;
                     });
@@ -471,12 +434,6 @@ impl AliceEngine {
                         });
                     }
                     continue;
-                }
-
-                // Check switch-model signal (manual model switching from frontend)
-                if let Some(index) = alice.signals.as_ref().and_then(|s| s.take_switch_model()) {
-                    let _ = alice.switch_model(index);
-                    info!("[HOT-RELOAD-{}] Model switched to index {} via signal", instance_id, index);
                 }
 
                 // Check idle timeout (timed idle wakeup)
@@ -598,7 +555,7 @@ impl AliceEngine {
                             s.idle_since = None;
                         });
                     }
-                    alice.notify_anomaly(&format!("{}", e));
+                    alice.notify_anomaly(&crate::policy::messages::beat_error(&e));
                     alice.last_was_idle = true;
                     consecutive_beats.reset();
                     std::thread::sleep(Duration::from_secs(error_backoff_secs));

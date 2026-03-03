@@ -45,9 +45,6 @@ pub fn describe_settings_change(
     if old.privileged != new.privileged {
         changes.push(format!("privileged: {}", new.privileged));
     }
-    if old.extra_models.len() != new.extra_models.len() {
-        changes.push(format!("extra_models: {} items", new.extra_models.len()));
-    }
     if old.max_beats != new.max_beats {
         changes.push(format!("max_beats: {:?}", new.max_beats));
     }
@@ -110,4 +107,9 @@ pub fn knowledge_capacity_critical(size: usize) -> String {
 
 pub fn binary_file_description(name: &str, size: u64) -> String {
     format!("[Binary file: {}, {} bytes]", name, size)
+}
+
+/// Format beat error for user notification.
+pub fn beat_error(e: &anyhow::Error) -> String {
+    format!("Beat error: {}", e)
 }

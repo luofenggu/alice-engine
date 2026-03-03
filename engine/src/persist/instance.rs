@@ -609,7 +609,7 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 // InstanceSettings and ExtraModel are defined in alice-rpc crate (type sharing).
-pub use alice_rpc::{InstanceSettings, ExtraModel, SettingsUpdate};
+pub use alice_rpc::{InstanceSettings, SettingsUpdate};
 
 /// Extension trait for InstanceSettings — engine-specific logic.
 pub trait InstanceSettingsExt {

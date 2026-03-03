@@ -362,9 +362,6 @@ pub struct Alice {
     /// Backoff deadline: skip inference until this instant.
     inference_backoff_until: Option<Instant>,
     /// Extra LLM configurations for failover (manual switch via API).
-    pub extra_configs: Vec<crate::external::llm::LlmConfig>,
-    /// Active config index: 0 = primary, 1+ = extra_configs[index-1].
-    pub active_config_index: usize,
     /// Display name from settings.json (e.g. "小白", "牧星").
     pub instance_name: Option<String>,
     /// Signal handles for interrupt and switch-model (None in test mode).
@@ -414,8 +411,6 @@ impl Alice {
             max_beats: None,
             born: false,
             host: None,
-            extra_configs: Vec::new(),
-            active_config_index: 0,
             instance_name: None,
             signals: None,
             inference_failures: 0,
@@ -439,26 +434,7 @@ impl Alice {
         self.mock_sync_responses = Some(VecDeque::from(responses));
     }
 
-    /// Switch to a different model configuration by index.
-    /// 0 = primary, 1+ = extra_configs[index-1].
-    pub fn switch_model(&mut self, index: usize) -> anyhow::Result<()> {
-        if index == 0 {
-            // Switch back to primary
-            self.llm_client.config.model = self.config.model.clone();
-            self.llm_client.config.api_key = self.config.api_key.clone();
-            self.active_config_index = 0;
-            info!("[MODEL-{}] Switched to primary: {}", self.instance.id, self.config.model);
-        } else {
-            let extra_index = index - 1;
-            let extra = self.extra_configs.get(extra_index)
-                .ok_or_else(|| anyhow::anyhow!("Invalid model index: {} (have {} extras)", index, self.extra_configs.len()))?;
-            self.llm_client.config.model = extra.model.clone();
-            self.llm_client.config.api_key = extra.api_key.clone();
-            self.active_config_index = index;
-            info!("[MODEL-{}] Switched to extra[{}]: {}", self.instance.id, extra_index, extra.model);
-        }
-        Ok(())
-    }
+
 
     /// Check if mock sync responses are available (for test mode detection).
     pub fn has_mock_sync_responses(&self) -> bool {
@@ -769,15 +745,11 @@ impl Alice {
         // Update engine status: inferring
         if let Some(ref signals) = self.signals {
             let log_path_str = log_path.display().to_string();
-            let model_count = 1 + self.extra_configs.len();
-            let active_model = self.active_config_index;
             let born = self.born;
             signals.update_status(|s| {
                 s.inferring = true;
                 s.born = born;
                 s.log_path = Some(log_path_str.clone());
-                s.active_model = active_model;
-                s.model_count = model_count;
             });
         }
 

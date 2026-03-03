@@ -524,8 +524,16 @@ def scan_file(filepath, source_bytes, parser):
             exempt_reason = ''
             escape = False
 
+            # 0. Boolean and zero literals (binary state - exempt by design)
+            if kind == 'BOOL':
+                exempt = True
+                exempt_reason = 'binary'
+            if not exempt and kind == 'NUMBER' and value == '0':
+                exempt = True
+                exempt_reason = 'binary'
+
             # 1. Test module
-            if is_in_test_module(node):
+            if not exempt and is_in_test_module(node):
                 exempt = True
                 exempt_reason = 'test'
 

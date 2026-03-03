@@ -210,8 +210,6 @@ impl AliceEngine for AliceEngineServer {
                     recent_actions: vec![],
                     idle_timeout_secs: status.idle_timeout_secs.map(|v| v as i64),
                     idle_since: status.idle_since.map(|v| v as i64),
-                    active_model: status.active_model as i64,
-                    model_count: status.model_count as i64,
                 }
             }
             None => ObserveResult::default(),
@@ -224,11 +222,6 @@ impl AliceEngine for AliceEngineServer {
         ActionResult::ok_empty()
     }
 
-    async fn switch_model(self, _: Context, instance_id: String, model_index: u32) -> ActionResult {
-        self.state.signal_hub.set_switch_model(&instance_id, model_index as usize);
-        info!("[RPC] Switch model signal set for {}: index={}", instance_id, model_index);
-        ActionResult::ok_empty()
-    }
 
     async fn create_instance(self, _: Context, display_name: String) -> ActionResult {
         let display_name = display_name.trim().to_string();

@@ -580,29 +580,7 @@ async fn handle_interrupt(
     }
 }
 
-#[derive(serde::Deserialize)]
-struct SwitchModelBody {
-    model_index: u32,
-}
 
-async fn handle_switch_model(
-    State(state): State<Arc<ApiState>>,
-    AxumPath(instance_id): AxumPath<String>,
-    axum::Json(body): axum::Json<SwitchModelBody>,
-) -> Response {
-    let client = match rpc_client(&state).await {
-        Ok(c) => c,
-        Err(s) => return json_error(s, "RPC connection failed"),
-    };
-
-    match client
-        .switch_model(rpc_ctx(), instance_id, body.model_index)
-        .await
-    {
-        Ok(result) => json_ok(&result),
-        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-    }
-}
 
 // ── Router Builder ──
 
@@ -625,7 +603,7 @@ pub fn authenticated_api_routes() -> Router<Arc<ApiState>> {
         // Observe & control
         .route("/api/instances/{id}/observe", get(handle_observe))
         .route("/api/instances/{id}/interrupt", post(handle_interrupt))
-        .route("/api/instances/{id}/switch_model", post(handle_switch_model))
+
         // Instance settings
         .route(
             "/api/instances/{id}/settings",

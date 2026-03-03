@@ -51,7 +51,7 @@ async fn main() {
     server_fn::axum::register_explicit::<GetRepliesAfter>();
     server_fn::axum::register_explicit::<ObserveInstance>();
     server_fn::axum::register_explicit::<InterruptInstance>();
-    server_fn::axum::register_explicit::<SwitchModelInstance>();
+
     server_fn::axum::register_explicit::<CreateInstanceFn>();
     server_fn::axum::register_explicit::<DeleteInstanceFn>();
 
