@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use serde::{Serialize, Deserialize};
 use crate::persist::TextFile;
+use crate::policy::action_output as out;
 
 /// A single entry in a session block JSONL file.
 /// This struct is the single source of truth for session block format.
@@ -159,6 +160,35 @@ impl Memory {
     /// Replace current content.
     pub fn write_current(&self, content: &str) -> Result<()> {
         self.current.write(content)
+    }
+
+    /// Replace an action block in current with a condensed summary.
+    /// Returns (old_len, new_len) for logging purposes.
+    pub fn replace_action_block(&self, action_id: &str, summary: &str) -> Result<(usize, usize)> {
+        let current = self.current.read()?;
+        if current.is_empty() {
+            anyhow::bail!("current is empty, nothing to forget");
+        }
+
+        let start_marker = out::action_block_start(action_id);
+        let end_marker = out::action_block_end(action_id);
+
+        let start_pos = current.find(&start_marker)
+            .ok_or_else(|| anyhow::anyhow!("action block [{}] not found in current", action_id))?;
+        let relative_end = current[start_pos..].find(&end_marker)
+            .ok_or_else(|| anyhow::anyhow!("end marker for [{}] not found in current", action_id))?;
+        let mut end_pos = start_pos + relative_end + end_marker.len();
+
+        // Include trailing newline if present
+        if end_pos < current.len() && current.as_bytes()[end_pos] == b'\n' {
+            end_pos += 1;
+        }
+
+        let replacement = out::forgotten_block(action_id, summary.trim());
+        let new_current = format!("{}{}{}", &current[..start_pos], replacement, &current[end_pos..]);
+        self.current.write(&new_current)?;
+
+        Ok((end_pos - start_pos, replacement.len()))
     }
 
     // ── Session blocks ──

@@ -331,34 +331,8 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str, kn
 /// On success, returns empty string (silent execution - caller skips append_current).
 /// On failure, returns error (caller records it so agent sees what went wrong).
 fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &str, summary: &str) -> Result<String> {
-    let current = alice.instance.memory.current.read().unwrap();
-    if current.is_empty() {
-        anyhow::bail!("current is empty, nothing to forget");
-    }
+    let (old_len, new_len) = alice.instance.memory.replace_action_block(target_action_id, summary.trim())?;
 
-    let start_marker = out::action_block_start(target_action_id);
-    let end_marker = out::action_block_end(target_action_id);
-
-    let start_pos = current.find(&start_marker)
-        .ok_or_else(|| anyhow::anyhow!("action block [{}] not found in current", target_action_id))?;
-    let end_pos = current[start_pos..].find(&end_marker)
-        .ok_or_else(|| anyhow::anyhow!("end marker for [{}] not found in current", target_action_id))?;
-    let end_pos = start_pos + end_pos + end_marker.len();
-
-    // Include trailing newline if present
-    let end_pos = if end_pos < current.len() && current.as_bytes()[end_pos] == b'\n' {
-        end_pos + 1
-    } else {
-        end_pos
-    };
-
-    let replacement = out::forgotten_block(target_action_id, summary.trim());
-
-    let new_current = format!("{}{}{}", &current[..start_pos], replacement, &current[end_pos..]);
-    alice.instance.memory.write_current(&new_current)?;
-
-    let old_len = end_pos - start_pos;
-    let new_len = replacement.len();
     info!("[FORGET-{}] Replaced action [{}]: {} -> {} chars (saved {})",
         alice.instance.id, target_action_id, old_len, new_len, old_len as i64 - new_len as i64);
 
