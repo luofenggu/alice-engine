@@ -12,6 +12,8 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::time::FormatTime;
 
+use crate::policy::log_formats as logfmt;
+
 // ─── Tracing initialization ─────────────────────────────────────
 
 /// Custom local time formatter for tracing (matches prompt timestamp format).
@@ -20,7 +22,7 @@ struct LocalTimer;
 impl FormatTime for LocalTimer {
     fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
         let now = Local::now();
-        write!(w, "{}", now.format("%Y-%m-%d %H:%M:%S"))
+        write!(w, "{}", logfmt::format_log_timestamp(&now))
     }
 }
 
@@ -33,7 +35,7 @@ pub fn init_tracing() {
         .with_timer(LocalTimer)
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+                .unwrap_or_else(|_| EnvFilter::new(logfmt::DEFAULT_LOG_LEVEL)),
         )
         .init();
 }
@@ -43,10 +45,10 @@ pub fn init_tracing() {
 /// Panics are logged both via tracing and appended to the crash log file
 /// for post-mortem analysis.
 pub fn setup_crash_hook(logs_dir: &Path) {
-    let crash_log_path = logs_dir.join("crash.log");
+    let crash_log_path = logs_dir.join(logfmt::CRASH_LOG);
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let msg = format!("[PANIC] {}", info);
+        let msg = logfmt::panic_message(info);
         tracing::error!("{}", msg);
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -54,8 +56,8 @@ pub fn setup_crash_hook(logs_dir: &Path) {
             .open(&crash_log_path)
         {
             use std::io::Write;
-            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-            let _ = writeln!(f, "[{}] {}", timestamp, msg);
+            let timestamp = logfmt::format_log_timestamp(&Local::now());
+            let _ = writeln!(f, "{}", logfmt::crash_log_line(&timestamp, &msg));
         }
         default_hook(info);
     }));
@@ -70,13 +72,13 @@ pub fn setup_crash_hook(logs_dir: &Path) {
 ///
 /// @TRACE: LOG-CLEANUP
 pub fn cleanup_old_infer_logs(logs_dir: &Path, retention_days: u64) {
-    let infer_dir = logs_dir.join("infer");
+    let infer_dir = logs_dir.join(logfmt::INFER_DIR);
     if !infer_dir.exists() {
         return;
     }
 
     let cutoff = std::time::SystemTime::now()
-        .checked_sub(Duration::from_secs(retention_days * 86400))
+        .checked_sub(Duration::from_secs(retention_days * logfmt::SECS_PER_DAY))
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
     let mut cleaned_files = 0u64;
@@ -111,7 +113,7 @@ pub fn cleanup_old_infer_logs(logs_dir: &Path, retention_days: u64) {
         info!(
             "[LOG-CLEANUP] Removed {} inference log files ({:.1}MB), retention={}d",
             cleaned_files,
-            cleaned_bytes as f64 / 1_048_576.0,
+            cleaned_bytes as f64 / logfmt::BYTES_PER_MB as f64,
             retention_days
         );
     } else {
@@ -129,15 +131,15 @@ pub fn cleanup_old_infer_logs(logs_dir: &Path, retention_days: u64) {
 ///
 /// @TRACE: LOG-CLEANUP
 pub fn rotate_engine_log(logs_dir: &Path, max_size_mb: u64) {
-    let log_file = logs_dir.join("engine.log");
+    let log_file = logs_dir.join(logfmt::ENGINE_LOG);
     if !log_file.exists() {
         return;
     }
 
     if let Ok(metadata) = log_file.metadata() {
-        let size_mb = metadata.len() / 1_048_576;
+        let size_mb = metadata.len() / logfmt::BYTES_PER_MB;
         if size_mb >= max_size_mb {
-            let rotated = logs_dir.join("engine.log.1");
+            let rotated = logs_dir.join(logfmt::ENGINE_LOG_ROTATED);
             // Remove old rotated file if exists
             std::fs::remove_file(&rotated).ok();
             // Rename current to .1
@@ -158,10 +160,10 @@ pub fn rotate_engine_log(logs_dir: &Path, max_size_mb: u64) {
 /// Returns `(out_log_path, timestamp_string)` where timestamp can be reused
 /// for the corresponding input log.
 pub fn create_infer_log_path(logs_dir: &Path, instance_id: &str) -> (PathBuf, String) {
-    let infer_log_dir = logs_dir.join("infer").join(instance_id);
+    let infer_log_dir = logs_dir.join(logfmt::INFER_DIR).join(instance_id);
     std::fs::create_dir_all(&infer_log_dir).ok();
-    let log_timestamp = Local::now().format("%Y%m%d%H%M%S%3f").to_string();
-    let log_path = infer_log_dir.join(format!("{}.out.log", log_timestamp));
+    let log_timestamp = logfmt::format_infer_timestamp(&Local::now());
+    let log_path = infer_log_dir.join(logfmt::infer_out_filename(&log_timestamp));
     (log_path, log_timestamp)
 }
 
@@ -178,16 +180,9 @@ pub fn write_infer_input_log(
     system_prompt: &str,
     user_prompt: &str,
 ) {
-
-
-    let infer_log_dir = logs_dir.join("infer").join(instance_id);
-    let in_log_path = infer_log_dir.join(format!("{}.in.log", timestamp));
-    let in_log_content = format!(
-        "[model: {}]\n[endpoint: {}]\n\n=== SYSTEM PROMPT ({} chars) ===\n{}\n\n=== USER PROMPT ({} chars) ===\n{}\n",
-        model, api_url,
-        system_prompt.len(), system_prompt,
-        user_prompt.len(), user_prompt,
-    );
+    let infer_log_dir = logs_dir.join(logfmt::INFER_DIR).join(instance_id);
+    let in_log_path = infer_log_dir.join(logfmt::infer_in_filename(timestamp));
+    let in_log_content = logfmt::infer_input_log_content(model, api_url, system_prompt, user_prompt);
     if let Err(e) = std::fs::write(&in_log_path, &in_log_content) {
         warn!(
             "[INFER-{}] Failed to write in-log: {}",
@@ -195,4 +190,3 @@ pub fn write_infer_input_log(
         );
     }
 }
-
