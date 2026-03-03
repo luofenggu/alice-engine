@@ -99,24 +99,33 @@ struct SseUsage {
 // Chat Message
 // ---------------------------------------------------------------------------
 
+/// Role in a chat conversation (maps to LLM API role field).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    System,
+    User,
+    Assistant,
+}
+
 /// A message in the chat conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
-    pub role: String,
+    pub role: Role,
     pub content: String,
 }
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".to_string(), content: content.into() }
+        Self { role: Role::System, content: content.into() }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".to_string(), content: content.into() }
+        Self { role: Role::User, content: content.into() }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: "assistant".to_string(), content: content.into() }
+        Self { role: Role::Assistant, content: content.into() }
     }
 }
 
@@ -730,14 +739,14 @@ mod tests {
     #[test]
     fn test_chat_message_constructors() {
         let sys = ChatMessage::system("You are helpful");
-        assert_eq!(sys.role, "system");
+        assert_eq!(sys.role, Role::System);
         assert_eq!(sys.content, "You are helpful");
 
         let user = ChatMessage::user("Hello");
-        assert_eq!(user.role, "user");
+        assert_eq!(user.role, Role::User);
 
         let asst = ChatMessage::assistant("Hi there");
-        assert_eq!(asst.role, "assistant");
+        assert_eq!(asst.role, Role::Assistant);
     }
 
     #[test]
