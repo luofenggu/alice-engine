@@ -139,14 +139,14 @@ pub struct AliceEngine {
     /// Signal hub for inter-thread communication (interrupt, switch-model).
     signal_hub: SignalHub,
     /// Environment configuration.
-    env_config: Arc<crate::persist::EnvConfig>,
+    env_config: Arc<crate::policy::EnvConfig>,
     /// Temporary buffer for instances during restore (drained to threads in run()).
     instances: Vec<(String, Alice)>,
 }
 
 impl AliceEngine {
     /// Create a new engine.
-    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub, env_config: Arc<crate::persist::EnvConfig>) -> Self {
+    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub, env_config: Arc<crate::policy::EnvConfig>) -> Self {
         let pid_file = env_config.pid_file.clone()
             .unwrap_or_else(|| instances_base.parent().unwrap_or(&instances_base).join("alice-engine.pid"));
         let instance_store = InstanceStore::new(instances_base.clone());
@@ -896,7 +896,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
-            std::sync::Arc::new(crate::persist::EnvConfig::from_env()),
+            std::sync::Arc::new(crate::policy::EnvConfig::from_env()),
         );
         assert!(engine.instances.is_empty());
     }
@@ -919,7 +919,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
-            std::sync::Arc::new(crate::persist::EnvConfig::from_env()),
+            std::sync::Arc::new(crate::policy::EnvConfig::from_env()),
         );
         engine.restore_instances().unwrap();
 
@@ -948,7 +948,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
-            std::sync::Arc::new(crate::persist::EnvConfig::from_env()),
+            std::sync::Arc::new(crate::policy::EnvConfig::from_env()),
         );
         engine.restore_instances().unwrap();
 
@@ -1008,7 +1008,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
-            std::sync::Arc::new(crate::persist::EnvConfig::from_env()),
+            std::sync::Arc::new(crate::policy::EnvConfig::from_env()),
         );
         engine.restore_instances().unwrap();
 

@@ -327,7 +327,7 @@ mod tests {
             log_dir: tmp.path().join("logs"),
             ..Default::default()
         };
-        let env_config = std::sync::Arc::new(crate::persist::EnvConfig::from_env());
+        let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let alice = Alice::new(instance, config, env_config).unwrap();
         (alice, tmp)
     }

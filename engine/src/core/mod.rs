@@ -346,7 +346,7 @@ pub struct Alice {
     /// Instance configuration
     pub config: AliceConfig,
     /// Environment configuration (shared, read-only after startup).
-    pub env_config: Arc<crate::persist::EnvConfig>,
+    pub env_config: Arc<crate::policy::EnvConfig>,
     /// Current inference log path (Some = inferring, None = idle)
     /// @TRACE: INFER
     pub current_infer_log_path: Option<PathBuf>,
@@ -409,7 +409,7 @@ impl Alice {
     /// Create a new Alice instance from an instance directory.
     ///
     /// @TRACE: INSTANCE
-    pub fn new(instance: instance::Instance, config: AliceConfig, env_config: Arc<crate::persist::EnvConfig>) -> Result<Self> {
+    pub fn new(instance: instance::Instance, config: AliceConfig, env_config: Arc<crate::policy::EnvConfig>) -> Result<Self> {
         let user_id = instance.user_id().to_string();
         let action_separator = config.action_separator.clone();
 
@@ -1151,7 +1151,7 @@ mod tests {
             log_dir: tmp.path().join("logs"),
             ..Default::default()
         };
-        let env_config = Arc::new(crate::persist::EnvConfig::from_env());
+        let env_config = Arc::new(crate::policy::EnvConfig::from_env());
         let alice = Alice::new(instance, config, env_config).unwrap();
         (alice, tmp)
     }

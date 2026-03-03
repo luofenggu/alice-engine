@@ -213,6 +213,7 @@ mod tests {
 
 pub mod logging;
 pub mod external;
+pub mod policy;
 pub mod core;
 pub mod action;
 pub mod llm;

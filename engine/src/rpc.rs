@@ -34,13 +34,13 @@ pub struct EngineState {
     /// Signal hub for inter-thread communication (interrupt, switch-model).
     pub signal_hub: SignalHub,
     /// API configuration (file browse rules, etc.)
-    pub api_config: crate::persist::ApiConfig,
+    pub api_config: crate::policy::ApiConfig,
     /// Environment configuration (all ALICE_* env vars).
-    pub env_config: Arc<crate::persist::EnvConfig>,
+    pub env_config: Arc<crate::policy::EnvConfig>,
 }
 
 impl EngineState {
-    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String, signal_hub: SignalHub, api_config: crate::persist::ApiConfig, env_config: Arc<crate::persist::EnvConfig>) -> Self {
+    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String, signal_hub: SignalHub, api_config: crate::policy::ApiConfig, env_config: Arc<crate::policy::EnvConfig>) -> Self {
         Self {
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,

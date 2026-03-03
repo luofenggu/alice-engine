@@ -592,7 +592,7 @@ pub const DEFAULT_MODEL: &str = "openrouter@anthropic/claude-opus-4.6";
 
 /// Extension trait for InstanceSettings — engine-specific logic.
 pub trait InstanceSettingsExt {
-    fn apply_env_fallbacks(&mut self, env_config: &crate::persist::EnvConfig);
+    fn apply_env_fallbacks(&mut self, env_config: &crate::policy::EnvConfig);
     fn validate(&self) -> anyhow::Result<()>;
     fn parse_model(&self) -> (String, String);
 }
@@ -623,7 +623,7 @@ pub fn parse_model_str(model: &str) -> (String, String) {
 impl InstanceSettingsExt for InstanceSettings {
     /// Apply environment variable fallbacks for api_key, model, and user_id.
     /// Call this after loading from file to fill in missing values.
-    fn apply_env_fallbacks(&mut self, env_config: &crate::persist::EnvConfig) {
+    fn apply_env_fallbacks(&mut self, env_config: &crate::policy::EnvConfig) {
         if self.api_key.is_empty() {
             self.api_key = env_config.default_api_key.clone();
         }

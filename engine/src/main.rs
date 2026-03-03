@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use alice_engine::engine::AliceEngine;
 use alice_engine::core::signal::SignalHub;
-use alice_engine::persist::EnvConfig;
+use alice_engine::policy::EnvConfig;
 use alice_engine::rpc::EngineState;
 
 /// Resolve a path: env value > CLI arg > None.
@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
     let signal_hub = SignalHub::new();
 
     // Create engine state (shared between RPC and engine)
-    let api_config = alice_engine::persist::ApiConfig::load();
+    let api_config = alice_engine::policy::ApiConfig::load();
     let engine_state = Arc::new(EngineState::new(
         instances_dir.clone(),
         logs_dir.clone(),
