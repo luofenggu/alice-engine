@@ -65,6 +65,7 @@ pub const REMEMBER_END_MARKER: &str = ">>>REMEMBER";
 
 use std::fmt;
 use anyhow::{Result, bail};
+use alice_rpc::SettingsUpdate;
 
 // ---------------------------------------------------------------------------
 // Action enum
@@ -80,7 +81,7 @@ pub enum Action {
     WriteFile { path: String, content: String },
     ReplaceInFile { path: String, blocks: Vec<ReplaceBlock> },
     Summary { content: String, knowledge: Option<String> },
-    SetProfile { entries: Vec<(String, String)> },
+    SetProfile { update: SettingsUpdate },
     CreateInstance { name: String, knowledge: String },
     Forget { target_action_id: String, summary: String },
 }
@@ -99,9 +100,12 @@ impl fmt::Display for Action {
                 write!(f, "replace_in_file → {} ({} blocks)", path, blocks.len())
             }
             Action::Summary { .. } => write!(f, "summary"),
-            Action::SetProfile { entries } => {
-                let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
-                write!(f, "set_profile → {}", keys.join(", "))
+            Action::SetProfile { update } => {
+                let mut fields = Vec::new();
+                if update.name.is_some() { fields.push("name"); }
+                if update.color.is_some() { fields.push("color"); }
+                if update.avatar.is_some() { fields.push("avatar"); }
+                write!(f, "set_profile → {}", fields.join(", "))
             }
             Action::CreateInstance { name, .. } => write!(f, "create_instance → {}", name),
             Action::Forget { target_action_id, .. } => write!(f, "forget → {}", target_action_id),
@@ -395,8 +399,9 @@ pub fn strip_remember_markers(content: &str) -> String {
 
 /// Parse set_profile action content.
 fn parse_set_profile(text: &str) -> Result<Action> {
-    let mut entries = Vec::new();
+    let mut update = SettingsUpdate::default();
     let known_keys = ["name", "color", "avatar"];
+    let mut count = 0;
 
     for line in text.lines() {
         let line = line.trim();
@@ -406,21 +411,24 @@ fn parse_set_profile(text: &str) -> Result<Action> {
         if let Some(colon_pos) = line.find(':') {
             let key = line[..colon_pos].trim().to_lowercase();
             let value = line[colon_pos + 1..].trim().to_string();
-            if known_keys.contains(&key.as_str()) {
-                entries.push((key, value));
-            } else {
-                bail!("set_profile: unknown key '{}' (known: {})", key, known_keys.join(", "));
+            let value_opt = if value.is_empty() { None } else { Some(value) };
+            match key.as_str() {
+                "name" => update.name = value_opt,
+                "color" => update.color = value_opt,
+                "avatar" => update.avatar = value_opt,
+                _ => bail!("set_profile: unknown key '{}' (known: {})", key, known_keys.join(", ")),
             }
+            count += 1;
         } else {
             bail!("set_profile: invalid line '{}' (expected key: value)", line);
         }
     }
 
-    if entries.is_empty() {
+    if count == 0 {
         bail!("set_profile: no entries found");
     }
 
-    Ok(Action::SetProfile { entries })
+    Ok(Action::SetProfile { update })
 }
 
 // ---------------------------------------------------------------------------

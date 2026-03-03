@@ -64,7 +64,7 @@ pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) 
         Action::ReplaceInFile { path, blocks } => execute_replace_in_file(alice, tx, path, blocks),
         Action::Summary { content, knowledge } => execute_summary(alice, tx, content, knowledge.clone()),
 
-        Action::SetProfile { entries } => execute_set_profile(alice, tx, entries),
+        Action::SetProfile { update } => execute_set_profile(alice, tx, &update),
         Action::CreateInstance { name, knowledge } => execute_create_instance(alice, tx, name, knowledge),
         Action::Forget { target_action_id, summary } => execute_forget(alice, tx, target_action_id, summary),
     }
@@ -372,19 +372,19 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
     Ok(String::new())
 }
 
-fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, entries: &[(String, String)]) -> Result<String> {
+fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, update: &alice_rpc::SettingsUpdate) -> Result<String> {
     use crate::persist::InstanceSettingsExt;
-    info!("[ACTION-{}] set_profile ({} entries)", tx.instance_id, entries.len());
+    info!("[ACTION-{}] set_profile", tx.instance_id);
 
     let mut settings = alice.instance.settings.load()?;
-    let description = settings.apply_profile_entries(entries)?;
+    update.apply_to(&mut settings);
     alice.instance.settings.save(&settings)?;
 
     // Apply runtime effects
     alice.privileged = settings.privileged;
     alice.instance_name = settings.name.clone();
 
-    Ok(out::profile_updated(&description))
+    Ok(out::profile_updated(&update))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────

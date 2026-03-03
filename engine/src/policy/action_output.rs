@@ -229,8 +229,16 @@ pub fn profile_unknown_key(key: &str) -> String {
 }
 
 /// Format profile update success.
-pub fn profile_updated(detail: &str) -> String {
-    format!("profile updated: {}\n", detail)
+pub fn profile_updated(update: &alice_rpc::SettingsUpdate) -> String {
+    let mut fields = Vec::new();
+    if let Some(ref v) = update.name { fields.push(format!("name: {}", v)); }
+    if let Some(ref v) = update.color { fields.push(format!("color: {}", v)); }
+    if let Some(ref v) = update.avatar { fields.push(format!("avatar: {}", v)); }
+    if fields.is_empty() {
+        "profile updated (no changes)\n".to_string()
+    } else {
+        format!("profile updated: {}\n", fields.join(", "))
+    }
 }
 
 // ─── Create instance ─────────────────────────────────────────────
@@ -336,9 +344,12 @@ pub fn build_doing_description(action: &Action) -> String {
             format!("replace in file [{}]", path),
         Action::Summary { .. } =>
             "summary (小结)".to_string(),
-        Action::SetProfile { entries } => {
-            let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
-            format!("set_profile [{}]", keys.join(", "))
+        Action::SetProfile { update } => {
+            let mut fields = Vec::new();
+            if update.name.is_some() { fields.push("name"); }
+            if update.color.is_some() { fields.push("color"); }
+            if update.avatar.is_some() { fields.push("avatar"); }
+            format!("set_profile [{}]", fields.join(", "))
         }
         Action::CreateInstance { name, knowledge } =>
             format!("create_instance: {} ({} bytes knowledge)", name, knowledge.len()),
