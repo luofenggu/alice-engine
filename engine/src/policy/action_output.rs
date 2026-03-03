@@ -31,7 +31,6 @@ const MAX_RESULT_BYTES: usize = 102_400;
 const TRUNCATE_DISPLAY: usize = 40;
 
 /// Max bytes to show in detail messages.
-const TRUNCATE_DETAIL: usize = 200;
 
 /// Number of head lines in preview.
 const PREVIEW_HEAD_LINES: usize = 10;

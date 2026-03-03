@@ -7,7 +7,6 @@
 
 use anyhow::{Result, bail, Context};
 use tracing::{info, warn};
-use chrono::Local;
 #[cfg(feature = "remember")]
 use crate::inference::strip_remember_markers;
 
@@ -340,7 +339,6 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
 }
 
 fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, update: &alice_rpc::SettingsUpdate) -> Result<String> {
-    use crate::persist::InstanceSettingsExt;
     info!("[ACTION-{}] set_profile", tx.instance_id);
 
     let mut settings = alice.instance.settings.load()?;

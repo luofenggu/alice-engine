@@ -144,6 +144,37 @@ pub fn roll_llm_empty() -> &'static str {
     "LLM returned empty, roll aborted"
 }
 
+pub fn empty_placeholder() -> &'static str {
+    "(空)"
+}
+
+pub fn session_summary(summary: &str) -> String {
+    format!("[总结] {}", summary)
+}
+
+pub fn memory_over_limit(kb: usize) -> String {
+    format!(
+        "\n⚠️ prompt总量已达{}KB（上限200K）！建议执行 summary 整理记忆。",
+        kb
+    )
+}
+
+pub fn host_info(host: &str) -> String {
+    format!("公网地址：{}", host)
+}
+
+pub fn chat_message(sender: &str, timestamp: &str, content: &str) -> String {
+    format!("{} [{}]: {}", sender, timestamp, content)
+}
+
+pub fn knowledge_section(content: &str) -> String {
+    format!("### 要点与知识 ###\n{}\n", content)
+}
+
+pub fn truncated_content(content: &str) -> String {
+    format!("{}...(略)", content)
+}
+
 pub fn roll_result(block: &str, usage: Option<(u64, u64)>) -> String {
     let usage_info = if let Some((input, output)) = usage {
         format!(", tokens: {}+{}", input, output)

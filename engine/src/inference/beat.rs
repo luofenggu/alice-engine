@@ -2,7 +2,7 @@
 //!
 //! Defines the request/response protocol for one React cognitive beat.
 //! BeatRequest is a pure data struct; render() is a pure function.
-//! Callers (prompt module) are responsible for extracting data from Alice.
+//! Callers (prompt module) are responsible for extracting raw data from Alice.
 
 use crate::inference::safe_render;
 use crate::policy::messages;
@@ -19,6 +19,30 @@ const SOFT_LIMIT: usize = 180_000;
 
 use crate::inference::{REMEMBER_START_MARKER, REMEMBER_END_MARKER};
 use crate::policy::action_output as out;
+use crate::policy::EngineConfig;
+
+// ---------------------------------------------------------------------------
+// Data structs — raw data extracted from Alice's state
+// ---------------------------------------------------------------------------
+
+/// A single chat message (raw data, not yet formatted).
+pub struct PromptMessage {
+    pub sender: String,
+    pub timestamp: String,
+    pub content: String,
+}
+
+/// One session entry: chat messages + summary (raw data).
+pub struct SessionEntryData {
+    pub messages: Vec<PromptMessage>,
+    pub summary: String,
+}
+
+/// One session block: block name + entries (raw data).
+pub struct SessionBlockData {
+    pub block_name: String,
+    pub entries: Vec<SessionEntryData>,
+}
 
 // ---------------------------------------------------------------------------
 // BeatRequest — pure data struct for one beat's prompt rendering
@@ -32,10 +56,10 @@ pub struct BeatRequest {
     pub instance_name: Option<String>,
     pub shell_env: String,
     pub host: Option<String>,
-    pub system_start_time: String,
+    pub system_start_time: chrono::DateTime<chrono::Local>,
     pub knowledge_content: String,
     pub history_content: String,
-    pub daily_rendered: String,
+    pub session_blocks: Vec<SessionBlockData>,
     pub current_content: String,
     pub unread_count: usize,
 }
@@ -51,6 +75,7 @@ impl BeatRequest {
     /// Returns `(system_prompt, user_prompt, memory_snapshot)`.
     pub fn render(&self) -> (String, String, MemorySnapshot) {
         let current_time = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+        let system_start_time = self.system_start_time.format("%Y%m%d%H%M%S").to_string();
 
         // System prompt
         let system_prompt = safe_render(TEMPLATE_SYSTEM, &[
@@ -59,41 +84,49 @@ impl BeatRequest {
             ("{{REMEMBER_END}}", REMEMBER_END_MARKER),
         ]);
 
+        // Format raw data into display strings
+        let history_display = if self.history_content.is_empty() {
+            messages::empty_placeholder().to_string()
+        } else {
+            self.history_content.clone()
+        };
+
+        let current_display = if self.current_content.is_empty() {
+            messages::empty_placeholder().to_string()
+        } else {
+            self.current_content.clone()
+        };
+
+        let daily_rendered = self.render_session_blocks();
+
+        // Knowledge section: knowledge file + forced app guide
+        let knowledge_section = self.build_knowledge_section();
+
         // Memory status
         let memory_status = make_memory_status(
             &self.instance_id,
             self.instance_name.as_deref(),
-            self.history_content.len(),
-            self.daily_rendered.len(),
-            self.current_content.len(),
-            self.knowledge_content.len(),
+            history_display.len(),
+            daily_rendered.len(),
+            current_display.len(),
+            knowledge_section.len(),
         );
 
         let host_line = make_host_line(self.host.as_deref());
 
-        // Knowledge section: knowledge file + forced app guide
-        let app_guide = make_app_guide_knowledge(self.host.as_deref(), &self.instance_id);
-        let full_knowledge = if app_guide.is_empty() {
-            self.knowledge_content.clone()
-        } else if self.knowledge_content.is_empty() {
-            app_guide
-        } else {
-            format!("{}\n\n{}", self.knowledge_content, app_guide)
-        };
-
         // User prompt
         let user_prompt = safe_render(TEMPLATE_USER, &[
             ("{{CURRENT_TIME}}", &current_time),
-            ("{{SYSTEM_START_TIME}}", &self.system_start_time),
+            ("{{SYSTEM_START_TIME}}", &system_start_time),
             ("{{UNREAD_COUNT}}", &self.unread_count.to_string()),
             ("{{MEMORY_STATUS}}", &memory_status),
             ("{{INSTANCE_ID}}", &self.instance_id),
             ("{{SHELL_ENV}}", &self.shell_env),
             ("{{HOST_INFO}}", &host_line),
-            ("{{KNOWLEDGE}}", &full_knowledge),
-            ("{{HISTORY_MEMORY}}", &self.history_content),
-            ("{{DAILY_MEMORY}}", &self.daily_rendered),
-            ("{{CURRENT_MEMORY}}", &self.current_content),
+            ("{{KNOWLEDGE}}", &knowledge_section),
+            ("{{HISTORY_MEMORY}}", &history_display),
+            ("{{DAILY_MEMORY}}", &daily_rendered),
+            ("{{CURRENT_MEMORY}}", &current_display),
         ]);
 
         let snapshot = MemorySnapshot {
@@ -103,6 +136,74 @@ impl BeatRequest {
 
         (system_prompt, user_prompt, snapshot)
     }
+
+    /// Render all session blocks into display text.
+    fn render_session_blocks(&self) -> String {
+        if self.session_blocks.is_empty() {
+            return String::new();
+        }
+
+        let mut sections = Vec::new();
+        for block in &self.session_blocks {
+            let rendered = format_session_entries(&block.entries);
+            if !rendered.is_empty() {
+                sections.push(format!("[{}]\n{}", block.block_name, rendered));
+            }
+        }
+        sections.join("\n\n")
+    }
+
+    /// Build knowledge section with title wrapper and optional app guide.
+    fn build_knowledge_section(&self) -> String {
+        let app_guide = make_app_guide_knowledge(self.host.as_deref(), &self.instance_id);
+
+        let full_knowledge = if app_guide.is_empty() {
+            self.knowledge_content.clone()
+        } else if self.knowledge_content.is_empty() {
+            app_guide
+        } else {
+            format!("{}\n\n{}", self.knowledge_content, app_guide)
+        };
+
+        if full_knowledge.trim().is_empty() {
+            String::new()
+        } else {
+            messages::knowledge_section(&full_knowledge)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public formatting — used by both render() and compress
+// ---------------------------------------------------------------------------
+
+/// Format session entries into display text.
+/// Used by render() for beat prompts and by compress for history rolling.
+pub fn format_session_entries(entries: &[SessionEntryData]) -> String {
+    let truncate_len = EngineConfig::get().memory.message_truncate_length;
+
+    let mut sections = Vec::new();
+    for entry in entries {
+        let mut parts = Vec::new();
+
+        for msg in &entry.messages {
+            let content_display = if msg.content.len() > truncate_len {
+                messages::truncated_content(&crate::safe_truncate(&msg.content, truncate_len))
+            } else {
+                msg.content.clone()
+            };
+            parts.push(messages::chat_message(&msg.sender, &msg.timestamp, &content_display));
+        }
+
+        if !entry.summary.is_empty() {
+            parts.push(messages::session_summary(&entry.summary));
+        }
+
+        if !parts.is_empty() {
+            sections.push(parts.join("\n"));
+        }
+    }
+    sections.join("\n\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -219,10 +320,7 @@ fn make_memory_status(
 
     if total > SOFT_LIMIT {
         let kb = total / 1000;
-        status.push_str(&format!(
-            "\n⚠️ prompt总量已达{}KB（上限200K）！建议执行 summary 整理记忆。",
-            kb
-        ));
+        status.push_str(&messages::memory_over_limit(kb));
     }
 
     status
@@ -233,7 +331,7 @@ fn make_host_line(host: Option<&str>) -> String {
     match host {
         Some(h) if !h.is_empty() => {
             let host_display = h.split(':').next().unwrap_or(h);
-            format!("公网地址：{}", host_display)
+            messages::host_info(host_display)
         }
         _ => String::new(),
     }
@@ -329,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_make_host_line() {
-        assert_eq!(make_host_line(Some("1.2.3.4:8080")), "公网地址：1.2.3.4");
+        assert_eq!(make_host_line(Some("1.2.3.4:8080")), messages::host_info("1.2.3.4"));
         assert_eq!(make_host_line(None), "");
         assert_eq!(make_host_line(Some("")), "");
     }
@@ -339,4 +437,42 @@ mod tests {
         assert_eq!(make_app_guide_knowledge(None, "test"), "");
         assert_eq!(make_app_guide_knowledge(Some(""), "test"), "");
     }
+
+    #[test]
+    fn test_format_session_entries_basic() {
+        let entries = vec![
+            SessionEntryData {
+                messages: vec![
+                    PromptMessage { sender: "user1".into(), timestamp: "20260303120000".into(), content: "hello".into() },
+                ],
+                summary: "User said hello".into(),
+            },
+        ];
+        let rendered = format_session_entries(&entries);
+        assert!(rendered.contains("user1"));
+        assert!(rendered.contains("hello"));
+        assert!(rendered.contains("User said hello"));
+    }
+
+    #[test]
+    fn test_format_session_entries_truncates() {
+        let long_content = "x".repeat(300);
+        let entries = vec![
+            SessionEntryData {
+                messages: vec![
+                    PromptMessage { sender: "user1".into(), timestamp: "20260303120000".into(), content: long_content },
+                ],
+                summary: String::new(),
+            },
+        ];
+        let rendered = format_session_entries(&entries);
+        assert!(!rendered.contains(&"x".repeat(300)));
+    }
+
+    #[test]
+    fn test_format_session_entries_empty() {
+        let entries: Vec<SessionEntryData> = vec![];
+        assert_eq!(format_session_entries(&entries), "");
+    }
 }
+

@@ -40,6 +40,7 @@ pub struct MemoryPolicyConfig {
     pub session_blocks_limit: u32,
     pub session_block_kb: u32,
     pub history_kb: u32,
+    pub message_truncate_length: usize,
     pub safety_max_consecutive_beats: u32,
     pub safety_cooldown_secs: u64,
 }

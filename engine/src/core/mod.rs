@@ -462,7 +462,8 @@ impl Alice {
             return Ok(None);
         }
 
-        let rendered_block = crate::prompt::render_session_block(&block_content, self);
+        let entries = crate::prompt::extract_session_block_data(&block_content, self);
+        let rendered_block = crate::inference::beat::format_session_entries(&entries);
 
         // Read current history
         let current_history = self.instance.memory.history.read()?;
@@ -527,7 +528,8 @@ impl Alice {
             return Ok(Some(crate::policy::messages::roll_deleted_empty(oldest_block)));
         }
 
-        let rendered_block = crate::prompt::render_session_block(&block_content, self);
+        let entries = crate::prompt::extract_session_block_data(&block_content, self);
+        let rendered_block = crate::inference::beat::format_session_entries(&entries);
 
         // 2. Read current history (from memory handle)
         let current_history = self.instance.memory.history.read()?;
