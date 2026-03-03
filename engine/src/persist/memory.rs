@@ -13,7 +13,18 @@
 
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
+use chrono::Local;
+use serde::{Serialize, Deserialize};
 use crate::persist::TextFile;
+
+/// A single entry in a session block JSONL file.
+/// This struct is the single source of truth for session block format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionBlockEntry {
+    pub first_msg: String,
+    pub last_msg: String,
+    pub summary: String,
+}
 
 /// Session block file extension
 const SESSION_EXT: &str = "jsonl";
@@ -227,29 +238,64 @@ impl Memory {
         self.append_current(text)
     }
 
+    /// Read and deserialize all entries from a session block.
+    pub fn read_session_entries(&self, block_name: &str) -> Result<Vec<SessionBlockEntry>> {
+        let content = self.read_session_block(block_name)?;
+        let mut entries = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            if let Ok(entry) = serde_json::from_str::<SessionBlockEntry>(line) {
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
+    }
+
     /// Summary transaction:
-    /// 1. Append session block (new session data)
-    /// 2. Write knowledge (updated cognitive framework)
-    /// 3. Clear current
+    /// 1. Resolve target session block (append to existing if under size limit, else create new)
+    /// 2. Serialize entry and append to session block
+    /// 3. Write knowledge (updated cognitive framework)
+    /// 4. Clear current
+    ///
+    /// Returns the block name used (for logging).
     ///
     /// Crash safety: write targets first, clear source last.
     /// Worst case on crash: duplicate session entry + stale current (no data loss).
     pub fn commit_summary(
         &self,
-        session_block_name: &str,
-        session_lines: &str,
-        knowledge_text: &str,
-    ) -> Result<()> {
-        // Step 1: Write session block
-        self.append_session_block(session_block_name, session_lines)?;
+        entry: &SessionBlockEntry,
+        session_block_kb: u32,
+        knowledge: Option<&str>,
+    ) -> Result<String> {
+        // Step 1: Resolve target block
+        let blocks = self.list_session_blocks()?;
+        let block_name = if let Some(latest) = blocks.last() {
+            let size = self.session_block_size(latest);
+            if size < (session_block_kb as u64 * 1024) {
+                latest.clone()
+            } else {
+                Local::now().format("%Y%m%d%H%M%S").to_string()
+            }
+        } else {
+            Local::now().format("%Y%m%d%H%M%S").to_string()
+        };
 
-        // Step 2: Write knowledge
-        self.knowledge.write(knowledge_text)?;
+        // Step 2: Serialize and append
+        let jsonl_line = serde_json::to_string(entry)
+            .context("Failed to serialize session block entry")?
+            + "\n";
+        self.append_session_block(&block_name, &jsonl_line)?;
 
-        // Step 3: Clear current
+        // Step 3: Write knowledge (if provided)
+        if let Some(k) = knowledge {
+            self.knowledge.write(k)?;
+        }
+
+        // Step 4: Clear current
         self.current.clear()?;
 
-        Ok(())
+        Ok(block_name)
     }
 
     /// Roll history transaction:
@@ -401,23 +447,23 @@ mod tests {
         memory.append_current("thinking about stuff\n").unwrap();
 
         // Commit summary
-        memory.commit_summary(
-            "20260301120000",
-            "{\"summary\": \"session data\"}\n",
-            "# Updated Knowledge\nnew insights",
-        ).unwrap();
+        let entry = SessionBlockEntry {
+            first_msg: "MSG001".to_string(),
+            last_msg: "MSG002".to_string(),
+            summary: "session data".to_string(),
+        };
+        let block_name = memory.commit_summary(&entry, 100, Some("# Updated Knowledge\nnew insights")).unwrap();
 
-        // Verify: session block written
-        let session = memory.read_session_block("20260301120000").unwrap();
-        assert_eq!(session, "{\"summary\": \"session data\"}\n");
+        // Verify: session block written with serialized entry
+        let entries = memory.read_session_entries(&block_name).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].summary, "session data");
+        assert_eq!(entries[0].first_msg, "MSG001");
 
         // Verify: knowledge updated
         assert_eq!(memory.knowledge.read().unwrap(), "# Updated Knowledge\nnew insights");
 
         // Verify: current cleared
-        assert_eq!(memory.current.read().unwrap(), "");
-
-        assert_eq!(memory.knowledge.read().unwrap(), "# Updated Knowledge\nnew insights");
         assert_eq!(memory.current.read().unwrap(), "");
     }
 
@@ -471,16 +517,29 @@ mod tests {
     fn test_commit_summary_appends_to_existing_session() {
         let (_tmp, mut memory) = setup();
 
-        // First summary
-        memory.commit_summary("20260301120000", "line1\n", "knowledge v1").unwrap();
+        // First summary (small block limit so second appends to same block)
+        let entry1 = SessionBlockEntry {
+            first_msg: "MSG001".to_string(),
+            last_msg: "MSG002".to_string(),
+            summary: "first summary".to_string(),
+        };
+        let block1 = memory.commit_summary(&entry1, 100, Some("knowledge v1")).unwrap();
 
-        // Second summary appends to same block
+        // Second summary appends to same block (under size limit)
         memory.append_current("more thinking\n").unwrap();
-        memory.commit_summary("20260301120000", "line2\n", "knowledge v2").unwrap();
+        let entry2 = SessionBlockEntry {
+            first_msg: "MSG003".to_string(),
+            last_msg: "MSG004".to_string(),
+            summary: "second summary".to_string(),
+        };
+        let block2 = memory.commit_summary(&entry2, 100, Some("knowledge v2")).unwrap();
 
-        // Session block has both lines
-        let session = memory.read_session_block("20260301120000").unwrap();
-        assert_eq!(session, "line1\nline2\n");
+        // Both went to same block
+        assert_eq!(block1, block2);
+        let entries = memory.read_session_entries(&block1).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].summary, "first summary");
+        assert_eq!(entries[1].summary, "second summary");
 
         // Knowledge is latest version
         assert_eq!(memory.knowledge.read().unwrap(), "knowledge v2");

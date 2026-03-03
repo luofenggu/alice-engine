@@ -20,22 +20,20 @@ use crate::inference::beat::BeatRequest;
 /// For each line, fetches actual chat messages from chat.db in the
 /// [first_msg, last_msg] range, then appends the summary.
 pub fn render_session_block(jsonl_content: &str, alice: &Alice) -> String {
+    use crate::persist::SessionBlockEntry;
+
     let mut sections = Vec::new();
     for line in jsonl_content.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-            let first_msg = value.get("first_msg").and_then(|s| s.as_str()).unwrap_or("");
-            let last_msg = value.get("last_msg").and_then(|s| s.as_str()).unwrap_or("");
-            let summary = value.get("summary").and_then(|s| s.as_str()).unwrap_or("");
-
+        if let Ok(entry) = serde_json::from_str::<SessionBlockEntry>(line) {
             let mut parts = Vec::new();
 
             // Fetch chat messages from database (truncate long content)
-            if !first_msg.is_empty() && !last_msg.is_empty() {
-                if let Ok(messages) = alice.instance.chat.read_messages_in_range(first_msg, last_msg) {
+            if !entry.first_msg.is_empty() && !entry.last_msg.is_empty() {
+                if let Ok(messages) = alice.instance.chat.read_messages_in_range(&entry.first_msg, &entry.last_msg) {
                     for msg in &messages {
                         let content_display = if msg.content.len() > 200 {
                             format!("{}...(略)", crate::safe_truncate(&msg.content, 200))
@@ -48,8 +46,8 @@ pub fn render_session_block(jsonl_content: &str, alice: &Alice) -> String {
             }
 
             // Append summary
-            if !summary.is_empty() {
-                parts.push(format!("[总结] {}", summary));
+            if !entry.summary.is_empty() {
+                parts.push(format!("[总结] {}", entry.summary));
             }
 
             if !parts.is_empty() {

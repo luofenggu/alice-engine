@@ -267,9 +267,10 @@ fn execute_replace_in_file(
 /// 2. Parse agent output: split by first ===KNOWLEDGE_TOKEN=== line
 /// 3. Extract MSG IDs from current
 /// 4. Build JSONL session entry with summary part
-/// 5. Snapshot + rewrite knowledge.md with knowledge part
-/// 6. Append session block + clear current
+/// Execute summary: build session entry, commit to memory, update knowledge.
 fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str, knowledge: Option<String>) -> Result<String> {
+    use crate::persist::SessionBlockEntry;
+
     info!("[ACTION-{}] summary", tx.instance_id);
 
     let current = alice.instance.memory.current.read().unwrap();
@@ -288,45 +289,37 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str, kn
     let first_msg = msg_ids.first().cloned().unwrap_or_default();
     let last_msg = msg_ids.last().cloned().unwrap_or_default();
 
-    // Build JSONL line with summary part only
-    let entry = serde_json::json!({
-        "first_msg": first_msg,
-        "last_msg": last_msg,
-        "summary": summary_text.trim()
-    });
-    let jsonl_line = serde_json::to_string(&entry).unwrap_or_default() + "\n";
-
-    // Determine target session block
-    let blocks = alice.instance.memory.list_session_blocks()?;
-    let block_name = if let Some(latest) = blocks.last() {
-        let size = alice.instance.memory.session_block_size(latest);
-        if size < (alice.session_block_kb as u64 * 1024) {
-            latest.clone()
-        } else {
-            Local::now().format("%Y%m%d%H%M%S").to_string()
-        }
-    } else {
-        Local::now().format("%Y%m%d%H%M%S").to_string()
+    // Build typed session entry
+    let entry = SessionBlockEntry {
+        first_msg: first_msg.clone(),
+        last_msg: last_msg.clone(),
+        summary: summary_text.trim().to_string(),
     };
 
-    // === Atomic: snapshot + knowledge update + session block + clear current ===
-    let knowledge_info;
-    if let Some(ref k) = knowledge {
-        if !k.trim().is_empty() {
-            alice.instance.memory.knowledge.write(k.trim())?;
-            knowledge_info = out::knowledge_rewritten(k.trim().len());
-            info!("[ACTION-{}] knowledge rewritten ({} chars)", tx.instance_id, k.trim().len());
-        } else {
-            warn!("[ACTION-{}] summary: empty knowledge section, skipping knowledge update", tx.instance_id);
-            knowledge_info = out::knowledge_skipped();
-        }
-    } else {
-        warn!("[ACTION-{}] summary: no knowledge section found, skipping knowledge update", tx.instance_id);
-        knowledge_info = out::knowledge_skipped();
-    }
+    // Prepare knowledge text (Some non-empty → write, otherwise skip)
+    let knowledge_text = knowledge.as_deref()
+        .filter(|k| !k.trim().is_empty())
+        .map(|k| k.trim());
 
-    alice.instance.memory.append_session_block(&block_name, &jsonl_line)?;
-    alice.instance.memory.write_current("")?;
+    let knowledge_info = if knowledge_text.is_some() {
+        let k = knowledge_text.unwrap();
+        info!("[ACTION-{}] knowledge rewritten ({} chars)", tx.instance_id, k.len());
+        out::knowledge_rewritten(k.len())
+    } else {
+        if knowledge.is_some() {
+            warn!("[ACTION-{}] summary: empty knowledge section, skipping knowledge update", tx.instance_id);
+        } else {
+            warn!("[ACTION-{}] summary: no knowledge section found, skipping knowledge update", tx.instance_id);
+        }
+        out::knowledge_skipped()
+    };
+
+    // Commit: session block + optional knowledge + clear current
+    let block_name = alice.instance.memory.commit_summary(
+        &entry,
+        alice.session_block_kb,
+        knowledge_text,
+    )?;
 
     let msg_count = msg_ids.len();
     Ok(out::summary_complete(msg_count, &first_msg, &last_msg, &block_name, &knowledge_info))

@@ -217,3 +217,4 @@ mod tests {
     }
 }
 pub use instance::InstanceSettingsExt;
+pub use memory::SessionBlockEntry;
