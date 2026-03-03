@@ -46,6 +46,7 @@ use tracing::{info, warn};
 use chrono::Local;
 
 use crate::inference::Action;
+use crate::util::Counter;
 use crate::action::execute::execute_action;
 use crate::persist::instance;
 use crate::external::llm::{LlmClient, LlmConfig, InferenceStream, StreamItem, RecvResult};
@@ -348,7 +349,7 @@ pub struct Alice {
     /// None = production mode (use LLM). Some = test mode (use mock).
     mock_sync_responses: Option<VecDeque<String>>,
     /// Total beat count for this instance (used with max_beats limit)
-    pub beat_count: u32,
+    pub beat_count: Counter<u32>,
     /// Maximum beats allowed (None = unlimited). From settings.json "max_beats".
     pub max_beats: Option<u32>,
     /// Whether this instance has completed its first idle (born = ready for user interaction).
@@ -409,7 +410,7 @@ impl Alice {
             system_start_time: Local::now().format("%Y%m%d%H%M%S").to_string(),
             mock_streams: None,
             mock_sync_responses: None,
-            beat_count: 0,
+            beat_count: Counter::<u32>::new(),
             max_beats: None,
             born: false,
             host: None,

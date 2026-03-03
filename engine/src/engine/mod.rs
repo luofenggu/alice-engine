@@ -34,6 +34,7 @@ use std::thread::JoinHandle;
 use anyhow::{Result, Context};
 use tracing::{info, warn, error};
 
+use crate::util::Counter;
 use crate::core::{Alice, AliceConfig};
 use crate::persist::instance::{InstanceStore, InstanceSettingsExt};
 use crate::core::signal::SignalHub;
@@ -359,8 +360,8 @@ impl AliceEngine {
         let instance_dir = alice.instance.instance_dir.clone();
         info!("[THREAD-{}] Instance thread started", instance_id);
 
-        let mut consecutive_beats: u32 = 0;
-        let mut idle_elapsed: u64 = 0;
+        let mut consecutive_beats = Counter::<u32>::new();
+        let mut idle_elapsed = Counter::<u64>::new();
         let engine_policy = &crate::policy::EngineConfig::get().engine;
         let error_backoff_secs = engine_policy.error_backoff_secs;
 
@@ -457,7 +458,7 @@ impl AliceEngine {
                     });
                 }
 
-                consecutive_beats = 0;
+                consecutive_beats.reset();
                 std::thread::sleep(Duration::from_secs(engine_policy.beat_interval_secs));
 
                 // Re-check after sleep
@@ -470,7 +471,7 @@ impl AliceEngine {
                     info!("[INTERRUPT-{}] Interrupt during idle, cancelling timeout", instance_id);
                     alice.idle_timeout_secs = None;
                     alice.idle_since = None;
-                    idle_elapsed = 0;
+                    idle_elapsed.reset();
                     // Update status to reflect cancelled timeout
                     if let Some(ref signals) = alice.signals {
                         signals.update_status(|s| {
@@ -492,14 +493,14 @@ impl AliceEngine {
 
                 // Check idle timeout (timed idle wakeup)
                 if let Some(timeout) = alice.idle_timeout_secs {
-                    idle_elapsed += engine_policy.beat_interval_secs;
-                    if idle_elapsed >= timeout {
+                    idle_elapsed.add(engine_policy.beat_interval_secs);
+                    if idle_elapsed.value() >= timeout {
                         info!("[IDLE-TIMEOUT-{}] Idle timeout {}s reached (elapsed {}s), waking up",
-                            instance_id, timeout, idle_elapsed);
+                            instance_id, timeout, idle_elapsed.value());
                         alice.idle_timeout_secs = None;
                         alice.idle_since = None;
                         alice.last_was_idle = false;  // So beat() won't skip
-                        idle_elapsed = 0;
+                        idle_elapsed.reset();
                         // Fall through to beat (don't continue)
                     } else if alice.count_unread_messages() == 0 {
                         continue;
@@ -511,25 +512,25 @@ impl AliceEngine {
             }
 
             // Safety valve check
-            if consecutive_beats >= alice.safety_max_consecutive_beats {
+            if consecutive_beats.value() >= alice.safety_max_consecutive_beats {
                 warn!("[SAFETY-{}] {} consecutive beats without idle — forcing cooldown ({}s)",
-                    instance_id, consecutive_beats, alice.safety_cooldown_secs);
+                    instance_id, consecutive_beats.value(), alice.safety_cooldown_secs);
                 alice.notify_anomaly(&crate::policy::messages::safety_valve_triggered(
-                    consecutive_beats, alice.safety_cooldown_secs
+                    consecutive_beats.value(), alice.safety_cooldown_secs
                 ));
                 alice.last_was_idle = true;
-                consecutive_beats = 0;
+                consecutive_beats.reset();
                 std::thread::sleep(Duration::from_secs(alice.safety_cooldown_secs));
                 continue;
             }
 
             // Max beats limit check
             if let Some(max) = alice.max_beats {
-                if alice.beat_count >= max {
+                if alice.beat_count.value() >= max {
                     if !alice.last_was_idle {
                         info!("[LIMIT-{}] Beat limit reached ({}/{}), forcing idle",
-                            instance_id, alice.beat_count, max);
-                        alice.notify_anomaly(&crate::policy::messages::beat_limit_reached(alice.beat_count, max));
+                            instance_id, alice.beat_count.value(), max);
+                        alice.notify_anomaly(&crate::policy::messages::beat_limit_reached(alice.beat_count.value(), max));
                         alice.last_was_idle = true;
                     }
                     // Sleep and check shutdown, but don't beat
@@ -539,18 +540,18 @@ impl AliceEngine {
             }
 
             // Reset idle elapsed counter when entering a beat
-            idle_elapsed = 0;
+            idle_elapsed.reset();
 
             // Run beat
             let unread = alice.count_unread_messages();
             if unread > 0 || !alice.last_was_idle {
                 info!("[BEAT-{}] wakeup unread={} idle={} consecutive={}",
-                    instance_id, unread, alice.last_was_idle, consecutive_beats);
+                    instance_id, unread, alice.last_was_idle, consecutive_beats.value());
             }
 
             // Disk space check (periodic to avoid overhead)
             let engine_policy = &crate::policy::EngineConfig::get().engine;
-            if consecutive_beats % engine_policy.disk_check_interval_beats == 0 {
+            if consecutive_beats.value() % engine_policy.disk_check_interval_beats == 0 {
                 if let Some(avail_mb) = crate::external::shell::available_mb(&instance_dir) {
                     if avail_mb < engine_policy.disk_min_available_mb {
                         alice.notify_anomaly(&crate::policy::messages::disk_space_low(avail_mb));
@@ -560,11 +561,11 @@ impl AliceEngine {
 
             match alice.beat() {
                 Ok(()) => {
-                    alice.beat_count += 1;
+                    alice.beat_count.increment();
                     if alice.last_was_idle {
-                        consecutive_beats = 0;
+                        consecutive_beats.reset();
                     } else {
-                        consecutive_beats += 1;
+                        consecutive_beats.increment();
                     }
 
                     // Check shutdown after beat (respond quickly to graceful shutdown)
@@ -611,7 +612,7 @@ impl AliceEngine {
                     }
                     alice.notify_anomaly(&format!("{}", e));
                     alice.last_was_idle = true;
-                    consecutive_beats = 0;
+                    consecutive_beats.reset();
                     std::thread::sleep(Duration::from_secs(error_backoff_secs));
                 }
             }
