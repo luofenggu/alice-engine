@@ -72,6 +72,18 @@ pub struct ShellOutput {
     pub duration: Duration,
 }
 
+impl ShellOutput {
+    /// Whether the command exited successfully (exit code 0).
+    pub fn success(&self) -> bool {
+        self.exit_code == Some(0)
+    }
+
+    /// Human-readable exit code for error messages.
+    pub fn exit_code_display(&self) -> String {
+        self.exit_code.map_or("unknown".to_string(), |c| c.to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -259,6 +271,24 @@ impl Shell {
                 Err(ShellError::Timeout(timeout))
             }
         }
+    }
+
+    /// Read a file via shell `cat` command.
+    /// Useful for sandboxed instances that lack direct filesystem access.
+    pub fn read_file(&self, path: &str) -> ShellResult<ShellOutput> {
+        let escaped = path.replace('\'', "'\\''");
+        self.exec(&format!("cat '{}'", escaped))
+    }
+
+    /// Write content to a file via shell heredoc.
+    /// Creates parent directories if needed.
+    pub fn write_file(&self, path: &str, content: &str) -> ShellResult<ShellOutput> {
+        let escaped = path.replace('\'', "'\\''");
+        let delim = format!("HEREDOC_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
+        self.exec(&format!(
+            "mkdir -p \"$(dirname '{}')\" && cat > '{}' << '{}'\n{}\n{}",
+            escaped, escaped, delim, content, delim,
+        ))
     }
 }
 

@@ -62,18 +62,7 @@ fn make_shell(alice: &Alice) -> Shell {
     }
 }
 
-/// Generate a heredoc script to write content to a file.
-fn make_write_script(absolute_path: &str, content: &str) -> String {
-    let delim = format!("HEREDOC_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
-    format!(
-        "mkdir -p \"$(dirname '{}')\" && cat > '{}' << '{}'\n{}\n{}",
-        absolute_path.replace('\'', "'\\''"),
-        absolute_path.replace('\'', "'\\''"),
-        delim,
-        content,
-        delim,
-    )
-}
+
 
 /// Execute a single action against the Alice instance.
 ///
@@ -223,12 +212,11 @@ fn execute_write_file(alice: &mut Alice, tx: &mut Transaction, path: &str, conte
         std::fs::write(&abs_path, content)
             .with_context(|| format!("Failed to write file: {}", path))?;
     } else {
-        let script = make_write_script(&abs_path.to_string_lossy(), content);
         let shell = make_shell(alice);
-        let result = shell.exec(&script)?;
-        if result.exit_code != Some(0) {
+        let result = shell.write_file(&abs_path.to_string_lossy(), content)?;
+        if !result.success() {
             bail!("write_file failed (exit {}): {}", 
-                result.exit_code.map_or("unknown".to_string(), |c| c.to_string()),
+                result.exit_code_display(),
                 result.output.trim());
         }
     }
@@ -270,13 +258,11 @@ fn execute_replace_in_file(
         Ok(out::replace_result(total_replaced, &result_lines))
     } else {
         // Shell-based access for sandboxed instances
-        let path_str = abs_path.to_string_lossy().replace('\'', "'\\''");
-
         let shell = make_shell(alice);
-        let read_result = shell.exec(&format!("cat '{}'", path_str))?;
-        if read_result.exit_code != Some(0) {
+        let read_result = shell.read_file(&abs_path.to_string_lossy())?;
+        if !read_result.success() {
             bail!("replace_in_file: failed to read {} (exit {}): {}",
-                path, read_result.exit_code.map_or("unknown".to_string(), |c| c.to_string()),
+                path, read_result.exit_code_display(),
                 read_result.output.trim());
         }
 
@@ -296,17 +282,11 @@ fn execute_replace_in_file(
             result_lines.push(out::replace_block_success(&crate::safe_truncate(&block.search, 40)));
         }
 
-        let delimiter = format!("ALICE_HEREDOC_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
-        let parent_dir = abs_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-        let write_script = format!(
-            "mkdir -p '{}' && cat > '{}' << '{}'\n{}\n{}",
-            parent_dir.replace('\'', "'\\''"), path_str, delimiter, content, delimiter
-        );
         let shell = make_shell(alice);
-        let write_result = shell.exec(&write_script)?;
-        if write_result.exit_code != Some(0) {
+        let write_result = shell.write_file(&abs_path.to_string_lossy(), &content)?;
+        if !write_result.success() {
             bail!("replace_in_file: failed to write {} (exit {}): {}",
-                path, write_result.exit_code.map_or("unknown".to_string(), |c| c.to_string()),
+                path, write_result.exit_code_display(),
                 write_result.output.trim());
         }
 
