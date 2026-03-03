@@ -37,10 +37,7 @@ use tracing::{info, warn, error};
 use crate::core::{Alice, AliceConfig};
 use crate::persist::instance::{InstanceStore, InstanceSettingsExt, parse_model_str};
 use crate::core::signal::SignalHub;
-/// Graceful shutdown signal file path.
-/// Written by engine.sh stop / self-deploy.sh to request graceful shutdown.
-/// Engine checks this every 3s in main loop; instance threads check after each beat.
-const SHUTDOWN_SIGNAL_FILE: &str = "/var/run/alice-engine-shutdown.signal";
+
 
 
 
@@ -101,8 +98,8 @@ fn ensure_sandbox_user(user: &str, workspace: &Path) -> Result<()> {
 /// Returns true if signal detected (caller should initiate shutdown).
 ///
 /// @TRACE: SHUTDOWN
-fn check_shutdown_signal(pid_file: &Path) -> bool {
-    let signal_path = Path::new(SHUTDOWN_SIGNAL_FILE);
+fn check_shutdown_signal(pid_file: &Path, signal_file: &Path) -> bool {
+    let signal_path = signal_file;
     if !signal_path.exists() {
         return false;
     }
@@ -147,8 +144,7 @@ pub struct AliceEngine {
 impl AliceEngine {
     /// Create a new engine.
     pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub, env_config: Arc<crate::policy::EnvConfig>) -> Self {
-        let pid_file = env_config.pid_file.clone()
-            .unwrap_or_else(|| instances_base.parent().unwrap_or(&instances_base).join("alice-engine.pid"));
+        let pid_file = env_config.pid_file_path(&instances_base);
         let instance_store = InstanceStore::new(instances_base.clone());
         Self {
             instances_base,
@@ -339,7 +335,7 @@ impl AliceEngine {
             std::thread::sleep(Duration::from_secs(3));
 
             // Check graceful shutdown signal
-            if check_shutdown_signal(&self.pid_file) {
+            if check_shutdown_signal(&self.pid_file, &self.env_config.shutdown_signal_file) {
                 info!("[SHUTDOWN] Signaling all instance threads to shut down...");
                 shutdown.store(true, Ordering::Relaxed);
                 for (name, handle) in threads.drain() {
@@ -879,7 +875,8 @@ mod tests {
     #[test]
     fn test_check_restart_signal_no_file() {
         let pid_file = PathBuf::from("/tmp/test-alice-engine.pid");
-        assert!(!check_shutdown_signal(&pid_file));
+        let signal_file = PathBuf::from("/tmp/test-alice-shutdown.signal");
+        assert!(!check_shutdown_signal(&pid_file, &signal_file));
     }
 
     #[test]

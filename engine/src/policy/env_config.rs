@@ -36,6 +36,9 @@ pub struct EnvConfig {
     pub default_api_key: String,
     /// Default model for new instances (`ALICE_DEFAULT_MODEL`).
     pub default_model: Option<String>,
+    /// Graceful shutdown signal file path (`ALICE_SHUTDOWN_SIGNAL_FILE`,
+    /// default: `/var/run/alice-engine-shutdown.signal`).
+    pub shutdown_signal_file: PathBuf,
 }
 
 impl EnvConfig {
@@ -62,6 +65,16 @@ impl EnvConfig {
             default_api_key: std::env::var("ALICE_DEFAULT_API_KEY")
                 .unwrap_or_default(),
             default_model: std::env::var("ALICE_DEFAULT_MODEL").ok(),
+            shutdown_signal_file: std::env::var("ALICE_SHUTDOWN_SIGNAL_FILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/var/run/alice-engine-shutdown.signal")),
         }
+    }
+
+    /// Resolve PID file path, using env var or default based on instances directory.
+    pub fn pid_file_path(&self, instances_base: &std::path::Path) -> PathBuf {
+        self.pid_file.clone().unwrap_or_else(|| {
+            instances_base.parent().unwrap_or(instances_base).join("alice-engine.pid")
+        })
     }
 }
