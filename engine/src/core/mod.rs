@@ -445,19 +445,16 @@ impl Alice {
         let oldest_block = &blocks[0];
 
         // Idempotency check
-        let last_rolled_path = self.instance.memory.last_rolled_path();
-        if last_rolled_path.exists() {
-            if let Ok(last_rolled) = std::fs::read_to_string(&last_rolled_path) {
-                let last_rolled = last_rolled.trim();
-                if last_rolled == oldest_block.as_str() {
-                    info!("[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
-                        self.instance.id, oldest_block);
-                    self.instance.memory.delete_session_block(oldest_block)?;
-                    let _ = std::fs::remove_file(&last_rolled_path);
-                    return Ok(None);
-                }
+        if let Some(last_rolled) = self.instance.memory.get_last_rolled() {
+            if last_rolled == oldest_block.as_str() {
+                info!("[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
+                    self.instance.id, oldest_block);
+                self.instance.memory.delete_session_block(oldest_block)?;
+                self.instance.memory.clear_last_rolled();
+                return Ok(None);
             }
-            let _ = std::fs::remove_file(&last_rolled_path);
+            // Stale marker, clean up
+            self.instance.memory.clear_last_rolled();
         }
 
         info!("[ROLL-{}] History rolling triggered: {} blocks >= limit {}, preparing {}",
@@ -486,7 +483,7 @@ impl Alice {
         let llm_config = self.llm_client.config.clone();
 
         Ok(Some(RollTask {
-            sessions_dir: self.instance.memory.sessions_dir().to_path_buf(),
+            memory: self.instance.memory.clone(),
             oldest_block: oldest_block.clone(),
             request,
             instance_id: self.instance.id.clone(),
@@ -512,20 +509,16 @@ impl Alice {
         // Idempotency check: if this block was already compressed but not deleted
         // (e.g., process killed between history write and block deletion),
         // just delete it and skip re-compression.
-        let last_rolled_path = self.instance.memory.last_rolled_path();
-        if last_rolled_path.exists() {
-            if let Ok(last_rolled) = std::fs::read_to_string(&last_rolled_path) {
-                let last_rolled = last_rolled.trim();
-                if last_rolled == oldest_block {
-                    info!("[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
-                        self.instance.id, oldest_block);
-                    self.instance.memory.delete_session_block(oldest_block)?;
-                    let _ = std::fs::remove_file(&last_rolled_path);
-                    return Ok(Some(crate::policy::messages::roll_deleted_residual(oldest_block)));
-                }
+        if let Some(last_rolled) = self.instance.memory.get_last_rolled() {
+            if last_rolled == oldest_block.as_str() {
+                info!("[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
+                    self.instance.id, oldest_block);
+                self.instance.memory.delete_session_block(oldest_block)?;
+                self.instance.memory.clear_last_rolled();
+                return Ok(Some(crate::policy::messages::roll_deleted_residual(oldest_block)));
             }
             // Stale marker, clean up
-            let _ = std::fs::remove_file(&last_rolled_path);
+            self.instance.memory.clear_last_rolled();
         }
 
         info!("[ROLL-{}] History rolling triggered: {} blocks >= limit {}, rolling {}",
@@ -560,15 +553,8 @@ impl Alice {
             return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
         }
 
-        // 5. Commit history: atomic write history + delete oldest block
-        // Write idempotency marker before commit.
-        let last_rolled_path = self.instance.memory.last_rolled_path();
-        let _ = std::fs::write(&last_rolled_path, oldest_block.as_bytes());
-
+        // 5. Commit history (marker lifecycle managed inside commit_history)
         self.instance.memory.commit_history(new_history.trim(), oldest_block)?;
-
-        // Clean up marker after successful commit
-        let _ = std::fs::remove_file(&last_rolled_path);
 
         let result = crate::policy::messages::roll_result(
             oldest_block,
@@ -864,7 +850,7 @@ impl Alice {
 
 /// Data needed to execute history rolling in a background thread.
 pub struct RollTask {
-    pub sessions_dir: std::path::PathBuf,
+    pub memory: crate::persist::memory::Memory,
     pub oldest_block: String,
     pub request: crate::inference::compress::CompressRequest,
     pub instance_id: String,
@@ -875,10 +861,8 @@ pub struct RollTask {
 /// Returns Some(RollTask) if rolling is needed, None otherwise.
 
 /// Execute history rolling task (designed for background thread).
-/// Does LLM call + atomic write history + delete block.
+/// Does LLM call + commit history via Memory (atomic write + delete block).
 pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
-    use anyhow::Context;
-
     // Create a temporary LLM client for this task
     let llm_client = crate::external::llm::LlmClient::new(task.llm_config);
 
@@ -892,33 +876,8 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
         anyhow::bail!("LLM returned empty history");
     }
 
-    // Atomic write: history.txt.tmp -> rename -> delete block
-    let history_path = task.sessions_dir.join("history.txt");
-    let tmp_path = task.sessions_dir.join("history.txt.tmp");
-
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create(&tmp_path)
-            .with_context(|| "Failed to create history.txt.tmp")?;
-        f.write_all(new_history.trim().as_bytes())
-            .with_context(|| "Failed to write history.txt.tmp")?;
-        f.sync_all()
-            .with_context(|| "Failed to fsync history.txt.tmp")?;
-    }
-    std::fs::rename(&tmp_path, &history_path)
-        .with_context(|| "Failed to rename history.txt.tmp")?;
-
-    // Write idempotency marker
-    let last_rolled_path = task.sessions_dir.join(".last_rolled");
-    let _ = std::fs::write(&last_rolled_path, task.oldest_block.as_bytes());
-
-    // Delete the block file
-    let block_path = task.sessions_dir.join(&task.oldest_block);
-    std::fs::remove_file(&block_path)
-        .with_context(|| format!("Failed to delete block {}", task.oldest_block))?;
-
-    // Clean up marker
-    let _ = std::fs::remove_file(&last_rolled_path);
+    // Commit via Memory (marker → write history → delete block → clear marker)
+    task.memory.commit_history(new_history.trim(), &task.oldest_block)?;
 
     let result = crate::policy::messages::roll_result(
         &task.oldest_block,

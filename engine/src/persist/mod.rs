@@ -78,6 +78,7 @@ where
 // ─── TextFile: plain text file storage ───
 
 /// Stateless text file handle — reads and writes directly to disk, no caching.
+#[derive(Clone)]
 pub struct TextFile {
     path: std::path::PathBuf,
 }

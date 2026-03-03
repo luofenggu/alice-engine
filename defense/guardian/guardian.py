@@ -152,24 +152,10 @@ def is_in_return_path(literal_node, fn_node):
     Exception: literals used as arguments to function/method calls are NOT escaping,
     even if the call itself is in the return path."""
 
-    def is_in_call_arguments(node, boundary):
-        """Check if node is inside the arguments of a call/method_call expression
-        between node and boundary."""
-        p = node.parent
-        while p and p != boundary:
-            if p.type == 'arguments':
-                pp = p.parent
-                if pp and pp.type in ('call_expression', 'method_call_expression'):
-                    return True
-            p = p.parent
-        return False
-
     # Check explicit return
     p = literal_node.parent
     while p and p != fn_node:
         if p.type == 'return_expression':
-            if is_in_call_arguments(literal_node, p):
-                return False
             return True
         p = p.parent
 
@@ -203,10 +189,6 @@ def is_in_return_path(literal_node, fn_node):
         return False
 
     if not is_descendant(literal_node, last_expr):
-        return False
-
-    # Even if in return path, if it is a call argument, it does not escape
-    if is_in_call_arguments(literal_node, last_expr):
         return False
 
     return True

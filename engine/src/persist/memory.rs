@@ -19,6 +19,7 @@ use crate::persist::TextFile;
 const SESSION_EXT: &str = "jsonl";
 
 /// Memory subsystem for an Alice instance.
+#[derive(Clone)]
 pub struct Memory {
     /// Root memory directory (instance_dir/memory)
     memory_dir: PathBuf,
@@ -102,8 +103,31 @@ impl Memory {
         &self.sessions_dir
     }
 
-    /// Path to the .last_rolled idempotency marker file.
-    pub fn last_rolled_path(&self) -> PathBuf {
+    /// Read the .last_rolled idempotency marker.
+    /// Returns Some(block_name) if marker exists, None otherwise.
+    pub fn get_last_rolled(&self) -> Option<String> {
+        let path = self.last_rolled_path();
+        if path.exists() {
+            std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Write the .last_rolled idempotency marker.
+    pub fn set_last_rolled(&self, block_name: &str) {
+        let path = self.last_rolled_path();
+        let _ = std::fs::write(&path, block_name.as_bytes());
+    }
+
+    /// Clear (delete) the .last_rolled idempotency marker.
+    pub fn clear_last_rolled(&self) {
+        let path = self.last_rolled_path();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Path to the .last_rolled idempotency marker file (internal).
+    fn last_rolled_path(&self) -> PathBuf {
         self.sessions_dir.join(".last_rolled")
     }
 
@@ -229,26 +253,29 @@ impl Memory {
     }
 
     /// Roll history transaction:
-    /// 1. Write compressed history
-    /// 2. Delete oldest session block
+    /// 1. Write idempotency marker (so crash recovery knows what was being rolled)
+    /// 2. Write compressed history (atomic: tmp + rename)
+    /// 3. Delete oldest session block
+    /// 4. Clear idempotency marker
     ///
-    /// Crash safety: write target first, delete source last.
-    /// Worst case on crash: history written but old session not deleted (re-roll is safe).
+    /// Crash safety: marker written first, cleared last.
+    /// Worst case on crash: marker exists → next roll detects idempotency and cleans up.
     pub fn commit_history(
         &self,
         new_history: &str,
         oldest_block_name: &str,
     ) -> Result<()> {
-        // Step 1: Write history (atomic: tmp + rename)
+        // Step 1: Write idempotency marker before any mutation
+        self.set_last_rolled(oldest_block_name);
+
+        // Step 2: Write history (atomic: tmp + rename)
         self.history.write(new_history)?;
 
-        // Step 2: Delete oldest session block
+        // Step 3: Delete oldest session block
         self.delete_session_block(oldest_block_name)?;
 
-        // Step 3: Update .last_rolled marker
-        let last_rolled_path = self.sessions_dir.join(".last_rolled");
-        std::fs::write(&last_rolled_path, oldest_block_name)
-            .with_context(|| "Failed to write .last_rolled marker")?;
+        // Step 4: Clear marker after successful commit
+        self.clear_last_rolled();
 
         Ok(())
     }
@@ -414,12 +441,30 @@ mod tests {
         // Verify: old session block deleted
         assert!(memory.read_session_block("20260301120000").unwrap().is_empty());
 
-        // Verify: .last_rolled marker
-        let marker = std::fs::read_to_string(memory.sessions_dir.join(".last_rolled")).unwrap();
-        assert_eq!(marker, "20260301120000");
+        // Verify: .last_rolled marker is cleared after successful commit
+        assert!(memory.get_last_rolled().is_none());
 
         // Verify persistence
         assert_eq!(memory.history.read().unwrap(), "compressed new history");
+    }
+
+    #[test]
+    fn test_last_rolled_marker() {
+        let (_tmp, memory) = setup();
+
+        // Initially no marker
+        assert!(memory.get_last_rolled().is_none());
+
+        // Set marker
+        memory.set_last_rolled("20260301120000");
+        assert_eq!(memory.get_last_rolled(), Some("20260301120000".to_string()));
+
+        // Clear marker
+        memory.clear_last_rolled();
+        assert!(memory.get_last_rolled().is_none());
+
+        // Clear nonexistent is ok
+        memory.clear_last_rolled();
     }
 
     #[test]
