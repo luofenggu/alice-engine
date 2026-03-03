@@ -42,6 +42,18 @@ pub struct EnvConfig {
 }
 
 impl EnvConfig {
+    // ─── CLI / startup defaults ─────────────────────────────────
+    /// Default base directory when neither env var nor CLI arg is given.
+    pub const DEFAULT_DIR: &str = ".";
+    /// Default subdirectory name for instance storage.
+    pub const DEFAULT_INSTANCES_DIR: &str = "instances";
+    /// Default subdirectory name for log storage.
+    pub const DEFAULT_LOGS_DIR: &str = "logs";
+    /// CLI positional argument index for instances directory.
+    pub const CLI_ARG_INSTANCES: usize = 1;
+    /// CLI positional argument index for logs directory.
+    pub const CLI_ARG_LOGS: usize = 2;
+
     /// Read all `ALICE_*` environment variables and construct the config.
     pub fn from_env() -> Self {
         Self {

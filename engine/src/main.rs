@@ -42,27 +42,27 @@ async fn main() -> anyhow::Result<()> {
     let base_dir = env_config.base_dir.as_deref()
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            if args.len() > 1 {
-                PathBuf::from(&args[1])
+            if args.len() > EnvConfig::CLI_ARG_INSTANCES {
+                PathBuf::from(&args[EnvConfig::CLI_ARG_INSTANCES])
                     .parent()
                     .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| PathBuf::from("."))
+                    .unwrap_or_else(|| PathBuf::from(EnvConfig::DEFAULT_DIR))
             } else {
                 std::env::current_exe()
                     .ok()
                     .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                    .unwrap_or_else(|| PathBuf::from("."))
+                    .unwrap_or_else(|| PathBuf::from(EnvConfig::DEFAULT_DIR))
             }
         });
 
     // Derive paths: env > CLI arg > base_dir default
-    let instances_dir = env_or_arg(env_config.instances_dir.as_deref(), args.get(1))
+    let instances_dir = env_or_arg(env_config.instances_dir.as_deref(), args.get(EnvConfig::CLI_ARG_INSTANCES))
         .map(PathBuf::from)
-        .unwrap_or_else(|| base_dir.join("instances"));
+        .unwrap_or_else(|| base_dir.join(EnvConfig::DEFAULT_INSTANCES_DIR));
 
-    let logs_dir = env_or_arg(env_config.logs_dir.as_deref(), args.get(2))
+    let logs_dir = env_or_arg(env_config.logs_dir.as_deref(), args.get(EnvConfig::CLI_ARG_LOGS))
         .map(PathBuf::from)
-        .unwrap_or_else(|| base_dir.join("logs"));
+        .unwrap_or_else(|| base_dir.join(EnvConfig::DEFAULT_LOGS_DIR));
 
     // Ensure directories exist
     std::fs::create_dir_all(&instances_dir).ok();
