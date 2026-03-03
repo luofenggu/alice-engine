@@ -14,7 +14,7 @@ use super::strip_remember_markers;
 use std::path::PathBuf;
 
 use crate::core::{Alice, Transaction};
-use crate::shell::Shell;
+use crate::external::shell::Shell;
 use super::{Action, ReplaceBlock};
 use super::action_output as out;
 
@@ -180,7 +180,7 @@ fn extract_skeleton(path: &str, content: &str) -> String {
     }
 
     // Use SkeletonConfig for language-aware skeleton extraction
-    let skeleton_config = crate::analysis::SkeletonConfig::get();
+    let skeleton_config = crate::external::SkeletonConfig::get();
     if let Some(skeleton) = skeleton_config.extract(&ext, content) {
         if !skeleton.is_empty() {
             return out::write_success_skeleton(path, total_bytes, total_lines, &skeleton.join("\n"));
