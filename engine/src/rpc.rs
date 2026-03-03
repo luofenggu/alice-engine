@@ -33,20 +33,20 @@ pub struct EngineState {
     pub user_id: String,
     /// Signal hub for inter-thread communication (interrupt, switch-model).
     pub signal_hub: SignalHub,
-    /// API configuration (file browse rules, etc.)
-    pub api_config: crate::policy::ApiConfig,
+    /// Engine configuration (file browse rules, LLM policy, etc.)
+    pub engine_config: crate::policy::EngineConfig,
     /// Environment configuration (all ALICE_* env vars).
     pub env_config: Arc<crate::policy::EnvConfig>,
 }
 
 impl EngineState {
-    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String, signal_hub: SignalHub, api_config: crate::policy::ApiConfig, env_config: Arc<crate::policy::EnvConfig>) -> Self {
+    pub fn new(instances_dir: PathBuf, logs_dir: PathBuf, user_id: String, signal_hub: SignalHub, engine_config: crate::policy::EngineConfig, env_config: Arc<crate::policy::EnvConfig>) -> Self {
         Self {
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
             user_id,
             signal_hub,
-            api_config,
+            engine_config,
             env_config,
         }
     }
@@ -86,7 +86,7 @@ impl AliceEngine for AliceEngineServer {
         after_id: Option<i64>,
         limit: i64,
     ) -> Result<MessagesResult, String> {
-        let rpc_config = &self.state.api_config.rpc;
+        let rpc_config = &self.state.engine_config.rpc;
         let limit = limit.max(rpc_config.min_page_size).min(rpc_config.max_page_size);
         let store = self.state.instance_store.clone();
 
@@ -157,7 +157,7 @@ impl AliceEngine for AliceEngineServer {
 
     async fn get_replies_after(self, _: Context, instance_id: String, after_id: i64) -> Vec<MessageInfo> {
         let store = self.state.instance_store.clone();
-        let max_page = self.state.api_config.rpc.max_page_size;
+        let max_page = self.state.engine_config.rpc.max_page_size;
 
         let result = tokio::task::spawn_blocking(move || {
             let ch = store.get_chat(&instance_id)?;
@@ -187,7 +187,7 @@ impl AliceEngine for AliceEngineServer {
             Some(status) => {
                 let engine_online = if status.inferring {
                     alice_rpc::EngineOnlineStatus::Inferring
-                } else if status.last_beat.elapsed() < std::time::Duration::from_secs(self.state.api_config.rpc.heartbeat_timeout_secs) {
+                } else if status.last_beat.elapsed() < std::time::Duration::from_secs(self.state.engine_config.rpc.heartbeat_timeout_secs) {
                     alice_rpc::EngineOnlineStatus::Online
                 } else {
                     alice_rpc::EngineOnlineStatus::Offline
@@ -310,7 +310,7 @@ impl AliceEngine for AliceEngineServer {
 
     async fn list_files(self, _: Context, instance_id: String, path: String) -> Vec<FileInfo> {
         let store = self.state.instance_store.clone();
-        let file_browse = self.state.api_config.file_browse.clone();
+        let file_browse = self.state.engine_config.file_browse.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
@@ -363,7 +363,7 @@ impl AliceEngine for AliceEngineServer {
 
     async fn read_file(self, _: Context, instance_id: String, path: String) -> FileReadResult {
         let store = self.state.instance_store.clone();
-        let api_config = self.state.api_config.clone();
+        let engine_config = self.state.engine_config.clone();
         let empty = FileReadResult::error(String::new());
 
         let result = tokio::task::spawn_blocking(move || {
@@ -379,7 +379,7 @@ impl AliceEngine for AliceEngineServer {
             let metadata = target.metadata()?;
             let size = metadata.len();
 
-            if size > api_config.file_browse.max_file_size {
+            if size > engine_config.file_browse.max_file_size {
                 anyhow::bail!("File too large (>1MB)");
             }
 
@@ -388,7 +388,7 @@ impl AliceEngine for AliceEngineServer {
                 .to_string_lossy()
                 .to_string();
 
-            if api_config.file_browse.is_binary_file(&file_name) {
+            if engine_config.file_browse.is_binary_file(&file_name) {
                 return Ok(FileReadResult::binary(crate::policy::messages::binary_file_description(&file_name, size), size));
             }
 

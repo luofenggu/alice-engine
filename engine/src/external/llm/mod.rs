@@ -55,16 +55,11 @@ pub use stream::{InferenceStream, StreamItem, RecvResult};
 /// @TRACE: INFER
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
-    /// API endpoint (e.g. "https://openrouter.ai/api/v1/chat/completions")
-    pub api_url: String,
+    /// Raw model string (e.g. "openrouter@anthropic/claude-opus-4.6")
+    /// Provider resolution and API URL lookup happen at call time in external/llm.
+    pub model: String,
     /// API key for authentication
     pub api_key: String,
-    /// Model identifier (e.g. "anthropic/claude-sonnet-4")
-    pub model: String,
-    /// Maximum tokens to generate
-    pub max_tokens: u32,
-    /// Temperature (0.0 - 1.0)
-    pub temperature: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +154,6 @@ impl LlmClient {
     pub fn infer_sync(
         &self,
         messages: Vec<ChatMessage>,
-        max_tokens: u32,
         instance_id: &str,
     ) -> Result<(String, Option<UsageInfo>)> {
         let config = self.config.clone();
@@ -175,7 +169,7 @@ impl LlmClient {
             // Total sync inference timeout: 5 minutes (aligned with streaming inference)
             match tokio::time::timeout(
                 tokio::time::Duration::from_secs(300),
-                run_sync_inference(&config, &http_client, messages, max_tokens, &instance_id)
+                run_sync_inference(&config, &http_client, messages, &instance_id)
             ).await {
                 Ok(result) => result,
                 Err(_) => {
@@ -196,7 +190,6 @@ impl LlmClient {
     pub fn infer_sync_streaming(
         &self,
         messages: Vec<ChatMessage>,
-        max_tokens: u32,
         instance_id: &str,
         log_path: Option<&Path>,
     ) -> Result<(String, Option<UsageInfo>)> {
@@ -211,7 +204,7 @@ impl LlmClient {
             .context("Failed to create tokio runtime")?;
 
         rt.block_on(async {
-            run_streaming_collect(&config, &http_client, messages, max_tokens, &instance_id, log_path.as_deref()).await
+            run_streaming_collect(&config, &http_client, messages, &instance_id, log_path.as_deref()).await
         })
     }
 
@@ -241,9 +234,11 @@ impl LlmClient {
 
         // Write input log if enabled
         if infer_log_enabled {
+            let llm_policy = &crate::policy::EngineConfig::get().llm;
+            let (resolved_url, _) = llm_policy.resolve_model(&self.config.model);
             crate::logging::write_infer_input_log(
                 log_dir, &instance_id, log_timestamp,
-                &self.config.model, &self.config.api_url,
+                &self.config.model, &resolved_url,
                 &system_prompt, &user_prompt,
             );
         }
@@ -271,7 +266,6 @@ impl LlmClient {
     pub fn infer_compress(
         &self,
         request: CompressRequest,
-        max_tokens: u32,
         instance_id: &str,
     ) -> Result<(String, Option<UsageInfo>)> {
         let (system_msg, user_msg) = request.render();
@@ -279,7 +273,7 @@ impl LlmClient {
             ChatMessage::system(&system_msg),
             ChatMessage::user(&user_msg),
         ];
-        self.infer_sync(messages, max_tokens, instance_id)
+        self.infer_sync(messages, instance_id)
     }
 
     /// Start an async inference, returning a stream for consuming actions.
@@ -382,23 +376,25 @@ pub(crate) async fn run_sync_inference(
     config: &LlmConfig,
     http_client: &reqwest::Client,
     messages: Vec<ChatMessage>,
-    max_tokens: u32,
     instance_id: &str,
 ) -> Result<(String, Option<UsageInfo>)> {
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
-    info!("[INFER-SYNC-{}] Starting sync inference, model={}", instance_id, config.model);
+    let llm_policy = &crate::policy::EngineConfig::get().llm;
+    let (api_url, model_id) = llm_policy.resolve_model(&config.model);
+
+    info!("[INFER-SYNC-{}] Starting sync inference, model={}", instance_id, model_id);
 
     let body = serde_json::json!({
-        "model": config.model,
+        "model": model_id,
         "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": config.temperature,
+        "max_tokens": llm_policy.max_tokens,
+        "temperature": llm_policy.temperature,
         "stream": false,
     });
 
     let response = http_client
-        .post(&config.api_url)
+        .post(&api_url)
         .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
         .header(CONTENT_TYPE, "application/json")
         .json(&body)
@@ -442,25 +438,27 @@ async fn run_streaming_collect(
     config: &LlmConfig,
     http_client: &reqwest::Client,
     messages: Vec<ChatMessage>,
-    max_tokens: u32,
     instance_id: &str,
     log_path: Option<&Path>,
 ) -> Result<(String, Option<UsageInfo>)> {
     use std::io::Write;
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
-    info!("[INFER-STREAM-COLLECT-{}] Starting streaming collect, model={}", instance_id, config.model);
+    let llm_policy = &crate::policy::EngineConfig::get().llm;
+    let (api_url, model_id) = llm_policy.resolve_model(&config.model);
+
+    info!("[INFER-STREAM-COLLECT-{}] Starting streaming collect, model={}", instance_id, model_id);
 
     let body = serde_json::json!({
-        "model": config.model,
+        "model": model_id,
         "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": config.temperature,
+        "max_tokens": llm_policy.max_tokens,
+        "temperature": llm_policy.temperature,
         "stream": true,
     });
 
     let response = http_client
-        .post(&config.api_url)
+        .post(&api_url)
         .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
         .header(CONTENT_TYPE, "application/json")
         .json(&body)
@@ -580,20 +578,23 @@ async fn run_inference(
     use std::io::Write;
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
-    info!("[INFER-{}] Starting inference, model={}", instance_id, config.model);
+    let llm_policy = &crate::policy::EngineConfig::get().llm;
+    let (api_url, model_id) = llm_policy.resolve_model(&config.model);
+
+    info!("[INFER-{}] Starting inference, model={}", instance_id, model_id);
 
     // Build request body
     let body = serde_json::json!({
-        "model": config.model,
+        "model": model_id,
         "messages": messages,
-        "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
+        "max_tokens": llm_policy.max_tokens,
+        "temperature": llm_policy.temperature,
         "stream": true,
     });
 
     // Send request
     let response = http_client
-        .post(&config.api_url)
+        .post(&api_url)
         .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
         .header(CONTENT_TYPE, "application/json")
         .json(&body)
@@ -760,14 +761,11 @@ mod tests {
     #[test]
     fn test_llm_config() {
         let config = LlmConfig {
-            api_url: "https://example.com/v1/chat/completions".to_string(),
             api_key: "test-key".to_string(),
             model: "test-model".to_string(),
-            max_tokens: 4096,
-            temperature: 0.7,
         };
         assert_eq!(config.model, "test-model");
-        assert_eq!(config.max_tokens, 4096);
+        assert_eq!(config.api_key, "test-key");
     }
 
     #[test]

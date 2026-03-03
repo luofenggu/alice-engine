@@ -80,13 +80,13 @@ async fn main() -> anyhow::Result<()> {
     let signal_hub = SignalHub::new();
 
     // Create engine state (shared between RPC and engine)
-    let api_config = alice_engine::policy::ApiConfig::load();
+    let engine_config = alice_engine::policy::EngineConfig::load();
     let engine_state = Arc::new(EngineState::new(
         instances_dir.clone(),
         logs_dir.clone(),
         env_config.user_id.clone(),
         signal_hub.clone(),
-        api_config,
+        engine_config,
         env_config.clone(),
     ));
 

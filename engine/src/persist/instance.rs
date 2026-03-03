@@ -611,37 +611,10 @@ mod tests {
 // InstanceSettings and ExtraModel are defined in alice-rpc crate (type sharing).
 pub use alice_rpc::{InstanceSettings, ExtraModel, SettingsUpdate};
 
-/// Default model when not specified in settings.json or env.
-pub const DEFAULT_MODEL: &str = "openrouter@anthropic/claude-opus-4.6";
-
 /// Extension trait for InstanceSettings — engine-specific logic.
 pub trait InstanceSettingsExt {
     fn apply_env_fallbacks(&mut self, env_config: &crate::policy::EnvConfig);
     fn validate(&self) -> anyhow::Result<()>;
-    fn parse_model(&self) -> (String, String);
-}
-
-/// Parse a model string "provider@model_id" into (api_url, model_id).
-pub fn parse_model_str(model: &str) -> (String, String) {
-    if let Some(pos) = model.find('@') {
-        let provider = &model[..pos];
-        let model_id = &model[pos + 1..];
-        let api_url = match provider {
-            "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
-            "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
-            "zenmux" => "https://zenmux.ai/api/v1/chat/completions".to_string(),
-            other => {
-                tracing::warn!("Unknown provider '{}', using as direct URL", other);
-                other.to_string()
-            }
-        };
-        (api_url, model_id.to_string())
-    } else {
-        (
-            "https://openrouter.ai/api/v1/chat/completions".to_string(),
-            model.to_string(),
-        )
-    }
 }
 
 impl InstanceSettingsExt for InstanceSettings {
@@ -652,8 +625,9 @@ impl InstanceSettingsExt for InstanceSettings {
             self.api_key = env_config.default_api_key.clone();
         }
         if self.model.is_empty() {
+            let llm_config = &crate::policy::EngineConfig::get().llm;
             self.model = env_config.default_model.clone()
-                .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+                .unwrap_or_else(|| llm_config.default_model.clone());
         }
         if self.user_id.is_empty() {
             self.user_id = env_config.user_id.clone();
@@ -666,10 +640,5 @@ impl InstanceSettingsExt for InstanceSettings {
             anyhow::bail!("Missing api_key: set in settings.json or ALICE_DEFAULT_API_KEY env var");
         }
         Ok(())
-    }
-
-    /// Parse the model field "provider@model_id" into (api_url, model_id).
-    fn parse_model(&self) -> (String, String) {
-        parse_model_str(&self.model)
     }
 }

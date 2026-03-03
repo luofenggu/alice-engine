@@ -163,16 +163,10 @@ impl Action {
 /// @TRACE: INSTANCE
 #[derive(Debug, Clone)]
 pub struct AliceConfig {
-    /// LLM model identifier (e.g. "anthropic/claude-sonnet-4")
+    /// LLM model identifier (e.g. "openrouter@anthropic/claude-sonnet-4")
     pub model: String,
-    /// API endpoint URL
-    pub api_url: String,
     /// API key for authentication
     pub api_key: String,
-    /// Maximum tokens for LLM response
-    pub max_tokens: u32,
-    /// Temperature for LLM sampling
-    pub temperature: f64,
     /// Log directory path
     pub log_dir: PathBuf,
     /// Beat interval in seconds (sleep between beats when idle)
@@ -183,10 +177,7 @@ impl Default for AliceConfig {
     fn default() -> Self {
         Self {
             model: String::new(),
-            api_url: String::new(),
             api_key: String::new(),
-            max_tokens: 16384,
-            temperature: 0.5,
             log_dir: PathBuf::from("/root/alice-logs"),
             beat_interval_secs: 3,
         }
@@ -402,11 +393,8 @@ impl Alice {
         let user_id = instance.user_id().to_string();
 
         let llm_config = LlmConfig {
-            api_url: config.api_url.clone(),
-            api_key: config.api_key.clone(),
             model: config.model.clone(),
-            max_tokens: config.max_tokens,
-            temperature: config.temperature,
+            api_key: config.api_key.clone(),
         };
         let llm_client = LlmClient::new(llm_config);
 
@@ -458,18 +446,16 @@ impl Alice {
     pub fn switch_model(&mut self, index: usize) -> anyhow::Result<()> {
         if index == 0 {
             // Switch back to primary
-            self.llm_client.config.api_url = self.config.api_url.clone();
-            self.llm_client.config.api_key = self.config.api_key.clone();
             self.llm_client.config.model = self.config.model.clone();
+            self.llm_client.config.api_key = self.config.api_key.clone();
             self.active_config_index = 0;
             info!("[MODEL-{}] Switched to primary: {}", self.instance.id, self.config.model);
         } else {
             let extra_index = index - 1;
             let extra = self.extra_configs.get(extra_index)
                 .ok_or_else(|| anyhow::anyhow!("Invalid model index: {} (have {} extras)", index, self.extra_configs.len()))?;
-            self.llm_client.config.api_url = extra.api_url.clone();
-            self.llm_client.config.api_key = extra.api_key.clone();
             self.llm_client.config.model = extra.model.clone();
+            self.llm_client.config.api_key = extra.api_key.clone();
             self.active_config_index = index;
             info!("[MODEL-{}] Switched to extra[{}]: {}", self.instance.id, extra_index, extra.model);
         }
@@ -486,7 +472,6 @@ impl Alice {
     pub fn infer_compress_or_mock(
         &mut self,
         request: crate::inference::compress::CompressRequest,
-        max_tokens: u32,
     ) -> anyhow::Result<(String, Option<crate::external::llm::UsageInfo>)> {
         if let Some(ref mut mocks) = self.mock_sync_responses {
             if let Some(response) = mocks.pop_front() {
@@ -494,7 +479,7 @@ impl Alice {
                 return Ok((response, None));
             }
         }
-        self.llm_client.infer_compress(request, max_tokens, &self.instance.id)
+        self.llm_client.infer_compress(request, &self.instance.id)
     }
 
     // ─── Sessions access ────────────────────────────────────────
@@ -623,10 +608,7 @@ impl Alice {
 
         // 4. Call LLM (synchronous, blocking)
         info!("[ROLL-{}] Calling LLM for history compression", self.instance.id);
-        let (new_history, usage) = self.infer_compress_or_mock(
-            request,
-            4096,
-        )?;
+        let (new_history, usage) = self.infer_compress_or_mock(request)?;
 
         if new_history.trim().is_empty() {
             warn!("[ROLL-{}] LLM returned empty history, aborting roll", self.instance.id);
@@ -1013,7 +995,6 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     info!("[ROLL-{}] Background: calling LLM for history compression", task.instance_id);
     let (new_history, usage) = llm_client.infer_compress(
         task.request,
-        4096,
         &task.instance_id,
     )?;
 

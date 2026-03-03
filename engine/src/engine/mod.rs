@@ -35,7 +35,7 @@ use anyhow::{Result, Context};
 use tracing::{info, warn, error};
 
 use crate::core::{Alice, AliceConfig};
-use crate::persist::instance::{InstanceStore, InstanceSettingsExt, parse_model_str};
+use crate::persist::instance::{InstanceStore, InstanceSettingsExt};
 use crate::core::signal::SignalHub;
 
 
@@ -193,14 +193,9 @@ impl AliceEngine {
         settings.apply_env_fallbacks(&self.env_config);
         settings.validate()?;
 
-        let (api_url, model) = settings.parse_model();
-
         let config = AliceConfig {
-            model,
-            api_url,
+            model: settings.model.clone(),
             api_key: settings.api_key.clone(),
-            max_tokens: 16384,
-            temperature: 0.5,
             log_dir: self.logs_dir.clone(),
             beat_interval_secs: 3,
         };
@@ -209,13 +204,9 @@ impl AliceEngine {
 
         // Build extra model configs for failover
         let extra_configs: Vec<crate::external::llm::LlmConfig> = settings.extra_models.iter().map(|em| {
-            let (url, model_id) = parse_model_str(&em.model);
             crate::external::llm::LlmConfig {
-                api_url: url,
+                model: em.model.clone(),
                 api_key: em.api_key.clone(),
-                model: model_id,
-                max_tokens: 16384,
-                temperature: 0.5,
             }
         }).collect();
         alice.extra_configs = extra_configs;
@@ -455,15 +446,10 @@ impl AliceEngine {
                     }
 
                     // Hot-reload model and api_key
-                    if !s.model.is_empty() {
-                        let (new_api_url, new_model_id) = parse_model_str(&s.model);
-                        if new_model_id != alice.config.model || new_api_url != alice.config.api_url {
-                            info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.config.model, new_model_id);
-                            alice.config.model = new_model_id;
-                            alice.config.api_url = new_api_url.clone();
-                            alice.llm_client.config.model = alice.config.model.clone();
-                            alice.llm_client.config.api_url = new_api_url;
-                        }
+                    if !s.model.is_empty() && s.model != alice.config.model {
+                        info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.config.model, s.model);
+                        alice.config.model = s.model.clone();
+                        alice.llm_client.config.model = s.model.clone();
                     }
                     if !s.api_key.is_empty() && s.api_key != alice.config.api_key {
                         info!("[HOT-RELOAD-{}] API key changed", instance_id);
@@ -473,13 +459,9 @@ impl AliceEngine {
 
                     // Hot-reload extra_models
                     let new_extra_configs: Vec<crate::external::llm::LlmConfig> = s.extra_models.iter().map(|em| {
-                        let (api_url, model_id) = parse_model_str(&em.model);
                         crate::external::llm::LlmConfig {
-                            api_url,
+                            model: em.model.clone(),
                             api_key: em.api_key.clone(),
-                            model: model_id,
-                            max_tokens: 16384,
-                            temperature: 0.5,
                         }
                     }).collect();
                     if new_extra_configs.len() != alice.extra_configs.len() {
@@ -491,7 +473,7 @@ impl AliceEngine {
                         alice.extra_configs = new_extra_configs;
                     } else {
                         let changed = new_extra_configs.iter().zip(alice.extra_configs.iter())
-                            .any(|(a, b)| a.api_url != b.api_url || a.model != b.model || a.api_key != b.api_key);
+                            .any(|(a, b)| a.model != b.model || a.api_key != b.api_key);
                         if changed {
                             info!("[HOT-RELOAD-{}] Extra models content changed", instance_id);
                             if alice.active_config_index > 0 {
@@ -719,75 +701,6 @@ mod tests {
     use tempfile::TempDir;
 
 
-
-    #[test]
-    fn test_instance_settings_parse_model_openrouter() {
-        let settings = InstanceSettings {
-            api_key: "sk-test".to_string(),
-            model: "openrouter@anthropic/claude-opus-4.6".to_string(),
-            user_id: "test-user".to_string(),
-            privileged: false,
-            max_beats: None,
-            session_blocks_limit: None,
-            session_block_kb: None,
-            history_kb: None,
-            safety_max_consecutive_beats: None,
-            safety_cooldown_secs: None,
-            extra_models: vec![],
-            name: None,
-            color: None,
-            avatar: None,
-        };
-        let (url, model) = settings.parse_model();
-        assert_eq!(url, "https://openrouter.ai/api/v1/chat/completions");
-        assert_eq!(model, "anthropic/claude-opus-4.6");
-    }
-
-    #[test]
-    fn test_instance_settings_parse_model_openai() {
-        let settings = InstanceSettings {
-            api_key: "sk-test".to_string(),
-            model: "openai@gpt-4".to_string(),
-            user_id: "test-user".to_string(),
-            privileged: false,
-            max_beats: None,
-            session_blocks_limit: None,
-            session_block_kb: None,
-            history_kb: None,
-            safety_max_consecutive_beats: None,
-            safety_cooldown_secs: None,
-            extra_models: vec![],
-            name: None,
-            color: None,
-            avatar: None,
-        };
-        let (url, model) = settings.parse_model();
-        assert_eq!(url, "https://api.openai.com/v1/chat/completions");
-        assert_eq!(model, "gpt-4");
-    }
-
-    #[test]
-    fn test_instance_settings_parse_model_no_provider() {
-        let settings = InstanceSettings {
-            api_key: "sk-test".to_string(),
-            model: "claude-sonnet-4".to_string(),
-            user_id: "test-user".to_string(),
-            privileged: false,
-            max_beats: None,
-            session_blocks_limit: None,
-            session_block_kb: None,
-            history_kb: None,
-            safety_max_consecutive_beats: None,
-            safety_cooldown_secs: None,
-            extra_models: vec![],
-            name: None,
-            color: None,
-            avatar: None,
-        };
-        let (url, model) = settings.parse_model();
-        assert_eq!(url, "https://openrouter.ai/api/v1/chat/completions");
-        assert_eq!(model, "claude-sonnet-4");
-    }
 
     #[test]
     fn test_instance_settings_load() {
