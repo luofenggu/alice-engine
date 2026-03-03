@@ -239,19 +239,8 @@ impl AliceEngine {
             }
         }
 
-        // Security isolation: set directory permissions (安全隔离策略)
-        // instance_dir=711, memory=700, data=700, workspace=750, settings=600
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let set_perm = |path: &std::path::Path, mode: u32| {
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).ok();
-            };
-            set_perm(instance_dir, 0o711);
-            set_perm(alice.instance.memory.memory_dir(), 0o700);
-            set_perm(&alice.instance.instance_dir.join("data"), 0o700);
-            set_perm(&alice.instance.workspace, 0o750);
-            set_perm(alice.instance.settings.path(), 0o600);
-        }
+        // Security isolation (紧箍咒) — permissions managed by persist layer
+        alice.instance.apply_security_permissions();
 
         // Session blocks limit and history KB from settings
         if let Some(limit) = settings.session_blocks_limit {

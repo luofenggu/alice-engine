@@ -125,6 +125,30 @@ impl Instance {
     ///
     /// Ensures all subdirectories exist (creates them if missing for backward compatibility).
     /// Handles one-time migration of keypoints.md + knowledge/*.md → knowledge.md.
+    /// Apply security permissions for sandbox isolation (紧箍咒).
+    ///
+    /// Protects sensitive directories (memory, data, settings) from sandbox user.
+    /// Workspace is accessible to sandbox user for script execution.
+    ///
+    /// NOTE: This is asset-protection, not whitelist isolation. Sandbox user can
+    /// still read system directories (755). Future: chroot/namespace isolation.
+    pub fn apply_security_permissions(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let set_perm = |path: &std::path::Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).ok();
+        };
+        // instance_dir: traverse only (sandbox can cd through but not list)
+        set_perm(&self.instance_dir, 0o711);
+        // memory: root only (记忆=最高机密)
+        set_perm(self.memory.memory_dir(), 0o700);
+        // data: root only (数据库)
+        set_perm(&self.instance_dir.join("data"), 0o700);
+        // workspace: sandbox user can work here
+        set_perm(&self.workspace, 0o750);
+        // settings: root only
+        set_perm(self.settings.path(), 0o600);
+    }
+
     pub fn open(instance_dir: &Path) -> Result<Self> {
         let id = instance_dir
             .file_name()
