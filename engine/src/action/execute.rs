@@ -166,23 +166,8 @@ fn extract_skeleton(path: &str, content: &str) -> String {
 
     // Fallback: head + tail preview
     let action = &ApiConfig::get().action;
-    let mut preview: Vec<String> = Vec::new();
-    let head = std::cmp::min(action.preview_head_lines, total_lines);
-    for i in 0..head {
-        preview.push(out::preview_line(i + 1, lines[i]));
-    }
-    if total_lines > action.preview_threshold {
-        preview.push(out::PREVIEW_ELLIPSIS.to_string());
-        for i in (total_lines - action.preview_tail_lines)..total_lines {
-            preview.push(out::preview_line(i + 1, lines[i]));
-        }
-    } else if total_lines > action.preview_head_lines {
-        for i in action.preview_head_lines..total_lines {
-            preview.push(out::preview_line(i + 1, lines[i]));
-        }
-    }
-
-    out::write_success_preview(path, total_bytes, total_lines, &preview.join("\n"))
+    let preview = out::format_preview(&lines, action.preview_head_lines, action.preview_tail_lines, action.preview_threshold);
+    out::write_success_preview(path, total_bytes, total_lines, &preview)
 }
 
 fn execute_write_file(alice: &mut Alice, tx: &mut Transaction, path: &str, content: &str) -> Result<String> {
@@ -228,13 +213,11 @@ fn execute_replace_in_file(
             .with_context(|| format!("Failed to read file: {}", path))?;
 
         let mut result_lines: Vec<String> = Vec::new();
-        let mut total_replaced = 0;
         for block in blocks.iter() {
             let truncated = crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display);
             match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str()) {
                 Ok(new_content) => {
                     content = new_content;
-                    total_replaced += 1;
                     result_lines.push(out::replace_block_success(&truncated));
                 }
                 Err(count) => {
@@ -246,7 +229,7 @@ fn execute_replace_in_file(
         std::fs::write(&abs_path, &content)
             .with_context(|| format!("Failed to write file: {}", path))?;
 
-        Ok(out::replace_result(total_replaced, &result_lines))
+        Ok(out::replace_result(&result_lines))
     } else {
         // Shell-based access for sandboxed instances
         let shell = make_shell(alice);
@@ -259,14 +242,12 @@ fn execute_replace_in_file(
 
         let mut content = read_result.output;
         let mut result_lines: Vec<String> = Vec::new();
-        let mut total_replaced = 0;
 
         for block in blocks.iter() {
             let truncated = crate::safe_truncate(&block.search, ApiConfig::get().action.truncate_display);
             match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str()) {
                 Ok(new_content) => {
                     content = new_content;
-                    total_replaced += 1;
                     result_lines.push(out::replace_block_success(&truncated));
                 }
                 Err(count) => {
@@ -283,7 +264,7 @@ fn execute_replace_in_file(
                 write_result.output.trim());
         }
 
-        Ok(out::replace_result(total_replaced, &result_lines))
+        Ok(out::replace_result(&result_lines))
     }
 }
 

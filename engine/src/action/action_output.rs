@@ -61,12 +61,34 @@ pub fn write_success_preview(path: &str, bytes: usize, lines: usize, preview: &s
 }
 
 /// Format a single preview line with line number.
-pub fn preview_line(line_number: usize, content: &str) -> String {
+fn preview_line(line_number: usize, content: &str) -> String {
     format!("{:>4}: {}", line_number, content)
 }
 
 /// Preview ellipsis separator.
-pub const PREVIEW_ELLIPSIS: &str = "     ...";
+const PREVIEW_ELLIPSIS: &str = "     ...";
+
+/// Format head+tail preview from lines with line numbers.
+/// Handles three cases: all lines fit in head, head+tail with ellipsis, head+remaining.
+pub fn format_preview(lines: &[&str], head: usize, tail: usize, threshold: usize) -> String {
+    let total = lines.len();
+    let actual_head = std::cmp::min(head, total);
+    let mut preview: Vec<String> = Vec::new();
+    for (line, num) in lines[..actual_head].iter().zip(1..) {
+        preview.push(preview_line(num, line));
+    }
+    if total > threshold {
+        preview.push(PREVIEW_ELLIPSIS.to_string());
+        for (line, num) in lines[total - tail..].iter().zip(total - tail + 1..) {
+            preview.push(preview_line(num, line));
+        }
+    } else if total > head {
+        for (line, num) in lines[head..].iter().zip(head + 1..) {
+            preview.push(preview_line(num, line));
+        }
+    }
+    preview.join("\n")
+}
 
 // ─── Replace in file ─────────────────────────────────────────────
 
@@ -81,7 +103,9 @@ pub fn replace_block_success(search_preview: &str) -> String {
 }
 
 /// Format replace operation summary with details.
-pub fn replace_result(total_replaced: usize, detail_lines: &[String]) -> String {
+/// Counts successful blocks internally from detail_lines.
+pub fn replace_result(detail_lines: &[String]) -> String {
+    let total_replaced = detail_lines.iter().filter(|l| !l.starts_with("  ERROR")).count();
     let summary = format!("replaced {} block(s) successfully", total_replaced);
     let detail = detail_lines.join("\n");
     format!("{}\n{}\n", summary, detail)
