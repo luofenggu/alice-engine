@@ -50,6 +50,23 @@ pub fn crash_log_line(timestamp: &str, msg: &str) -> String {
     format!("[{}] {}", timestamp, msg)
 }
 
+/// Write a formatted log timestamp directly to a fmt::Write sink.
+pub fn write_log_timestamp(
+    w: &mut impl std::fmt::Write,
+    now: &chrono::DateTime<chrono::Local>,
+) -> std::fmt::Result {
+    write!(w, "{}", format_log_timestamp(now))
+}
+
+/// Write a crash log line directly to an io::Write sink (with newline).
+pub fn write_crash_log_line(
+    f: &mut impl std::io::Write,
+    timestamp: &str,
+    msg: &str,
+) -> std::io::Result<()> {
+    writeln!(f, "{}", crash_log_line(timestamp, msg))
+}
+
 /// Build the inference output log filename.
 pub fn infer_out_filename(timestamp: &str) -> String {
     format!("{}.out.log", timestamp)

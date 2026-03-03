@@ -22,7 +22,7 @@ struct LocalTimer;
 impl FormatTime for LocalTimer {
     fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
         let now = Local::now();
-        write!(w, "{}", logfmt::format_log_timestamp(&now))
+        logfmt::write_log_timestamp(w, &now)
     }
 }
 
@@ -55,9 +55,8 @@ pub fn setup_crash_hook(logs_dir: &Path) {
             .append(true)
             .open(&crash_log_path)
         {
-            use std::io::Write;
             let timestamp = logfmt::format_log_timestamp(&Local::now());
-            let _ = writeln!(f, "{}", logfmt::crash_log_line(&timestamp, &msg));
+            let _ = logfmt::write_crash_log_line(&mut f, &timestamp, &msg);
         }
         default_hook(info);
     }));
@@ -81,8 +80,8 @@ pub fn cleanup_old_infer_logs(logs_dir: &Path, retention_days: u64) {
         .checked_sub(Duration::from_secs(retention_days * logfmt::SECS_PER_DAY))
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-    let mut cleaned_files = 0u64;
-    let mut cleaned_bytes = 0u64;
+    let mut cleaned_files = crate::util::Counter::<u32>::new();
+    let mut cleaned_bytes = crate::util::Counter::<u64>::new();
 
     // Walk instance subdirectories
     if let Ok(instances) = std::fs::read_dir(&infer_dir) {
@@ -98,8 +97,8 @@ pub fn cleanup_old_infer_logs(logs_dir: &Path, retention_days: u64) {
                             if modified < cutoff {
                                 let size = metadata.len();
                                 if std::fs::remove_file(&path).is_ok() {
-                                    cleaned_files += 1;
-                                    cleaned_bytes += size;
+                                    cleaned_files.increment();
+                                    cleaned_bytes.add(size);
                                 }
                             }
                         }
@@ -109,11 +108,11 @@ pub fn cleanup_old_infer_logs(logs_dir: &Path, retention_days: u64) {
         }
     }
 
-    if cleaned_files > 0 {
+    if cleaned_files.value() > 0 {
         info!(
             "[LOG-CLEANUP] Removed {} inference log files ({:.1}MB), retention={}d",
-            cleaned_files,
-            cleaned_bytes as f64 / logfmt::BYTES_PER_MB as f64,
+            cleaned_files.value(),
+            cleaned_bytes.value() as f64 / logfmt::BYTES_PER_MB as f64,
             retention_days
         );
     } else {
