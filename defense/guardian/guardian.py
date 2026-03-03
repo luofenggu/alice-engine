@@ -536,6 +536,13 @@ def scan_file(filepath, source_bytes, parser):
                     exempt = True
                     exempt_reason = 'log'
 
+            # 2b. Thread naming (strings starting with "thread-")
+            if not exempt and kind == 'STRING':
+                stripped = value.strip('"')
+                if stripped.startswith('thread-'):
+                    exempt = True
+                    exempt_reason = 'internal'
+
             # 3. Error macros
             if not exempt:
                 macro = get_macro_name(node)

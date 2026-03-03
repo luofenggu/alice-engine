@@ -12,8 +12,6 @@ const TEMPLATE_SYSTEM: &str = include_str!("../../templates/react_system.txt");
 const TEMPLATE_USER: &str = include_str!("../../templates/react_user.txt");
 const APP_GUIDE_TEMPLATE: &str = include_str!("../../templates/app_guide.txt");
 
-#[cfg(feature = "welcome-letter")]
-pub const WELCOME_LETTER: &str = include_str!("../../templates/welcome_letter.txt");
 pub const INITIAL_HISTORY: &str = include_str!("../../templates/initial_history.txt");
 
 pub const KNOWLEDGE_FILE: &str = "knowledge.md";

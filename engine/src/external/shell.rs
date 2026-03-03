@@ -383,22 +383,23 @@ pub fn available_mb(path: &std::path::Path) -> Option<u64> {
 
 /// Ensure a system user exists, creating if needed. Sets workspace ownership.
 ///
-/// - Checks if user exists via `id {user}`
-/// - Creates user if missing via `useradd -r -s /bin/bash --home-dir {workspace} {user}`
+/// - Checks if user exists via `id {prefix}{name}`
+/// - Creates user if missing via `useradd -r -s /bin/bash --home-dir {workspace} {prefix}{name}`
 /// - Sets workspace directory ownership via `chown -R {user}:{user} {workspace}`
-pub fn ensure_sandbox_user(user: &str, workspace: &std::path::Path) -> anyhow::Result<()> {
+pub fn ensure_sandbox_user(prefix: &str, name: &str, workspace: &std::path::Path) -> anyhow::Result<()> {
     use anyhow::Context;
 
+    let user = format!("{}{}", prefix, name);
     let workspace_str = workspace.to_string_lossy();
 
     // Check if user already exists
-    let check = std::process::Command::new("id").arg(user).output()
+    let check = std::process::Command::new("id").arg(&user).output()
         .context("Failed to run 'id' command")?;
 
     if !check.status.success() {
         tracing::info!("[SANDBOX] Creating sandbox user: {} (home={})", user, workspace_str);
         let create = std::process::Command::new("useradd")
-            .args(["-r", "-s", "/bin/bash", "--home-dir", &workspace_str, user])
+            .args(["-r", "-s", "/bin/bash", "--home-dir", &workspace_str, &user])
             .output()
             .context("Failed to run 'useradd' command")?;
 

@@ -39,7 +39,7 @@ tarpc = { version = "0.37", features = ["tokio1", "serde-transport", "unix"] }
 futures = "0.3"
 
 [features]
-welcome-letter = []
+
 remember = []
 
 [dev-dependencies]

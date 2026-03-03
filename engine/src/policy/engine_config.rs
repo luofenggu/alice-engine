@@ -15,6 +15,7 @@ pub struct EngineConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct EnginePolicyConfig {
     pub beat_interval_secs: u64,
+    pub main_loop_interval_secs: u64,
     pub error_backoff_secs: u64,
     pub log_rotate_max_mb: u64,
     pub disk_check_interval_beats: u32,

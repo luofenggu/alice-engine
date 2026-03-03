@@ -178,8 +178,7 @@ impl AliceEngine {
         // Auto-create sandbox user (紧箍咒) for non-privileged instances
         if !settings.privileged {
             let engine_policy = &crate::policy::EngineConfig::get().engine;
-            let sandbox_user = format!("{}{}", engine_policy.sandbox_user_prefix, name);
-            if let Err(e) = crate::external::shell::ensure_sandbox_user(&sandbox_user, &alice.instance.workspace) {
+            if let Err(e) = crate::external::shell::ensure_sandbox_user(&engine_policy.sandbox_user_prefix, name, &alice.instance.workspace) {
                 warn!("[SANDBOX] Skipping sandbox setup for {}: {} (sandbox commands not available)", name, e);
             }
         }
@@ -207,18 +206,6 @@ impl AliceEngine {
                 None
             }
         });
-
-        // Insert welcome letter on first creation (empty chat.db)
-        #[cfg(feature = "welcome-letter")]
-        if alice.instance.chat.get_last_message_time().unwrap_or(0) == 0 {
-            let timestamp = ChatHistory::now_timestamp();
-            alice.instance.chat.write_user_message(
-                "system",
-                crate::inference::beat::WELCOME_LETTER,
-                &timestamp,
-            ).ok();
-            info!("[INSTANCE] Welcome letter inserted for {}", name);
-        }
 
         // Write initial memory (imprint learning) on first creation
         if alice.instance.memory.history.read()?.is_empty() {
@@ -275,7 +262,7 @@ impl AliceEngine {
         for (name, alice) in instances {
             let shutdown_clone = Arc::clone(&shutdown);
             let handle = std::thread::Builder::new()
-                .name(format!("instance-{}", name))
+                .name(format!("thread-instance-{}", name))
                 .spawn(move || {
                     Self::instance_thread(alice, shutdown_clone);
                 })
@@ -286,7 +273,8 @@ impl AliceEngine {
 
         // 5. Main loop: hot-scan, cold-clean, shutdown signal
         loop {
-            std::thread::sleep(Duration::from_secs(3));
+            let engine_policy = &crate::policy::EngineConfig::get().engine;
+            std::thread::sleep(Duration::from_secs(engine_policy.main_loop_interval_secs));
 
             // Check graceful shutdown signal
             if check_shutdown_signal(&self.pid_file, &self.env_config.shutdown_signal_file) {
@@ -323,7 +311,7 @@ impl AliceEngine {
                             if let Some((inst_name, alice)) = self.instances.pop() {
                                 let shutdown_clone = Arc::clone(&shutdown);
                                 let handle = std::thread::Builder::new()
-                                    .name(format!("instance-{}", inst_name))
+                                    .name(format!("thread-instance-{}", inst_name))
                                     .spawn(move || {
                                         Self::instance_thread(alice, shutdown_clone);
                                     });

@@ -11,6 +11,7 @@ max_file_size = 1048576
 
 [engine]
 beat_interval_secs = 3
+main_loop_interval_secs = 3
 error_backoff_secs = 10
 log_rotate_max_mb = 50
 disk_check_interval_beats = 10
