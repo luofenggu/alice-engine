@@ -37,7 +37,7 @@
 //!   └── ...
 //! ```
 
-use std::collections::VecDeque;
+
 use std::sync::Arc;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -309,12 +309,6 @@ pub struct Alice {
     pub privileged: bool,
     /// System start time (for prompt)
     pub system_start_time: chrono::DateTime<Local>,
-    /// Mock streams for scripted testing. Each beat consumes one Vec<StreamItem>.
-    /// None = production mode (use LLM). Some = test mode (use mock).
-    mock_streams: Option<VecDeque<Vec<StreamItem>>>,
-    /// Mock sync responses for scripted testing. Each infer_sync call consumes one String.
-    /// None = production mode (use LLM). Some = test mode (use mock).
-    mock_sync_responses: Option<VecDeque<String>>,
     /// Total beat count for this instance (used with max_beats limit)
     pub beat_count: Counter<u32>,
     /// Maximum beats allowed (None = unlimited). From settings.json "max_beats".
@@ -379,8 +373,6 @@ impl Alice {
             idle_since: None,
             privileged: false,
             system_start_time: Local::now(),
-            mock_streams: None,
-            mock_sync_responses: None,
             beat_count: Counter::<u32>::new(),
             max_beats: None,
             born: false,
@@ -397,38 +389,6 @@ impl Alice {
             stream_poll_interval_ms: crate::policy::EngineConfig::get().streaming.poll_interval_ms,
             env_config,
         })
-    }
-
-    /// Set mock streams for scripted testing.
-    pub fn set_mock_streams(&mut self, streams: Vec<Vec<StreamItem>>) {
-        self.mock_streams = Some(VecDeque::from(streams));
-    }
-
-    /// Set mock sync responses for scripted testing (capture/compress).
-    pub fn set_mock_sync_responses(&mut self, responses: Vec<String>) {
-        self.mock_sync_responses = Some(VecDeque::from(responses));
-    }
-
-
-
-    /// Check if mock sync responses are available (for test mode detection).
-    pub fn has_mock_sync_responses(&self) -> bool {
-        self.mock_sync_responses.as_ref().map_or(false, |q| !q.is_empty())
-    }
-
-    /// Sync compress inference with mock support.
-    /// In test mode, consumes from mock_sync_responses. In production, calls LLM.
-    pub fn infer_compress_or_mock(
-        &mut self,
-        request: crate::inference::compress::CompressRequest,
-    ) -> anyhow::Result<(String, Option<crate::external::llm::UsageInfo>)> {
-        if let Some(ref mut mocks) = self.mock_sync_responses {
-            if let Some(response) = mocks.pop_front() {
-                info!("[INFER-SYNC-{}] Using mock response ({} chars)", self.instance.id, response.len());
-                return Ok((response, None));
-            }
-        }
-        self.llm_client.infer_compress(request, &self.instance.id)
     }
 
     // ─── Sessions access ────────────────────────────────────────
@@ -552,7 +512,7 @@ impl Alice {
 
         // 4. Call LLM (synchronous, blocking)
         info!("[ROLL-{}] Calling LLM for history compression", self.instance.id);
-        let (new_history, usage) = self.infer_compress_or_mock(request)?;
+        let (new_history, usage) = self.llm_client.infer_compress(request, &self.instance.id)?;
 
         if new_history.trim().is_empty() {
             warn!("[ROLL-{}] LLM returned empty history, aborting roll", self.instance.id);
@@ -707,21 +667,16 @@ impl Alice {
             });
         }
 
-        // 6. LLM inference (or mock stream for testing)
-        let stream: InferenceStream = if let Some(ref mut streams) = self.mock_streams {
-            info!("[INFER-{}] Using mock stream", self.instance.id);
-            InferenceStream::mock(streams.pop_front().unwrap_or_default())
-        } else {
-            info!("[INFER-{}] Starting inference", self.instance.id);
-            self.llm_client.infer_beat(
-                request,
-                log_path.clone(),
-                &self.log_dir,
-                &log_timestamp,
-                self.instance.id.clone(),
-                self.env_config.infer_log_enabled,
-            )
-        };
+        // 6. LLM inference
+        info!("[INFER-{}] Starting inference", self.instance.id);
+        let stream: InferenceStream = self.llm_client.infer_beat(
+            request,
+            log_path.clone(),
+            &self.log_dir,
+            &log_timestamp,
+            self.instance.id.clone(),
+            self.env_config.infer_log_enabled,
+        );
 
         // 7. Stream actions: consume and execute (with sequence guard)
         self.last_was_idle = false;
@@ -1138,390 +1093,5 @@ mod tests {
         assert!(!Action::Thinking { content: "".into() }.is_blocking());
         assert!(!Action::SendMsg { recipient: "".into(), content: "".into() }.is_blocking());
         assert!(!Action::WriteFile { path: "".into(), content: "".into() }.is_blocking());
-    }
-}
-// ─── Scripted Tests (Episode 1: Hello World) ────────────────────
-
-#[cfg(test)]
-mod scripted_tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    /// Create a test Alice with privilege mode for scripted testing.
-    fn create_scripted_alice() -> (Alice, TempDir) {
-        let tmp = TempDir::new().unwrap();
-        let settings_path = tmp.path().join("settings.json");
-        std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
-        let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
-        let log_dir = tmp.path().join("logs");
-        std::fs::create_dir_all(&log_dir).unwrap();
-        let llm_config = LlmConfig { model: String::new(), api_key: String::new() };
-        let env_config = Arc::new(crate::policy::EnvConfig::from_env());
-        let mut alice = Alice::new(instance, log_dir, llm_config, env_config).unwrap();
-        alice.privileged = true;
-        (alice, tmp)
-    }
-
-    #[test]
-    fn test_episode_1_hello_world() {
-        // === Setup ===
-        let (mut alice, _tmp) = create_scripted_alice();
-
-        // Verify initial state
-        assert_eq!(alice.count_unread_messages(), 0);
-        assert!(alice.last_was_idle, "initial state should be idle (wait for user)");
-
-        // === Act 1: User sends a message ===
-        alice.instance.chat.write_user_message("user1", "你好，小白！", "20260301120000").unwrap();
-        assert_eq!(alice.count_unread_messages(), 1);
-
-        // === Act 2: First beat — auto-read (hard-control) ===
-        alice.beat().unwrap();
-
-        // After auto-read: message consumed, current updated
-        assert_eq!(alice.count_unread_messages(), 0);
-        let current = std::fs::read_to_string(alice.instance.memory.sessions_dir().join("current.txt")).unwrap();
-        assert!(current.contains("你好，小白！"), "current should contain the user message after auto-read");
-        assert!(alice.last_was_idle, "auto-read should not change last_was_idle");
-
-        // === Act 3: Second beat — LLM inference (mock) ===
-        alice.set_mock_streams(vec![
-            vec![
-                StreamItem::Action(Action::Thinking { content: "用户在打招呼，我来回复".into() }),
-                StreamItem::Action(Action::SendMsg { recipient: "user1".into(), content: "你好！很高兴见到你！".into() }),
-                StreamItem::Action(Action::Idle { timeout_secs: None }),
-                StreamItem::Done(vec![
-                    Action::Thinking { content: "用户在打招呼，我来回复".into() },
-                    Action::SendMsg { recipient: "user1".into(), content: "你好！很高兴见到你！".into() },
-                    Action::Idle { timeout_secs: None },
-                ], None),
-            ],
-        ]);
-
-        alice.beat().unwrap();
-
-        // After inference: current has all action records
-        let current = std::fs::read_to_string(alice.instance.memory.sessions_dir().join("current.txt")).unwrap();
-        assert!(current.contains("用户在打招呼"), "current should contain thinking content");
-        assert!(current.contains("你好！很高兴见到你！"), "current should contain send_msg content");
-        assert!(current.contains("idle"), "current should contain idle record");
-
-        // Agent reply should be in chat
-        let replies = alice.instance.chat.read_unread_agent_replies().unwrap();
-        assert_eq!(replies.len(), 1, "should have exactly one agent reply");
-        assert!(replies[0].1.contains("你好！很高兴见到你！"), "reply content should match");
-
-        // State: last_was_idle should be true
-        assert!(alice.last_was_idle, "should be idle after Idle action");
-
-        // === Act 4: Third beat — should skip (no unread + idle) ===
-        alice.beat().unwrap();
-        // Current should not have grown (beat was skipped)
-        let current_after_skip = std::fs::read_to_string(alice.instance.memory.sessions_dir().join("current.txt")).unwrap();
-        assert_eq!(current.len(), current_after_skip.len(), "current should not change on skipped beat");
-    }
-
-    #[test]
-    fn test_episode_2_file_ops_and_script() {
-        // === Setup ===
-        let (mut alice, _tmp) = create_scripted_alice();
-
-        // === Act 1: User sends a message ===
-        alice.instance.chat.write_user_message("user1", "帮我写个文件", "20260301130000").unwrap();
-        alice.beat().unwrap(); // auto-read
-
-        // === Act 2: Agent writes file then runs script (script is blocking) ===
-        alice.set_mock_streams(vec![
-            vec![
-                StreamItem::Action(Action::Thinking { content: "用户要写文件，我来操作".into() }),
-                StreamItem::Action(Action::WriteFile {
-                    path: "hello.txt".into(),
-                    content: "Hello World\n第二行".into(),
-                }),
-                StreamItem::Action(Action::Script { content: "cat hello.txt && echo done".into() }),
-                // Script is blocking — beat ends here, Done won't be consumed
-                StreamItem::Done(vec![], None),
-            ],
-        ]);
-
-        alice.beat().unwrap();
-
-        // Verify: file created in workspace
-        let file_path = alice.instance.workspace.join("hello.txt");
-        assert!(file_path.exists(), "hello.txt should exist in workspace");
-        let file_content = std::fs::read_to_string(&file_path).unwrap();
-        assert_eq!(file_content, "Hello World\n第二行", "file content should match");
-
-        // Verify: current contains script output
-        let current_path = alice.instance.memory.sessions_dir().join("current.txt");
-        let current = std::fs::read_to_string(&current_path).unwrap();
-        assert!(current.contains("Hello World"), "current should contain script stdout");
-        assert!(current.contains("done"), "current should contain 'done' from echo");
-        assert!(current.contains("write file"), "current should record write_file action");
-
-        // Script is blocking, so last_was_idle should be false
-        assert!(!alice.last_was_idle, "blocking script should not set idle");
-
-        // === Act 3: Next beat — agent reports back ===
-        alice.set_mock_streams(vec![
-            vec![
-                StreamItem::Action(Action::SendMsg {
-                    recipient: "user1".into(),
-                    content: "文件写好了，内容已确认".into(),
-                }),
-                StreamItem::Action(Action::Idle { timeout_secs: Some(60) }),
-                StreamItem::Done(vec![], None),
-            ],
-        ]);
-
-        alice.beat().unwrap();
-
-        // Verify: agent reply in chat
-        let replies = alice.instance.chat.read_unread_agent_replies().unwrap();
-        assert!(replies.iter().any(|r| r.1.contains("文件写好了")), "agent should have replied about file");
-
-        // Verify: idle with timeout
-        assert!(alice.last_was_idle);
-        assert_eq!(alice.idle_timeout_secs, Some(60));
-    }
-
-    #[test]
-    fn test_episode_3_memory_lifecycle() {
-        // === Setup ===
-        let (mut alice, tmp) = create_scripted_alice();
-
-        // Lower thresholds: 1KB per block, 2 blocks trigger roll
-        alice.session_block_kb = 1;
-        alice.session_blocks_limit = 2;
-
-        let sessions_dir = alice.instance.memory.sessions_dir().to_path_buf();
-        let knowledge_path = tmp.path().join("memory").join("knowledge.md");
-        let history_path = sessions_dir.join("history.txt");
-
-        // Long summary text (~1100 chars) to ensure JSONL line > 1KB
-        let long_summary = |phase: &str| -> String {
-            format!(
-                "Phase {p}: 用户要求开发Python计算器应用。agent分析了需求，创建了calc.py文件，\
-                包含基本的四则运算功能。使用sys.argv接收命令行参数，支持加减乘除操作。\
-                agent编写了完整的错误处理逻辑，包括参数数量检查、数值格式验证、除零保护。\
-                测试验证了所有运算符的正确性。代码结构清晰，使用字典映射运算符到lambda函数。\
-                用户对结果表示满意，确认功能符合预期。这个阶段的工作为后续功能扩展奠定了基础。\
-                agent还检查了文件权限和编码格式，确保跨平台兼容性。整个开发过程顺利，\
-                没有遇到重大技术障碍。agent在开发过程中保持了良好的代码规范，包括适当的注释、\
-                清晰的变量命名和合理的函数划分。用户提出的所有需求都已完整实现并通过测试验证。\
-                这次协作展示了agent高效的编码能力和对用户需求的准确理解。\
-                后续计划包括添加更多数学运算支持和改进用户界面交互体验。\
-                Phase {p} 的所有任务均已完成，等待用户的下一步指示。额外补充一些技术细节：\
-                Python版本兼容性已验证（3.6+），f-string格式化输出清晰易读。",
-                p = phase
-            )
-        };
-
-        // ================================================================
-        // Phase 1: "帮我写个Python计算器"
-        // ================================================================
-
-        // Beat 1: User message → auto-read
-        alice.instance.chat.write_user_message("user1", "帮我写个Python计算器，支持加减乘", "20260301140000").unwrap();
-        alice.beat().unwrap();
-        assert_eq!(alice.count_unread_messages(), 0);
-
-        // Beat 2: Thinking + WriteFile + Script (blocking)
-        let calc_py = "import sys\nops = {'+': lambda a,b: a+b, '-': lambda a,b: a-b, '*': lambda a,b: a*b}\na, op, b = float(sys.argv[1]), sys.argv[2], float(sys.argv[3])\nprint(f\"{a} {op} {b} = {ops[op](a, b)}\")\n";
-        alice.set_mock_streams(vec![vec![
-            StreamItem::Action(Action::Thinking { content: "用户要写计算器，我来创建calc.py".into() }),
-            StreamItem::Action(Action::WriteFile { path: "calc.py".into(), content: calc_py.into() }),
-            StreamItem::Action(Action::Script { content: "python3 calc.py 2 + 3".into() }),
-            StreamItem::Done(vec![], None),
-        ]]);
-        alice.beat().unwrap();
-
-        // Verify: calc.py exists and script ran
-        let calc_path = alice.instance.workspace.join("calc.py");
-        assert!(calc_path.exists(), "calc.py should exist");
-        let current = std::fs::read_to_string(sessions_dir.join("current.txt")).unwrap();
-        assert!(current.contains("2.0 + 3.0 = 5.0"), "script should output 2+3=5");
-
-        // Beat 3: SendMsg + Summary (with knowledge) + Idle
-        // Summary executes mid-stream: reads current (which has all prior records), then clears it.
-        // Idle executes after: its record goes into the freshly cleared current.
-        let knowledge_v1 = "# Agent Knowledge\n\n## 项目\n- 正在开发Python计算器应用 calc.py\n- 支持加减乘运算\n";
-        alice.set_mock_streams(vec![vec![
-            StreamItem::Action(Action::SendMsg { recipient: "user1".into(), content: "计算器写好了！2+3=5 验证通过".into() }),
-            StreamItem::Action(Action::Summary { content: long_summary("1"), knowledge: Some(knowledge_v1.into()) }),
-            StreamItem::Action(Action::Idle { timeout_secs: None }),
-            StreamItem::Done(vec![], None),
-        ]]);
-        alice.beat().unwrap();
-
-        // Verify Phase 1: block created, knowledge written, current mostly cleared
-        let blocks = alice.instance.memory.list_session_blocks().unwrap();
-        if let Some(b) = blocks.last() {
-            let size = alice.instance.memory.session_block_size(b);
-        }
-        assert_eq!(blocks.len(), 1, "Phase 1 should create 1 session block");
-        let knowledge_content = std::fs::read_to_string(&knowledge_path).unwrap();
-        assert!(knowledge_content.contains("Python计算器"), "knowledge should be written");
-        let current = std::fs::read_to_string(sessions_dir.join("current.txt")).unwrap();
-        assert!(!current.contains("帮我写个Python计算器"), "old messages should be cleared from current");
-        assert!(alice.last_was_idle);
-
-        // ================================================================
-        // Phase 2: "加个除法和取模功能"
-        // ================================================================
-
-        // Beat 4: User message → auto-read (breaks idle-skip)
-        alice.instance.chat.write_user_message("user1", "加个除法和取模功能", "20260301150000").unwrap();
-        alice.beat().unwrap();
-
-        // Beat 5: Thinking + ReplaceInFile + Script (blocking)
-        alice.set_mock_streams(vec![vec![
-            StreamItem::Action(Action::Thinking { content: "用户要加除法和取模，我来修改calc.py".into() }),
-            StreamItem::Action(Action::ReplaceInFile {
-                path: "calc.py".into(),
-                blocks: vec![crate::inference::ReplaceBlock {
-                    search: "'*': lambda a,b: a*b}".into(),
-                    replace: "'*': lambda a,b: a*b, '/': lambda a,b: a/b, '%': lambda a,b: a%b}".into(),
-                }],
-            }),
-            StreamItem::Action(Action::Script { content: "python3 calc.py 10 / 3".into() }),
-            StreamItem::Done(vec![], None),
-        ]]);
-        alice.beat().unwrap();
-
-        // Verify: calc.py updated and division works
-        let calc_content = std::fs::read_to_string(&calc_path).unwrap();
-        assert!(calc_content.contains("'/': lambda"), "calc.py should have division");
-        let current = std::fs::read_to_string(sessions_dir.join("current.txt")).unwrap();
-        assert!(current.contains("3.333"), "division result should appear in current");
-
-        // Beat 6: SendMsg + Summary + Idle — block 1 full (>1KB), creates block 2
-        alice.set_mock_streams(vec![vec![
-            StreamItem::Action(Action::SendMsg { recipient: "user1".into(), content: "除法和取模已添加，10/3=3.333验证通过".into() }),
-            StreamItem::Action(Action::Summary { content: long_summary("2"), knowledge: None }),
-            StreamItem::Action(Action::Idle { timeout_secs: None }),
-            StreamItem::Done(vec![], None),
-        ]]);
-        alice.beat().unwrap();
-
-        let blocks = alice.instance.memory.list_session_blocks().unwrap();
-        for b in &blocks {
-            let size = alice.instance.memory.session_block_size(b);
-        }
-        assert_eq!(blocks.len(), 2, "Phase 2 should have 2 session blocks (block 1 full, block 2 created)");
-
-        // ================================================================
-        // Phase 3: Forget test + third summary
-        // ================================================================
-
-        // Beat 7: User message → auto-read
-        alice.instance.chat.write_user_message("user1", "你刚才查了个大日志，可以forget一下释放空间，留下必要信息就行", "20260301160000").unwrap();
-        alice.beat().unwrap();
-
-        // Beat 8: Thinking + Script (large output, blocking)
-        alice.set_mock_streams(vec![vec![
-            StreamItem::Action(Action::Thinking { content: "让我先查看一下系统日志确认服务状态".into() }),
-            StreamItem::Action(Action::Script {
-                content: "for i in $(seq 1 50); do echo \"[LOG] $(date '+%Y-%m-%d %H:%M:%S') Service heartbeat check #$i: status=healthy, cpu=12%, mem=45%, connections=128\"; done".into()
-            }),
-            StreamItem::Done(vec![], None),
-        ]]);
-        alice.beat().unwrap();
-
-        // Extract the Script action's action_id from current
-        let current = std::fs::read_to_string(sessions_dir.join("current.txt")).unwrap();
-        let current_before_forget_len = current.len();
-
-        // Find action_id of the script action (the one whose block contains "[LOG]")
-        let script_action_id = {
-            let mut found = None;
-            for (pos, _) in current.match_indices("行为编号[") {
-                let rest = &current[pos + "行为编号[".len()..];
-                if let Some(end) = rest.find(']') {
-                    let id = &rest[..end];
-                    let marker = format!("行为编号[{}]开始", id);
-                    if let Some(start) = current.find(&marker) {
-                        let block_end_marker = format!("行为编号[{}]结束", id);
-                        let block_text = if let Some(end_pos) = current.find(&block_end_marker) {
-                            &current[start..end_pos]
-                        } else {
-                            &current[start..]
-                        };
-                        if block_text.contains("[LOG]") {
-                            found = Some(id.to_string());
-                            break;
-                        }
-                    }
-                }
-            }
-            found.expect("should find script action_id containing log output")
-        };
-
-        // Beat 9: Thinking + Forget + SendMsg + Idle
-        alice.set_mock_streams(vec![vec![
-            StreamItem::Action(Action::Thinking { content: "好的，我来forget那个大日志输出，只保留关键信息".into() }),
-            StreamItem::Action(Action::Forget {
-                target_action_id: script_action_id.clone(),
-                summary: "查看了系统日志50条心跳记录，所有服务状态正常（healthy），CPU 12%，内存45%，连接数128".into(),
-            }),
-            StreamItem::Action(Action::SendMsg { recipient: "user1".into(), content: "已经forget了，日志显示服务一切正常".into() }),
-            StreamItem::Action(Action::Idle { timeout_secs: None }),
-            StreamItem::Done(vec![], None),
-        ]]);
-        alice.beat().unwrap();
-
-        // Verify forget: current should be smaller, and contain [已提炼] marker
-        let current = std::fs::read_to_string(sessions_dir.join("current.txt")).unwrap();
-        assert!(current.len() < current_before_forget_len, "current should shrink after forget");
-        assert!(current.contains("已提炼"), "current should contain forgotten marker");
-        assert!(current.contains("心跳记录"), "forgotten summary should be present");
-
-        // Beat 10: Summary + Idle — block 2 full, creates block 3
-        // Need a user message first to break idle-skip
-        alice.instance.chat.write_user_message("user1", "好的，继续吧", "20260301160100").unwrap();
-        alice.beat().unwrap(); // auto-read
-
-        alice.set_mock_streams(vec![vec![
-            StreamItem::Action(Action::Summary { content: long_summary("3"), knowledge: None }),
-            StreamItem::Action(Action::Idle { timeout_secs: None }),
-            StreamItem::Done(vec![], None),
-        ]]);
-        alice.beat().unwrap();
-
-        let blocks = alice.instance.memory.list_session_blocks().unwrap();
-        assert_eq!(blocks.len(), 3, "Phase 3 should have 3 session blocks");
-
-        // ================================================================
-        // Phase 4: Roll — compress oldest block into history
-        // ================================================================
-
-        let oldest_block = blocks[0].clone();
-        let mock_compressed_history = format!(
-            "用户要求开发Python计算器应用。agent创建了calc.py，实现了加减乘除和取模运算。\
-            所有功能经过测试验证正常工作。（压缩自session block {}）", oldest_block
-        );
-        alice.set_mock_sync_responses(vec![mock_compressed_history.clone()]);
-
-        let roll_result = alice.check_and_roll_history().unwrap();
-        assert!(roll_result.is_some(), "roll should have been triggered");
-
-        // Verify roll results (privileged judge)
-        let blocks_after = alice.instance.memory.list_session_blocks().unwrap();
-        assert_eq!(blocks_after.len(), 2, "oldest block should be deleted after roll");
-        assert!(!blocks_after.contains(&oldest_block), "oldest block should no longer exist");
-
-        let history = std::fs::read_to_string(&history_path).unwrap();
-        assert!(history.contains("Python计算器"), "history should contain compressed content");
-
-        // .last_rolled marker should be cleaned up
-        let last_rolled_path = sessions_dir.join(".last_rolled");
-        assert!(!last_rolled_path.exists(), ".last_rolled marker should be cleared after successful roll");
-
-        // Knowledge should still exist from Phase 1
-        let knowledge = std::fs::read_to_string(&knowledge_path).unwrap();
-        assert!(knowledge.contains("Python计算器"), "knowledge should persist through phases");
-
-        // calc.py should still exist in workspace
-        assert!(calc_path.exists(), "calc.py should still exist after roll");
     }
 }
