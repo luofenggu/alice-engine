@@ -9,8 +9,6 @@ use axum::response::{IntoResponse, Response};
 
 use crate::api::state::EngineState;
 
-const SESSION_COOKIE_NAME: &str = "alice_session";
-
 #[derive(serde::Deserialize)]
 pub struct LoginForm {
     password: String,
@@ -45,7 +43,7 @@ pub async fn check_auth(
         if let Ok(cookies) = cookie_header.to_str() {
             for cookie in cookies.split(';') {
                 let cookie = cookie.trim();
-                if let Some(value) = cookie.strip_prefix(&format!("{}=", SESSION_COOKIE_NAME)) {
+                if let Some(value) = cookie.strip_prefix(&format!("{}=", state.session_cookie_name)) {
                     if value == state.session_token {
                         return next.run(req).await;
                     }
@@ -133,7 +131,7 @@ pub async fn handle_login_post(
     if form.password.trim() == auth_secret {
         let cookie = format!(
             "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800",
-            SESSION_COOKIE_NAME, state.session_token
+            state.session_cookie_name, state.session_token
         );
         let mut headers = HeaderMap::new();
         headers.insert(header::SET_COOKIE, cookie.parse().unwrap());
@@ -144,11 +142,13 @@ pub async fn handle_login_post(
 }
 
 /// Logout — clears session cookie.
-pub async fn handle_logout() -> Response {
+pub async fn handle_logout(
+    State(state): State<Arc<EngineState>>,
+) -> Response {
     use axum::http::{header, HeaderMap};
     use axum::response::Redirect;
 
-    let cookie = format!("{}=; Path=/; HttpOnly; Max-Age=0", SESSION_COOKIE_NAME);
+    let cookie = format!("{}=; Path=/; HttpOnly; Max-Age=0", state.session_cookie_name);
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, cookie.parse().unwrap());
     (headers, Redirect::to("/login")).into_response()
@@ -178,7 +178,7 @@ pub async fn handle_legacy_login(
     if body.trim() == auth_secret {
         let cookie = format!(
             "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800",
-            SESSION_COOKIE_NAME, state.session_token
+            state.session_cookie_name, state.session_token
         );
         let mut headers = HeaderMap::new();
         headers.insert(header::SET_COOKIE, cookie.parse().unwrap());

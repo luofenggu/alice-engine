@@ -28,6 +28,8 @@ pub struct EngineState {
     pub env_config: Arc<crate::policy::EnvConfig>,
     /// Session token for cookie authentication (SHA256 of auth_secret).
     pub session_token: String,
+    /// Session cookie name (includes port to avoid conflicts between engines on same host).
+    pub session_cookie_name: String,
 }
 
 impl EngineState {
@@ -46,6 +48,7 @@ impl EngineState {
             let hash = Sha256::digest(env_config.auth_secret.as_bytes());
             hex::encode(hash)
         };
+        let session_cookie_name = format!("alice_session_{}", env_config.http_port);
         Self {
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
@@ -54,6 +57,7 @@ impl EngineState {
             engine_config,
             env_config,
             session_token,
+            session_cookie_name,
         }
     }
 
