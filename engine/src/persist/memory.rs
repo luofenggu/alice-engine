@@ -305,7 +305,21 @@ impl Memory {
             if size < (session_block_kb as u64 * 1024) {
                 latest.clone()
             } else {
-                Local::now().format("%Y%m%d%H%M%S").to_string()
+                // Block full — create new one with unique name
+                let mut name = Local::now().format("%Y%m%d%H%M%S").to_string();
+                if blocks.contains(&name) {
+                    // Same-second collision: append suffix
+                    let mut suffix = 2u32;
+                    loop {
+                        let candidate = format!("{}_{}", name, suffix);
+                        if !blocks.contains(&candidate) {
+                            name = candidate;
+                            break;
+                        }
+                        suffix += 1;
+                    }
+                }
+                name
             }
         } else {
             Local::now().format("%Y%m%d%H%M%S").to_string()
