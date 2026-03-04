@@ -71,31 +71,41 @@ echo "========================================="
 echo "  All checks passed ✅ Deploying..."
 echo "========================================="
 
-# === 部署：找到旧进程，后台切换 ===
+# === 读取当前引擎的环境变量 ===
 OLD_PID=$(ss -tlnp | grep ":${ENGINE_PORT} " | grep -oP 'pid=\K[0-9]+' || echo "")
 
-# 启动新进程（后台）
+if [ -z "$OLD_PID" ]; then
+    echo "  ❌ No engine running on port $ENGINE_PORT, cannot inherit env"
+    exit 1
+fi
+
+echo "Old engine PID: $OLD_PID"
+echo "Inheriting environment variables from running engine..."
+
+# 从运行中的引擎进程读取所有ALICE_*环境变量
+ENV_FILE=$(mktemp)
+cat /proc/$OLD_PID/environ | tr '\0' '\n' | grep '^ALICE_' > "$ENV_FILE"
+echo "  Found $(wc -l < "$ENV_FILE") ALICE_* variables"
+
+# === 部署：后台切换 ===
 nohup bash -c '
     sleep 3
-    # Kill旧进程（通过端口查找）
+    # 加载环境变量
+    set -a
+    source "'"$ENV_FILE"'"
+    set +a
+    # Kill旧进程
     OLD_PID="'"$OLD_PID"'"
     if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
         kill "$OLD_PID"
         echo "Killed old engine PID $OLD_PID"
         sleep 1
     fi
-    # 启动新引擎
-    ALICE_HTTP_PORT='"$ENGINE_PORT"' \
-    ALICE_HTML_DIR='"$PROJECT_DIR"'/html-frontend \
-    ALICE_INSTANCES_DIR='"$RUNTIME_DIR"'/instances \
-    ALICE_LOGS_DIR='"$RUNTIME_DIR"'/logs \
-    ALICE_AUTH_SECRET=alice-dev-secret \
-    ALICE_USER_ID=24007 \
-    ALICE_DEFAULT_MODEL="openrouter@anthropic/claude-sonnet-4" \
-    ALICE_DEFAULT_API_KEY=$(cat /data/alice-env/api_key.txt 2>/dev/null || echo "") \
+    # 启动新引擎（环境变量已从旧进程继承）
     '"$ENGINE_BIN"' &
     echo "New engine started with PID $!"
+    # 清理临时文件
+    rm -f "'"$ENV_FILE"'"
 ' > "$RUNTIME_DIR/logs/deploy.log" 2>&1 &
 
 echo "Deploy scheduled. Engine will restart in ~3 seconds."
-echo "Old PID: ${OLD_PID:-none}"
