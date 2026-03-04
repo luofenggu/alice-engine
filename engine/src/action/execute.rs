@@ -71,7 +71,7 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
 
     let mut result = String::new();
     for msg in &messages {
-        result.push_str(&out::read_msg_entry(&msg.sender, &msg.timestamp, &msg.content));
+        result.push_str(&out::read_msg_entry(&msg.sender, &msg.timestamp, &msg.content, Some(&alice.user_id)));
     }
 
     Ok(result)

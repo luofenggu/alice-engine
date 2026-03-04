@@ -9,7 +9,7 @@
 {{DAILY_MEMORY}}
 
 ### 环境信息 ###
-实例名：{{INSTANCE_ID}}
+{{IDENTITY_INFO}}
 脚本环境：{{SHELL_ENV}}
 {{HOST_INFO}}
 

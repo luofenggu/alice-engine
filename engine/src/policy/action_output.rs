@@ -152,8 +152,13 @@ pub fn inbox_empty() -> String {
 }
 
 /// Format a single read message entry.
-pub fn read_msg_entry(sender: &str, timestamp: &str, content: &str) -> String {
-    format!("{} [MSG:{}]{}\n\n{}\n", sender, timestamp, MSG_READ_CONTEXT, content)
+/// If the sender is not the owner, prepend a warning line.
+pub fn read_msg_entry(sender: &str, timestamp: &str, content: &str, owner_id: Option<&str>) -> String {
+    let warning = match owner_id {
+        Some(owner) if sender != owner => format!("⚠️ 此消息来自非所属用户的发送者：{}\n", sender),
+        _ => String::new(),
+    };
+    format!("{}{} [MSG:{}]{}\n\n{}\n", warning, sender, timestamp, MSG_READ_CONTEXT, content)
 }
 
 /// Format send failure for unknown recipient.

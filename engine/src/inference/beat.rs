@@ -54,6 +54,7 @@ pub struct BeatRequest {
     pub action_token: String,
     pub instance_id: String,
     pub instance_name: Option<String>,
+    pub user_id: String,
     pub shell_env: String,
     pub host: Option<String>,
     pub system_start_time: chrono::DateTime<chrono::Local>,
@@ -117,13 +118,26 @@ impl BeatRequest {
 
         let host_line = make_host_line(self.host.as_deref());
 
+        // Identity info for environment section
+        let identity_info = {
+            let name_part = match &self.instance_name {
+                Some(name) if !name.is_empty() => format!("{}（{}）", name, self.instance_id),
+                _ => self.instance_id.clone(),
+            };
+            if self.user_id.is_empty() {
+                format!("你是{}", name_part)
+            } else {
+                format!("你是{}，所属用户：{}", name_part, self.user_id)
+            }
+        };
+
         // User prompt
         let user_prompt = safe_render(TEMPLATE_USER, &[
             ("{{CURRENT_TIME}}", &current_time),
             ("{{SYSTEM_START_TIME}}", &system_start_time),
             ("{{UNREAD_COUNT}}", &self.unread_count.to_string()),
             ("{{MEMORY_STATUS}}", &memory_status),
-            ("{{INSTANCE_ID}}", &self.instance_id),
+            ("{{IDENTITY_INFO}}", &identity_info),
             ("{{SHELL_ENV}}", &self.shell_env),
             ("{{HOST_INFO}}", &host_line),
             ("{{SKILL}}", &skill_section),
