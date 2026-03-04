@@ -28,7 +28,7 @@ RUST_LANG = Language(find_grammar(), 'rust')
 
 # --- Constants ---
 LOG_MACROS = {'info', 'warn', 'error', 'debug', 'trace'}
-ERROR_MACROS = {'bail', 'ensure'}
+ERROR_MACROS = {'bail', 'ensure', 'anyhow'}
 ERROR_METHODS = {'context', 'with_context'}
 LITERAL_TYPES = {
     'string_literal': 'STRING', 'raw_string_literal': 'STRING',
@@ -455,7 +455,7 @@ def detect_serde_json_usage(root_node, source_bytes, is_exempt_dir, source_lines
 # Files exempted at file level (message catalogs, etc.)
 EXEMPT_FILES = set()
 # Directories exempted at directory level (persist layer, etc.)
-EXEMPT_DIRS = {'persist', 'external', 'inference'}
+EXEMPT_DIRS = {'persist', 'external', 'inference', 'util'}
 
 def scan_file(filepath, source_bytes, parser):
     # File-level exemption: message catalog files

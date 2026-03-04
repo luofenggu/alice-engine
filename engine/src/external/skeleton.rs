@@ -13,8 +13,8 @@ pub struct SkeletonConfig {
 pub enum ExtractionResult {
     /// 全文显示（md等配置的扩展名）
     Full,
-    /// 骨架行
-    Skeleton(Vec<String>),
+    /// 骨架（已拼接为单个字符串）
+    Skeleton(String),
     /// 无规则，调用方自行决定fallback
     NoRule,
 }
@@ -79,7 +79,7 @@ impl SkeletonConfig {
 
     /// 根据文件扩展名提取骨架行
     /// 返回None表示该扩展名没有配置规则
-    fn extract(&self, ext: &str, content: &str) -> Option<Vec<String>> {
+    fn extract(&self, ext: &str, content: &str) -> Option<String> {
         let markers = self.markers.get(ext)?;
         let skeleton: Vec<String> = content
             .lines()
@@ -90,7 +90,7 @@ impl SkeletonConfig {
             })
             .map(|(i, line)| format!("{:>4}: {}", i + 1, line))
             .collect();
-        Some(skeleton)
+        Some(skeleton.join("\n"))
     }
 }
 
@@ -110,8 +110,8 @@ mod tests {
     fn test_extract_rust() {
         let config = SkeletonConfig::load();
         let result = config.extract("rs", "use std::io;\n\npub fn hello() {\n    println!(\"hi\");\n}\n\nstruct Foo;").unwrap();
-        assert!(result.iter().any(|l| l.contains("pub fn hello")));
-        assert!(result.iter().any(|l| l.contains("struct Foo")));
+        assert!(result.contains("pub fn hello"));
+        assert!(result.contains("struct Foo"));
     }
 
     #[test]
@@ -130,7 +130,11 @@ mod tests {
     fn test_extract_from_path_rust() {
         let config = SkeletonConfig::load();
         let result = config.extract_from_path("main.rs", "pub fn main() {}");
-        assert!(matches!(result, ExtractionResult::Skeleton(_)));
+        if let ExtractionResult::Skeleton(s) = result {
+            assert!(s.contains("pub fn main"));
+        } else {
+            panic!("Expected Skeleton");
+        }
     }
 
     #[test]

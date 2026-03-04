@@ -58,10 +58,7 @@ pub const SEARCH_MARKER: &str = "<<<SEARCH";
 pub const REPLACE_MARKER: &str = "===REPLACE";
 /// `>>>END` end marker for replace_in_file blocks
 pub const BLOCK_END_MARKER: &str = ">>>END";
-/// `<<<REMEMBER` start marker
-pub const REMEMBER_START_MARKER: &str = "<<<REMEMBER";
-/// `>>>REMEMBER` end marker
-pub const REMEMBER_END_MARKER: &str = ">>>REMEMBER";
+
 
 use std::fmt;
 use anyhow::{Result, bail};
@@ -347,55 +344,7 @@ fn parse_replace_blocks(text: &str, separator_token: &str) -> Result<Vec<Replace
 // REMEMBER marker utilities
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "remember")]
-pub fn extract_remember_fragments(content: &str) -> Option<String> {
-    let mut fragments = Vec::new();
-    let mut remaining = content;
 
-    while let Some(start_pos) = remaining.find(REMEMBER_START_MARKER) {
-        let after_marker = &remaining[start_pos + REMEMBER_START_MARKER.len()..];
-        let content_start = match after_marker.find('\n') {
-            Some(pos) => pos + 1,
-            None => break,
-        };
-        let fragment_text = &after_marker[content_start..];
-
-        if let Some(end_pos) = fragment_text.find(REMEMBER_END_MARKER) {
-            let fragment = fragment_text[..end_pos].trim_end_matches('\n');
-            if !fragment.is_empty() {
-                fragments.push(fragment.to_string());
-            }
-            remaining = &fragment_text[end_pos + REMEMBER_END_MARKER.len()..];
-        } else {
-            break;
-        }
-    }
-
-    if fragments.is_empty() {
-        None
-    } else {
-        Some(fragments.join("\n---\n"))
-    }
-}
-
-#[cfg(feature = "remember")]
-pub fn strip_remember_markers(content: &str) -> String {
-    let mut result = String::with_capacity(content.len());
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed == REMEMBER_START_MARKER || trimmed == REMEMBER_END_MARKER {
-            continue;
-        }
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(line);
-    }
-    if content.ends_with('\n') {
-        result.push('\n');
-    }
-    result
-}
 
 /// Parse set_profile action content.
 fn parse_set_profile(text: &str) -> Result<Action> {
@@ -810,64 +759,5 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "remember")]
-    #[test]
-    fn test_extract_remember_no_markers() {
-        assert_eq!(extract_remember_fragments("fn main() {\n    println!(\"hello\");\n}\n"), None);
-    }
 
-    #[cfg(feature = "remember")]
-    #[test]
-    fn test_extract_remember_single_fragment() {
-        let content = &format!("use std::io;\n\n{}\nfn main() {{\n    run();\n}}\n{}\n\nfn run() {{\n    // details\n}}\n", REMEMBER_START_MARKER, REMEMBER_END_MARKER);
-        let result = extract_remember_fragments(content).unwrap();
-        assert_eq!(result, "fn main() {\n    run();\n}");
-    }
-
-    #[cfg(feature = "remember")]
-    #[test]
-    fn test_extract_remember_multiple_fragments() {
-        let content = &format!("{}\nfn main() {{}}\n{}\n\nimpl Detail {{\n    // 50 lines\n}}\n\n{}\nfn run() {{}}\n{}\n", REMEMBER_START_MARKER, REMEMBER_END_MARKER, REMEMBER_START_MARKER, REMEMBER_END_MARKER);
-        let result = extract_remember_fragments(content).unwrap();
-        assert!(result.contains("fn main() {}"));
-        assert!(result.contains("---"));
-        assert!(result.contains("fn run() {}"));
-    }
-
-    #[cfg(feature = "remember")]
-    #[test]
-    fn test_strip_remember_no_markers() {
-        let content = "fn main() {\n    println!(\"hello\");\n}\n";
-        assert_eq!(strip_remember_markers(content), content);
-    }
-
-    #[cfg(feature = "remember")]
-    #[test]
-    fn test_strip_remember_with_markers() {
-        let content = &format!("use std::io;\n{}\nfn main() {{\n    run();\n}}\n{}\nfn run() {{}}\n", REMEMBER_START_MARKER, REMEMBER_END_MARKER);
-        let result = strip_remember_markers(content);
-        assert!(!result.contains(REMEMBER_START_MARKER));
-        assert!(!result.contains(REMEMBER_END_MARKER));
-        assert!(result.contains("use std::io;"));
-        assert!(result.contains("fn main()"));
-        assert!(result.contains("fn run() {}"));
-    }
-
-    #[cfg(feature = "remember")]
-    #[test]
-    fn test_strip_remember_preserves_content() {
-        let content = &format!("header\n{}\nkept content\n{}\nfooter\n", REMEMBER_START_MARKER, REMEMBER_END_MARKER);
-        let result = strip_remember_markers(content);
-        assert_eq!(result, "header\nkept content\nfooter\n");
-    }
-
-    #[cfg(feature = "remember")]
-    #[test]
-    fn test_write_file_with_remember_extract_in_context() {
-        let content = &format!("use std::io;\n{}\nfn main() {{}}\n{}\nfn helper() {{}}\n", REMEMBER_START_MARKER, REMEMBER_END_MARKER);
-        let fragments = extract_remember_fragments(content).unwrap();
-        assert!(fragments.contains("fn main() {}"));
-        assert!(!fragments.contains("fn helper()"));
-        assert!(!fragments.contains("std::io"));
-    }
 }

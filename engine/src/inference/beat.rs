@@ -17,7 +17,7 @@ pub const INITIAL_HISTORY: &str = include_str!("../../templates/initial_history.
 pub const KNOWLEDGE_FILE: &str = "knowledge.md";
 const SOFT_LIMIT: usize = 180_000;
 
-use crate::inference::{REMEMBER_START_MARKER, REMEMBER_END_MARKER};
+
 use crate::policy::action_output as out;
 use crate::policy::EngineConfig;
 
@@ -80,8 +80,7 @@ impl BeatRequest {
         // System prompt
         let system_prompt = safe_render(TEMPLATE_SYSTEM, &[
             ("{{TOKEN}}", &self.action_token),
-            ("{{REMEMBER_START}}", REMEMBER_START_MARKER),
-            ("{{REMEMBER_END}}", REMEMBER_END_MARKER),
+
         ]);
 
         // Format raw data into display strings

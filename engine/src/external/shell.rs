@@ -18,14 +18,38 @@
 //! will be cut off here before it can bloat the process memory.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, Component};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use std::thread;
 use std::sync::mpsc;
 
+use anyhow::{Result, bail};
+
 use thiserror::Error;
 use tracing::{warn, instrument};
+
+// ---------------------------------------------------------------------------
+// Path Resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve an action path to an absolute path.
+/// Absolute paths are used directly (only meaningful for privileged instances;
+/// sandboxed instances lack filesystem permissions outside workspace).
+/// Relative paths are resolved within the workspace (rejects path traversal).
+pub fn resolve_action_path(workspace: &Path, path: &str) -> Result<PathBuf> {
+    if path.starts_with('/') {
+        Ok(PathBuf::from(path))
+    } else {
+        let p = Path::new(path);
+        for component in p.components() {
+            if let Component::ParentDir = component {
+                bail!("Path traversal rejected: {}", path);
+            }
+        }
+        Ok(workspace.join(p))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Constants

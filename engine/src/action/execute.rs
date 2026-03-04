@@ -7,33 +7,12 @@
 
 use anyhow::{Result, bail, Context};
 use tracing::{info, warn};
-#[cfg(feature = "remember")]
-use crate::inference::strip_remember_markers;
 
-use std::path::PathBuf;
 
 use crate::core::{Alice, Transaction};
-use crate::external::shell::Shell;
+use crate::external::shell::{Shell, resolve_action_path};
 use crate::inference::{Action, ReplaceBlock};
 use crate::policy::action_output as out;
-
-/// Resolve an action path to an absolute path.
-/// Absolute paths are used directly (only meaningful for privileged instances;
-/// sandboxed instances lack filesystem permissions outside workspace).
-/// Relative paths are resolved within the workspace (rejects path traversal).
-fn resolve_action_path(alice: &Alice, path: &str) -> Result<PathBuf> {
-    if path.starts_with('/') {
-        Ok(PathBuf::from(path))
-    } else {
-        let p = std::path::Path::new(path);
-        for component in p.components() {
-            if let std::path::Component::ParentDir = component {
-                bail!("Path traversal rejected: {}", path);
-            }
-        }
-        Ok(alice.instance.workspace.join(p))
-    }
-}
 
 
 /// Create a Shell instance with appropriate sandboxing for the given Alice.
@@ -143,7 +122,7 @@ fn extract_skeleton(path: &str, content: &str) -> String {
             out::write_success_full(path, total_bytes, total_lines, &display)
         }
         ExtractionResult::Skeleton(skeleton) => {
-            out::write_success_skeleton(path, total_bytes, total_lines, &skeleton.join("\n"))
+            out::write_success_skeleton(path, total_bytes, total_lines, &skeleton)
         }
         ExtractionResult::NoRule => {
             let preview = out::format_preview(&lines);
@@ -155,10 +134,7 @@ fn extract_skeleton(path: &str, content: &str) -> String {
 fn execute_write_file(alice: &mut Alice, tx: &mut Transaction, path: &str, content: &str) -> Result<String> {
     info!("[ACTION-{}] write_file: {}", tx.instance_id, path);
 
-    #[cfg(feature = "remember")]
-    let content = &strip_remember_markers(content);
-
-    let abs_path = resolve_action_path(alice, path)?;
+    let abs_path = resolve_action_path(&alice.instance.workspace, path)?;
 
     if alice.privileged {
         if let Some(parent) = abs_path.parent() {
@@ -187,7 +163,7 @@ fn execute_replace_in_file(
 ) -> Result<String> {
     info!("[ACTION-{}] replace_in_file: {} ({} blocks)", tx.instance_id, path, blocks.len());
 
-    let abs_path = resolve_action_path(alice, path)?;
+    let abs_path = resolve_action_path(&alice.instance.workspace, path)?;
 
     if alice.privileged {
         // Direct filesystem access for privileged instances

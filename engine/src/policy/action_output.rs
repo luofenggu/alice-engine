@@ -326,18 +326,8 @@ pub fn build_doing_description(action: &Action) -> String {
         Action::Script { content } =>
             format!("execute script: \n{}", content),
         Action::WriteFile { path, content } => {
-            #[cfg(feature = "remember")]
-            {
-                match crate::inference::extract_remember_fragments(content) {
-                    Some(fragments) => format!("write file [{}]\n[以下仅为REMEMBER标记的关键片段，非完整文件内容]\n{}", path, fragments),
-                    None => format!("write file [{}]", path),
-                }
-            }
-            #[cfg(not(feature = "remember"))]
-            {
-                let _ = content;
-                format!("write file [{}]", path)
-            }
+            let _ = content;
+            format!("write file [{}]", path)
         }
         Action::ReplaceInFile { path, .. } =>
             format!("replace in file [{}]", path),
