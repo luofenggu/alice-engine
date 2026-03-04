@@ -314,7 +314,7 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
     Ok(String::new())
 }
 
-fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, update: &alice_rpc::SettingsUpdate) -> Result<String> {
+fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, update: &crate::api::types::SettingsUpdate) -> Result<String> {
     info!("[ACTION-{}] set_profile", tx.instance_id);
 
     let mut settings = alice.instance.settings.load()?;
@@ -374,7 +374,7 @@ mod tests {
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let mut alice = Alice::new(instance, tmp.path().join("logs"), crate::external::llm::LlmConfig { model: String::new(), api_key: String::new() }, env_config).unwrap();
+        let mut alice = Alice::new(instance, tmp.path().join("logs"), crate::external::llm::LlmConfig { model: String::new(), api_key: String::new(), api_url_override: None }, env_config).unwrap();
         alice.privileged = true;
         let tx = Transaction::new("test");
         (alice, tx, tmp)

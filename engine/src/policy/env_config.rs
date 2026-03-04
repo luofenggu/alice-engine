@@ -39,6 +39,17 @@ pub struct EnvConfig {
     /// Graceful shutdown signal file path (`ALICE_SHUTDOWN_SIGNAL_FILE`,
     /// default: `/var/run/alice-engine-shutdown.signal`).
     pub shutdown_signal_file: PathBuf,
+    /// Auth secret for HTTP API (`ALICE_AUTH_SECRET`).
+    pub auth_secret: String,
+    /// Skip auth for development (`ALICE_SKIP_AUTH`).
+    pub skip_auth: bool,
+    /// HTML frontend directory (`ALICE_HTML_DIR`).
+    pub html_dir: Option<String>,
+    /// HTTP listen port (`ALICE_HTTP_PORT`, default: 8081).
+    pub http_port: u16,
+    /// Override LLM provider URL for all requests (`ALICE_LLM_PROVIDER_URL`).
+    /// When set, all LLM requests go to this URL regardless of provider config.
+    pub llm_provider_url: Option<String>,
 }
 
 impl EnvConfig {
@@ -49,6 +60,8 @@ impl EnvConfig {
     pub const DEFAULT_INSTANCES_DIR: &str = "instances";
     /// Default subdirectory name for log storage.
     pub const DEFAULT_LOGS_DIR: &str = "logs";
+    /// Default subdirectory name for HTML static files.
+    pub const DEFAULT_HTML_DIR: &str = "html";
     /// CLI positional argument index for instances directory.
     pub const CLI_ARG_INSTANCES: usize = 1;
     /// CLI positional argument index for logs directory.
@@ -80,6 +93,17 @@ impl EnvConfig {
             shutdown_signal_file: std::env::var("ALICE_SHUTDOWN_SIGNAL_FILE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("/var/run/alice-engine-shutdown.signal")),
+            auth_secret: std::env::var("ALICE_AUTH_SECRET")
+                .unwrap_or_else(|_| "alice-local-default".to_string()),
+            skip_auth: std::env::var("ALICE_SKIP_AUTH")
+                .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
+                .unwrap_or(false),
+            html_dir: std::env::var("ALICE_HTML_DIR").ok(),
+            http_port: std::env::var("ALICE_HTTP_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8081),
+            llm_provider_url: std::env::var("ALICE_LLM_PROVIDER_URL").ok().filter(|s| !s.is_empty()),
         }
     }
 

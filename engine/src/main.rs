@@ -1,6 +1,6 @@
 //! Alice Engine entry point.
 //!
-//! Runs the Engine heartbeat loop and RPC server.
+//! Runs the Engine heartbeat loop and HTTP API server.
 //! The engine itself makes no assumptions about its deployment environment.
 //!
 //! ## Configuration (env > CLI args > defaults)
@@ -11,17 +11,21 @@
 //! | ALICE_INSTANCES_DIR | $1 | base/instances | Instance storage |
 //! | ALICE_LOGS_DIR | $2 | base/logs | Log storage |
 //! | ALICE_USER_ID | - | user | Default user ID |
-//! | ALICE_PID_FILE | - | base/alice-engine.pid | PID file path |
+//! | ALICE_HTTP_PORT | - | 8081 | HTTP server port |
+//! | ALICE_HTML_DIR | - | base/html | Static HTML directory |
+//! | ALICE_AUTH_SECRET | - | (none) | Auth password |
 //!
 //! @TRACE: INSTANCE, BEAT
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use alice_engine::engine::AliceEngine;
 use alice_engine::core::signal::SignalHub;
 use alice_engine::policy::EnvConfig;
-use alice_engine::rpc::EngineState;
+use alice_engine::api::state::EngineState;
+use alice_engine::api::routes;
 
 /// Resolve a path: env value > CLI arg > None.
 fn env_or_arg(env_val: Option<&str>, arg: Option<&String>) -> Option<String> {
@@ -64,6 +68,14 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| base_dir.join(EnvConfig::DEFAULT_LOGS_DIR));
 
+    // HTML directory for static file serving
+    let html_dir = env_config.html_dir.as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base_dir.join(EnvConfig::DEFAULT_HTML_DIR));
+
+    // HTTP port
+    let http_port = env_config.http_port;
+
     // Ensure directories exist
     std::fs::create_dir_all(&instances_dir).ok();
     std::fs::create_dir_all(&logs_dir).ok();
@@ -75,11 +87,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("  Base dir: {}", base_dir.display());
     tracing::info!("  Instances: {}", instances_dir.display());
     tracing::info!("  Logs: {}", logs_dir.display());
+    tracing::info!("  HTML dir: {}", html_dir.display());
+    tracing::info!("  HTTP port: {}", http_port);
 
     // Create shared signal hub (memory-based inter-thread signaling)
     let signal_hub = SignalHub::new();
 
-    // Create engine state (shared between RPC and engine)
+    // Create engine state (shared between HTTP server and engine)
     let engine_config = alice_engine::policy::EngineConfig::load();
     let engine_state = Arc::new(EngineState::new(
         instances_dir.clone(),
@@ -90,10 +104,18 @@ async fn main() -> anyhow::Result<()> {
         env_config.clone(),
     ));
 
-    // Start RPC server (Unix socket, for Leptos frontend)
-    let rpc_state = engine_state.clone();
-    tokio::spawn(async move {
-        alice_engine::rpc::start_rpc_server(rpc_state).await;
+    // Build HTTP router (routes, auth, static files — all in api/)
+    let app = routes::build_router(engine_state.clone(), &html_dir);
+
+    // Start HTTP server
+    let addr = SocketAddr::from(([0, 0, 0, 0], http_port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("HTTP server listening on {}", addr);
+
+    let http_handle = tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!("HTTP server error: {}", e);
+        }
     });
 
     // Start Engine in a dedicated OS thread
@@ -109,10 +131,12 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(0);
     });
 
-    // Wait for engine thread (RPC server runs in background)
+    // Wait for engine thread (HTTP server runs in background)
     engine_handle.join().ok();
+
+    // Cancel HTTP server if engine exits
+    http_handle.abort();
 
     tracing::info!("Alice Engine shut down.");
     Ok(())
 }
-

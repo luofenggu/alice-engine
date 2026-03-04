@@ -87,23 +87,31 @@ impl LlmPolicyConfig {
     /// Looks up the provider in the configured providers map.
     /// If no '@' separator, treats the whole string as model_id and uses
     /// the first provider URL as fallback.
-    pub fn resolve_model(&self, model: &str) -> (String, String) {
+    pub fn resolve_model(&self, model: &str, url_override: Option<&str>) -> (String, String) {
+        let model_id = if let Some(pos) = model.find('@') {
+            model[pos + 1..].to_string()
+        } else {
+            model.to_string()
+        };
+
+        if let Some(url) = url_override {
+            return (url.to_string(), model_id);
+        }
+
         if let Some(pos) = model.find('@') {
             let provider = &model[..pos];
-            let model_id = &model[pos + 1..];
             let api_url = self.providers.get(provider)
                 .cloned()
                 .unwrap_or_else(|| {
                     tracing::warn!("Unknown provider '{}', using as direct URL", provider);
                     provider.to_string()
                 });
-            (api_url, model_id.to_string())
+            (api_url, model_id)
         } else {
-            // No provider prefix — use first available provider URL as fallback
             let fallback_url = self.providers.values().next()
                 .cloned()
                 .unwrap_or_default();
-            (fallback_url, model.to_string())
+            (fallback_url, model_id)
         }
     }
 }

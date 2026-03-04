@@ -228,7 +228,7 @@ pub fn profile_unknown_key(key: &str) -> String {
 }
 
 /// Format profile update success.
-pub fn profile_updated(update: &alice_rpc::SettingsUpdate) -> String {
+pub fn profile_updated(update: &crate::api::SettingsUpdate) -> String {
     let mut fields = Vec::new();
     if let Some(ref v) = update.name { fields.push(format!("name: {}", v)); }
     if let Some(ref v) = update.color { fields.push(format!("color: {}", v)); }

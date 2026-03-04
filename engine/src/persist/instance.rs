@@ -614,8 +614,8 @@ mod tests {
 // InstanceSettings — per-instance configuration (.proto for settings.json)
 // ---------------------------------------------------------------------------
 
-// InstanceSettings and ExtraModel are defined in alice-rpc crate (type sharing).
-pub use alice_rpc::{InstanceSettings, SettingsUpdate};
+// InstanceSettings and SettingsUpdate are defined in api::types.
+pub use crate::api::types::{InstanceSettings, SettingsUpdate};
 
 /// Extension trait for InstanceSettings — engine-specific logic.
 pub trait InstanceSettingsExt {

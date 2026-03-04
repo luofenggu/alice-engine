@@ -153,6 +153,7 @@ impl AliceEngine {
         let llm_config = crate::external::llm::LlmConfig {
             model: settings.model.clone(),
             api_key: settings.api_key.clone(),
+            api_url_override: self.env_config.llm_provider_url.clone(),
         };
 
         let mut alice = Alice::new(instance, self.logs_dir.clone(), llm_config, self.env_config.clone())?;

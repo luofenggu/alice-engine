@@ -62,7 +62,7 @@ pub const BLOCK_END_MARKER: &str = ">>>END";
 
 use std::fmt;
 use anyhow::{Result, bail};
-use alice_rpc::SettingsUpdate;
+use crate::api::types::SettingsUpdate;
 
 // ---------------------------------------------------------------------------
 // Action enum

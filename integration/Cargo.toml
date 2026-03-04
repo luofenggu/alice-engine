@@ -2,19 +2,22 @@
 name = "alice-integration"
 version = "0.1.0"
 edition = "2021"
-description = "Integration tests: API layer → RPC → Engine end-to-end"
+description = "End-to-end integration tests for Alice Engine"
 
 [lib]
 name = "alice_integration"
 path = "src/lib.rs"
 
+[[bin]]
+name = "mock-llm-server"
+path = "src/bin/mock_llm_server.rs"
+
 [dependencies]
 alice-engine = { path = "../engine" }
-alice-rpc = { path = "../rpc" }
-alice-frontend = { path = "../frontend", features = ["ssr"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 axum = "0.8"
 tower = "0.5"
 http-body-util = "0.1"

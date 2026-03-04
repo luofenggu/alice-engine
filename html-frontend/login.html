@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Alice</title>
+<style>
+:root {
+    --bg-primary: #0a0a0f;
+    --accent: #6c5ce7;
+    --accent-light: #a29bfe;
+    --text-primary: #e8e8f0;
+    --text-muted: #555568;
+    --border: #2a2a3a;
+    --danger: #ff6b6b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+body::before {
+    content: '';
+    position: fixed;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(ellipse at 30% 20%, rgba(108,92,231,0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 80%, rgba(162,155,254,0.05) 0%, transparent 50%);
+    pointer-events: none;
+}
+.login-card {
+    background: rgba(18, 18, 26, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 48px 36px;
+    width: 100%;
+    max-width: 380px;
+    text-align: center;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    position: relative;
+}
+.logo {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: 4px;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 8px;
+}
+.subtitle {
+    color: var(--text-muted);
+    font-size: 14px;
+    margin-bottom: 36px;
+}
+.login-card input {
+    width: 100%;
+    padding: 16px 20px;
+    background: rgba(26, 26, 38, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    color: var(--text-primary);
+    font-size: 16px;
+    outline: none;
+    transition: border-color 0.2s;
+    text-align: center;
+    letter-spacing: 2px;
+}
+.login-card input:focus { border-color: var(--accent); }
+.login-card input::placeholder { color: var(--text-muted); letter-spacing: 0; }
+.login-card button {
+    width: 100%;
+    padding: 16px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-light));
+    color: #fff;
+    border: none;
+    border-radius: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 16px;
+    transition: all 0.2s;
+    letter-spacing: 1px;
+}
+.login-card button:hover { opacity: 0.9; transform: translateY(-1px); }
+.login-card button:active { transform: scale(0.98); }
+.login-card button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.error-msg {
+    color: var(--danger);
+    font-size: 13px;
+    margin-top: 16px;
+    min-height: 20px;
+}
+</style>
+</head>
+<body>
+<div class="login-card">
+    <div class="logo">ALICE</div>
+    <div class="subtitle">Enter the secret to continue</div>
+    <input type="password" id="secretInput" placeholder="Secret key" autofocus
+           onkeydown="if(event.key==='Enter')doLogin()">
+    <button id="loginBtn" onclick="doLogin()">Enter</button>
+    <div class="error-msg" id="errorMsg"></div>
+</div>
+<script>
+async function doLogin() {
+    const input = document.getElementById('secretInput');
+    const btn = document.getElementById('loginBtn');
+    const err = document.getElementById('errorMsg');
+    const secret = input.value.trim();
+    if (!secret) { err.textContent = 'Please enter the secret'; return; }
+    btn.disabled = true;
+    err.textContent = '';
+    try {
+        const res = await fetch('/api/auth', { method: 'POST', body: secret });
+        if (res.ok) {
+            window.location.href = '/';
+        } else {
+            err.textContent = 'Invalid secret';
+            input.value = '';
+            input.focus();
+        }
+    } catch(e) {
+        err.textContent = 'Connection error';
+    }
+    btn.disabled = false;
+}
+</script>
+</body>
+</html>

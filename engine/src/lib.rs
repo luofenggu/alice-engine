@@ -14,7 +14,6 @@
 //! - [`inference`] — LLM inference protocol definitions (request/response)
 //! - [`prompt`] — Prompt data extraction from Alice state
 //! - [`engine`] — Multi-instance management (@TRACE: INSTANCE, RESTART)
-//! - [`rpc`] — RPC server (Unix socket, tarpc)
 //! - [`persist`] — Persistence primitives and structs
 //! - [`logging`] — Log initialization, rotation, inference logs
 //!
@@ -35,7 +34,7 @@ pub mod inference;
 
 pub mod prompt;
 pub mod engine;
-pub mod rpc;
 pub mod persist;
 pub mod util;
+pub mod api;
 

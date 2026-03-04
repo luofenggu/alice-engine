@@ -21,8 +21,8 @@ pub fn no_valid_fields() -> &'static str {
 /// Compare old and new settings, return human-readable description of changes.
 /// Returns None if nothing changed.
 pub fn describe_settings_change(
-    old: &alice_rpc::InstanceSettings,
-    new: &alice_rpc::InstanceSettings,
+    old: &crate::api::InstanceSettings,
+    new: &crate::api::InstanceSettings,
 ) -> Option<String> {
     let mut changes = Vec::new();
 

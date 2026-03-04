@@ -83,6 +83,30 @@ impl MockLlmServer {
         Self { port }
     }
 
+    /// Start the mock server on a specific port.
+    pub async fn start_on_port(scripts: Vec<MockScript>, port: u16) -> Self {
+        let total = scripts.len();
+        let state = Arc::new(MockState {
+            scripts: Mutex::new(VecDeque::from(scripts)),
+            total_scripts: total,
+        });
+
+        let app = Router::new()
+            .route("/v1/chat/completions", post(handle_completion))
+            .with_state(state);
+
+        let addr = format!("127.0.0.1:{}", port);
+        let listener = tokio::net::TcpListener::bind(&addr).await
+            .unwrap_or_else(|e| panic!("Failed to bind mock LLM server on {}: {}", addr, e));
+        let actual_port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        Self { port: actual_port }
+    }
+
     /// Returns the model string for engine configuration.
     ///
     /// Format: `http://127.0.0.1:{port}/v1/chat/completions@test-model`

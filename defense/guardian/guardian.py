@@ -463,6 +463,9 @@ def scan_file(filepath, source_bytes, parser):
         return []
     # Check if file is in an exempt directory (dir-level escape-guarded exemption)
     parts = filepath.replace(os.sep, '/').split('/')
+    # Full exemption for api directory (HTTP protocol literals)
+    if any(p == "api" for p in parts):
+        return []
     # Full exemption for policy directory (strategy parameters, message catalogs)
     if any(p == "policy" for p in parts):
         return []

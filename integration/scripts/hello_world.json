@@ -1,0 +1,6 @@
+[
+  {
+    "response": "{ACTION_TOKEN}-thinking\nUser says hello, I should respond.\n\n{ACTION_TOKEN}-send_msg\ntest-user\nHello from the Playwright end-to-end test!\n\n{ACTION_TOKEN}-idle\n",
+    "expected_user_contains": "Hello"
+  }
+]

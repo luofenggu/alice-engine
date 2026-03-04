@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Alice — Setup</title>
+<style>
+:root {
+    --bg-primary: #0a0a0f;
+    --accent: #6c5ce7;
+    --accent-light: #a29bfe;
+    --text-primary: #e8e8f0;
+    --text-muted: #555568;
+    --border: #2a2a3a;
+    --danger: #ff6b6b;
+    --success: #00b894;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+body::before {
+    content: '';
+    position: fixed;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(ellipse at 30% 20%, rgba(108,92,231,0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 80%, rgba(162,155,254,0.05) 0%, transparent 50%);
+    pointer-events: none;
+}
+.setup-card {
+    background: rgba(18, 18, 26, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 48px 36px;
+    width: 100%;
+    max-width: 440px;
+    text-align: center;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    position: relative;
+}
+.logo {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: 4px;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 8px;
+}
+.subtitle {
+    color: var(--text-muted);
+    font-size: 14px;
+    margin-bottom: 32px;
+}
+.form-group {
+    margin-bottom: 16px;
+    text-align: left;
+}
+.form-group label {
+    display: block;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+}
+.form-group input {
+    width: 100%;
+    padding: 14px 16px;
+    background: rgba(26, 26, 38, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--text-primary);
+    font-size: 15px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.form-group input:focus { border-color: var(--accent); }
+.form-group input::placeholder { color: var(--text-muted); }
+.form-group .hint {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-top: 6px;
+}
+.form-group .hint a {
+    color: var(--accent-light);
+    text-decoration: none;
+}
+.form-group .hint a:hover { text-decoration: underline; }
+button.submit-btn {
+    width: 100%;
+    padding: 16px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-light));
+    color: #fff;
+    border: none;
+    border-radius: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: all 0.2s;
+    letter-spacing: 1px;
+}
+button.submit-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+button.submit-btn:active { transform: scale(0.98); }
+button.submit-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.error-msg {
+    color: var(--danger);
+    font-size: 13px;
+    margin-top: 16px;
+    min-height: 20px;
+}
+.success-msg {
+    color: var(--success);
+    font-size: 14px;
+    margin-top: 16px;
+}
+</style>
+</head>
+<body>
+<div class="setup-card">
+    <div class="logo">ALICE</div>
+    <div class="subtitle">Welcome! Let's get you set up.</div>
+
+    <div class="form-group">
+        <label>API URL</label>
+        <input type="text" id="apiUrlInput" value="https://zenmux.ai/api/v1/chat/completions">
+        <div class="hint">OpenAI-compatible endpoint. Shortcuts: <code>openrouter</code>, <code>openai</code>, <code>zenmux</code></div>
+    </div>
+
+    <div class="form-group">
+        <label>API Key</label>
+        <input type="password" id="apiKeyInput" placeholder="sk-..." autofocus>
+        <div class="hint">Your API key for the provider above</div>
+    </div>
+
+    <div class="form-group">
+        <label>Model</label>
+        <input type="text" id="modelInput" value="anthropic/claude-opus-4.6">
+        <div class="hint">Model identifier, e.g. anthropic/claude-sonnet-4</div>
+    </div>
+
+    <button class="submit-btn" id="submitBtn" onclick="doSetup()">Start</button>
+    <div class="error-msg" id="errorMsg"></div>
+</div>
+
+<script>
+async function doSetup() {
+    const apiUrl = document.getElementById('apiUrlInput').value.trim();
+    const apiKey = document.getElementById('apiKeyInput').value.trim();
+    const model = document.getElementById('modelInput').value.trim();
+    const btn = document.getElementById('submitBtn');
+    const err = document.getElementById('errorMsg');
+
+    if (!apiUrl) { err.textContent = 'Please enter the API URL'; return; }
+    if (!apiKey) { err.textContent = 'Please enter your API key'; return; }
+    if (!model) { err.textContent = 'Please enter a model name'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Setting up...';
+    err.textContent = '';
+
+    try {
+        const res = await fetch('api/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_url: apiUrl, api_key: apiKey, model: model }),
+        });
+
+        if (res.ok) {
+            btn.textContent = '✓ Ready';
+            btn.style.background = 'var(--success)';
+            setTimeout(() => { window.location.href = '/'; }, 2000);
+        } else {
+            const data = await res.json().catch(() => ({}));
+            err.textContent = data.error || 'Setup failed';
+            btn.disabled = false;
+            btn.textContent = 'Start';
+        }
+    } catch(e) {
+        err.textContent = 'Connection error';
+        btn.disabled = false;
+        btn.textContent = 'Start';
+    }
+}
+</script>
+</body>
+</html>
+
