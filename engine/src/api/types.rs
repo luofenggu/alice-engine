@@ -103,6 +103,8 @@ pub struct InstanceInfo {
     pub name: String,
     pub avatar: String,
     pub color: String,
+    #[serde(default)]
+    pub privileged: bool,
 }
 
 // ============================================================

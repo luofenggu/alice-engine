@@ -439,6 +439,7 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
         let mut display_name = name.clone();
         let mut color = String::new();
         let mut avatar = String::new();
+        let mut privileged = false;
 
         if let Ok(settings) = instance.settings.load() {
             if let Some(n) = settings.name {
@@ -448,6 +449,7 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
             }
             color = settings.color.unwrap_or_default();
             avatar = settings.avatar.unwrap_or_default();
+            privileged = settings.privileged;
         }
 
         instances.push(InstanceInfo {
@@ -455,6 +457,7 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
             name: display_name,
             avatar,
             color,
+            privileged,
         });
     }
 
