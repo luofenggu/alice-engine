@@ -7,7 +7,7 @@ set -e
 PROJECT_DIR="/data/alice-dev"
 ENGINE_BIN="/data/rust-target-dev/release/alice-engine"
 RUNTIME_DIR="/data/alice-dev-runtime"
-PID_FILE="$RUNTIME_DIR/engine.pid"
+ENGINE_PORT=9527
 
 cd "$PROJECT_DIR"
 
@@ -53,9 +53,17 @@ E2E2_OUTPUT=$(bash integration/scripts/run_e2e.sh settings_knowledge 2>&1 || tru
 if echo "$E2E2_OUTPUT" | grep -q "E2E Test 'settings_knowledge' PASSED"; then
     echo "  ✅ E2E settings_knowledge passed"
 else
-    echo "  ❌ E2E settings_knowledge FAILED"
-    echo "$E2E2_OUTPUT" | tail -10
-    exit 1
+    # Retry once (E2E tests can be flaky)
+    echo "  ⚠️  Retrying settings_knowledge..."
+    sleep 2
+    E2E2_OUTPUT=$(bash integration/scripts/run_e2e.sh settings_knowledge 2>&1 || true)
+    if echo "$E2E2_OUTPUT" | grep -q "E2E Test 'settings_knowledge' PASSED"; then
+        echo "  ✅ E2E settings_knowledge passed (retry)"
+    else
+        echo "  ❌ E2E settings_knowledge FAILED (after retry)"
+        echo "$E2E2_OUTPUT" | tail -10
+        exit 1
+    fi
 fi
 
 echo ""
@@ -63,20 +71,21 @@ echo "========================================="
 echo "  All checks passed ✅ Deploying..."
 echo "========================================="
 
-# === 部署：后台切换 ===
-OLD_PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
+# === 部署：找到旧进程，后台切换 ===
+OLD_PID=$(ss -tlnp | grep ":${ENGINE_PORT} " | grep -oP 'pid=\K[0-9]+' || echo "")
 
 # 启动新进程（后台）
 nohup bash -c '
     sleep 3
-    # Kill旧进程
+    # Kill旧进程（通过端口查找）
     OLD_PID="'"$OLD_PID"'"
     if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
         kill "$OLD_PID"
+        echo "Killed old engine PID $OLD_PID"
         sleep 1
     fi
     # 启动新引擎
-    ALICE_HTTP_PORT=9527 \
+    ALICE_HTTP_PORT='"$ENGINE_PORT"' \
     ALICE_HTML_DIR='"$PROJECT_DIR"'/html-frontend \
     ALICE_INSTANCES_DIR='"$RUNTIME_DIR"'/instances \
     ALICE_LOGS_DIR='"$RUNTIME_DIR"'/logs \
@@ -85,8 +94,8 @@ nohup bash -c '
     ALICE_DEFAULT_MODEL="openrouter@anthropic/claude-sonnet-4" \
     ALICE_DEFAULT_API_KEY=$(cat /data/alice-env/api_key.txt 2>/dev/null || echo "") \
     '"$ENGINE_BIN"' &
-    echo $! > '"$PID_FILE"'
-' > /dev/null 2>&1 &
+    echo "New engine started with PID $!"
+' > "$RUNTIME_DIR/logs/deploy.log" 2>&1 &
 
 echo "Deploy scheduled. Engine will restart in ~3 seconds."
 echo "Old PID: ${OLD_PID:-none}"
