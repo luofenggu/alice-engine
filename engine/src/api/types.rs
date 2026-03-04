@@ -42,6 +42,14 @@ pub struct InstanceSettings {
     pub color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_env: Option<String>,
 }
 
 /// Settings update request — all fields Optional for merge-update semantics.
@@ -74,6 +82,14 @@ pub struct SettingsUpdate {
     pub color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_env: Option<String>,
 }
 
 impl SettingsUpdate {
@@ -92,6 +108,10 @@ impl SettingsUpdate {
         if let Some(ref v) = self.name { s.name = Some(v.clone()); }
         if let Some(ref v) = self.color { s.color = Some(v.clone()); }
         if let Some(ref v) = self.avatar { s.avatar = Some(v.clone()); }
+        if let Some(v) = self.temperature { s.temperature = Some(v); }
+        if let Some(v) = self.max_tokens { s.max_tokens = Some(v); }
+        if let Some(ref v) = self.host { s.host = Some(v.clone()); }
+        if let Some(ref v) = self.shell_env { s.shell_env = Some(v.clone()); }
     }
 
     /// Fill None fields from fallback. Self takes priority.
@@ -109,6 +129,10 @@ impl SettingsUpdate {
         if self.name.is_none() { self.name = fallback.name.clone(); }
         if self.color.is_none() { self.color = fallback.color.clone(); }
         if self.avatar.is_none() { self.avatar = fallback.avatar.clone(); }
+        if self.temperature.is_none() { self.temperature = fallback.temperature; }
+        if self.max_tokens.is_none() { self.max_tokens = fallback.max_tokens; }
+        if self.host.is_none() { self.host = fallback.host.clone(); }
+        if self.shell_env.is_none() { self.shell_env = fallback.shell_env.clone(); }
     }
 
     /// Build seed settings from environment variables and engine.toml defaults.
@@ -129,6 +153,10 @@ impl SettingsUpdate {
             name: None,
             color: None,
             avatar: None,
+            temperature: Some(llm.temperature),
+            max_tokens: Some(llm.max_tokens),
+            host: env.host.clone(),
+            shell_env: if env.shell_env.is_empty() { None } else { Some(env.shell_env.clone()) },
         }
     }
 
@@ -168,6 +196,10 @@ impl SettingsUpdate {
             name: self.name.clone(),
             color: self.color.clone(),
             avatar: self.avatar.clone(),
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            host: self.host.clone(),
+            shell_env: self.shell_env.clone(),
         }
     }
 }

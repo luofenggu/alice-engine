@@ -60,7 +60,10 @@ pub struct LlmConfig {
     pub model: String,
     /// API key for authentication
     pub api_key: String,
-
+    /// Optional temperature override (falls back to engine.toml default)
+    pub temperature: Option<f64>,
+    /// Optional max_tokens override (falls back to engine.toml default)
+    pub max_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +392,8 @@ pub(crate) async fn run_sync_inference(
     let body = serde_json::json!({
         "model": model_id,
         "messages": messages,
-        "max_tokens": llm_policy.max_tokens,
-        "temperature": llm_policy.temperature,
+        "max_tokens": config.max_tokens.unwrap_or(llm_policy.max_tokens),
+        "temperature": config.temperature.unwrap_or(llm_policy.temperature),
         "stream": false,
     });
 
@@ -453,8 +456,8 @@ async fn run_streaming_collect(
     let body = serde_json::json!({
         "model": model_id,
         "messages": messages,
-        "max_tokens": llm_policy.max_tokens,
-        "temperature": llm_policy.temperature,
+        "max_tokens": config.max_tokens.unwrap_or(llm_policy.max_tokens),
+        "temperature": config.temperature.unwrap_or(llm_policy.temperature),
         "stream": true,
     });
 
@@ -588,8 +591,8 @@ async fn run_inference(
     let body = serde_json::json!({
         "model": model_id,
         "messages": messages,
-        "max_tokens": llm_policy.max_tokens,
-        "temperature": llm_policy.temperature,
+        "max_tokens": config.max_tokens.unwrap_or(llm_policy.max_tokens),
+        "temperature": config.temperature.unwrap_or(llm_policy.temperature),
         "stream": true,
     });
 
@@ -764,9 +767,13 @@ mod tests {
         let config = LlmConfig {
             api_key: "test-key".to_string(),
             model: "test-model".to_string(),
+            temperature: None,
+            max_tokens: None,
         };
         assert_eq!(config.model, "test-model");
         assert_eq!(config.api_key, "test-key");
+        assert!(config.temperature.is_none());
+        assert!(config.max_tokens.is_none());
     }
 
     #[test]

@@ -156,7 +156,8 @@ impl AliceEngine {
         let llm_config = crate::external::llm::LlmConfig {
             model: settings.model.clone(),
             api_key: settings.api_key.clone(),
-
+            temperature: settings.temperature,
+            max_tokens: settings.max_tokens,
         };
 
         let mut alice = Alice::new(instance, self.logs_dir.clone(), llm_config, self.env_config.clone())?;
@@ -166,7 +167,8 @@ impl AliceEngine {
         alice.privileged = settings.privileged;
         if let Some(v) = settings.safety_max_consecutive_beats { alice.safety_max_consecutive_beats = v; }
         if let Some(v) = settings.safety_cooldown_secs { alice.safety_cooldown_secs = v; }
-        alice.host = self.env_config.host.clone();
+        alice.host = settings.host.clone();
+        alice.shell_env = settings.shell_env.clone();
 
 
         // Auto-create sandbox user (紧箍咒) for non-privileged instances

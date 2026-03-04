@@ -74,7 +74,7 @@ pub fn build_beat_request(
         action_token: String::new(), // filled by infer_beat internally
         instance_id: alice.instance.id.clone(),
         instance_name: alice.instance_name.clone(),
-        shell_env: alice.env_config.shell_env.clone(),
+        shell_env: alice.shell_env.clone().unwrap_or_default(),
         host: host.map(|s| s.to_string()),
         system_start_time: alice.system_start_time,
         knowledge_content,

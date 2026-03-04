@@ -704,6 +704,18 @@ impl InstanceSettingsExt for InstanceSettings {
         if self.user_id.is_empty() {
             if let Some(ref v) = global.user_id { self.user_id = v.clone(); }
         }
+        if self.temperature.is_none() {
+            self.temperature = global.temperature;
+        }
+        if self.max_tokens.is_none() {
+            self.max_tokens = global.max_tokens;
+        }
+        if self.host.is_none() {
+            if let Some(ref v) = global.host { self.host = Some(v.clone()); }
+        }
+        if self.shell_env.is_none() {
+            if let Some(ref v) = global.shell_env { self.shell_env = Some(v.clone()); }
+        }
     }
 
     /// Check that required fields are present. Call after apply_env_fallbacks().

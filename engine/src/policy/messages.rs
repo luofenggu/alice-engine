@@ -63,6 +63,18 @@ pub fn describe_settings_change(
     if old.safety_cooldown_secs != new.safety_cooldown_secs {
         changes.push(format!("safety_cooldown_secs: {:?}", new.safety_cooldown_secs));
     }
+    if old.temperature != new.temperature {
+        changes.push(format!("temperature: {:?}", new.temperature));
+    }
+    if old.max_tokens != new.max_tokens {
+        changes.push(format!("max_tokens: {:?}", new.max_tokens));
+    }
+    if old.host != new.host {
+        changes.push(format!("host: {}", new.host.as_deref().unwrap_or("")));
+    }
+    if old.shell_env != new.shell_env {
+        changes.push(format!("shell_env: {}", new.shell_env.as_deref().unwrap_or("")));
+    }
 
     if changes.is_empty() {
         None

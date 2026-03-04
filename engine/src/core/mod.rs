@@ -316,8 +316,11 @@ pub struct Alice {
     /// Whether this instance has completed its first idle (born = ready for user interaction).
     pub born: bool,
     /// Public host address for URL generation (e.g. "example.com:8081").
-    /// Set by AliceEngine from ALICE_HOST env var.
+    /// Set by AliceEngine from settings (inherited from env var via global settings).
     pub host: Option<String>,
+    /// Shell environment description for prompt (e.g. "Linux系统").
+    /// Set by AliceEngine from settings (inherited from env var via global settings).
+    pub shell_env: Option<String>,
     /// Consecutive inference failure count (for exponential backoff).
     inference_failures: Counter<u32>,
     /// Backoff deadline: skip inference until this instant.
@@ -377,6 +380,7 @@ impl Alice {
             max_beats: None,
             born: false,
             host: None,
+            shell_env: None,
             instance_name: None,
             signals: None,
             inference_failures: Counter::<u32>::new(),
@@ -860,7 +864,7 @@ mod tests {
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let log_dir = tmp.path().join("logs");
-        let llm_config = LlmConfig { model: String::new(), api_key: String::new() };
+        let llm_config = LlmConfig { model: String::new(), api_key: String::new(), temperature: None, max_tokens: None };
         let env_config = Arc::new(crate::policy::EnvConfig::from_env());
         let alice = Alice::new(instance, log_dir, llm_config, env_config).unwrap();
         (alice, tmp)
