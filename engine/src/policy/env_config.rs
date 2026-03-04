@@ -47,9 +47,7 @@ pub struct EnvConfig {
     pub html_dir: Option<String>,
     /// HTTP listen port (`ALICE_HTTP_PORT`, default: 8081).
     pub http_port: u16,
-    /// Override LLM provider URL for all requests (`ALICE_LLM_PROVIDER_URL`).
-    /// When set, all LLM requests go to this URL regardless of provider config.
-    pub llm_provider_url: Option<String>,
+
 }
 
 impl EnvConfig {
@@ -103,7 +101,7 @@ impl EnvConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(8081),
-            llm_provider_url: std::env::var("ALICE_LLM_PROVIDER_URL").ok().filter(|s| !s.is_empty()),
+
         }
     }
 

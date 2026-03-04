@@ -860,7 +860,7 @@ mod tests {
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let log_dir = tmp.path().join("logs");
-        let llm_config = LlmConfig { model: String::new(), api_key: String::new(), api_url_override: None };
+        let llm_config = LlmConfig { model: String::new(), api_key: String::new() };
         let env_config = Arc::new(crate::policy::EnvConfig::from_env());
         let alice = Alice::new(instance, log_dir, llm_config, env_config).unwrap();
         (alice, tmp)

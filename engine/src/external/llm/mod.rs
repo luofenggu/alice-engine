@@ -60,9 +60,7 @@ pub struct LlmConfig {
     pub model: String,
     /// API key for authentication
     pub api_key: String,
-    /// Override provider URL for all requests (e.g. for mock LLM in tests).
-    /// When set, resolve_model uses this URL instead of looking up the provider map.
-    pub api_url_override: Option<String>,
+
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +236,7 @@ impl LlmClient {
         // Write input log if enabled
         if infer_log_enabled {
             let llm_policy = &crate::policy::EngineConfig::get().llm;
-            let (resolved_url, _) = llm_policy.resolve_model(&self.config.model, self.config.api_url_override.as_deref());
+            let (resolved_url, _) = llm_policy.resolve_model(&self.config.model);
             crate::logging::write_infer_input_log(
                 log_dir, &instance_id, log_timestamp,
                 &self.config.model, &resolved_url,
@@ -384,7 +382,7 @@ pub(crate) async fn run_sync_inference(
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
     let llm_policy = &crate::policy::EngineConfig::get().llm;
-    let (api_url, model_id) = llm_policy.resolve_model(&config.model, config.api_url_override.as_deref());
+    let (api_url, model_id) = llm_policy.resolve_model(&config.model);
 
     info!("[INFER-SYNC-{}] Starting sync inference, model={}", instance_id, model_id);
 
@@ -448,7 +446,7 @@ async fn run_streaming_collect(
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
     let llm_policy = &crate::policy::EngineConfig::get().llm;
-    let (api_url, model_id) = llm_policy.resolve_model(&config.model, config.api_url_override.as_deref());
+    let (api_url, model_id) = llm_policy.resolve_model(&config.model);
 
     info!("[INFER-STREAM-COLLECT-{}] Starting streaming collect, model={}", instance_id, model_id);
 
@@ -582,7 +580,7 @@ async fn run_inference(
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
     let llm_policy = &crate::policy::EngineConfig::get().llm;
-    let (api_url, model_id) = llm_policy.resolve_model(&config.model, config.api_url_override.as_deref());
+    let (api_url, model_id) = llm_policy.resolve_model(&config.model);
 
     info!("[INFER-{}] Starting inference, model={}", instance_id, model_id);
 
@@ -766,7 +764,6 @@ mod tests {
         let config = LlmConfig {
             api_key: "test-key".to_string(),
             model: "test-model".to_string(),
-            api_url_override: None,
         };
         assert_eq!(config.model, "test-model");
         assert_eq!(config.api_key, "test-key");
