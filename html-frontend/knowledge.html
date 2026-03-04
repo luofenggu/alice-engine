@@ -161,7 +161,7 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: -
         contentEl.innerHTML = '<div class="loading"><div class="spinner"></div><span>加载中...</span></div>';
         const data = await apiFetch(`/api/instances/${inst.id}/knowledge`);
         if (data === null || data === undefined) return;
-        renderRawKnowledge(data.content || '', contentEl);
+        const content = typeof data === 'string' ? data : (data.content || ''); renderRawKnowledge(content, contentEl);
     }
 
     function renderRawKnowledge(content, el) {
