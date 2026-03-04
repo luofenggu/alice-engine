@@ -18,7 +18,7 @@ echo "========================================="
 # === 前置检查 ===
 echo ""
 echo "[1/4] Guardian..."
-GUARDIAN_OUTPUT=$(python3 defense/guardian/guardian.py engine/src 2>&1)
+GUARDIAN_OUTPUT=$(python3 defense/guardian/guardian.py engine/src 2>&1 || true)
 if echo "$GUARDIAN_OUTPUT" | grep -q "0 violations"; then
     echo "  ✅ Guardian passed"
 else
@@ -28,7 +28,7 @@ else
 fi
 
 echo "[2/4] Unit tests..."
-TEST_OUTPUT=$(CARGO_TARGET_DIR=/data/rust-target-dev cargo test --release 2>&1)
+TEST_OUTPUT=$(CARGO_TARGET_DIR=/data/rust-target-dev cargo test --release 2>&1 || true)
 if echo "$TEST_OUTPUT" | grep -q "FAILED"; then
     echo "  ❌ Unit tests FAILED:"
     echo "$TEST_OUTPUT" | grep -E "(FAILED|failures)" | head -10
@@ -39,7 +39,7 @@ else
 fi
 
 echo "[3/4] E2E test: hello_world..."
-E2E1_OUTPUT=$(bash integration/scripts/run_e2e.sh hello_world 2>&1)
+E2E1_OUTPUT=$(bash integration/scripts/run_e2e.sh hello_world 2>&1 || true)
 if echo "$E2E1_OUTPUT" | grep -q "E2E Test 'hello_world' PASSED"; then
     echo "  ✅ E2E hello_world passed"
 else
@@ -49,7 +49,7 @@ else
 fi
 
 echo "[4/4] E2E test: settings_knowledge..."
-E2E2_OUTPUT=$(bash integration/scripts/run_e2e.sh settings_knowledge 2>&1)
+E2E2_OUTPUT=$(bash integration/scripts/run_e2e.sh settings_knowledge 2>&1 || true)
 if echo "$E2E2_OUTPUT" | grep -q "E2E Test 'settings_knowledge' PASSED"; then
     echo "  ✅ E2E settings_knowledge passed"
 else

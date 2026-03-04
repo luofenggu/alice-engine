@@ -20,8 +20,9 @@ TEST_NAME="${1:-hello_world}"
 SCRIPT_FILE="$INTEGRATION_DIR/scripts/${TEST_NAME}.json"
 
 # Ports
-MOCK_LLM_PORT=19876
-ENGINE_PORT=19877
+# Use random ports to avoid conflicts when running multiple tests sequentially
+MOCK_LLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+ENGINE_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 AUTH_SECRET="test-secret-e2e"
 
 # Binary paths
