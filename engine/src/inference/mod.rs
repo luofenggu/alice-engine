@@ -166,7 +166,7 @@ pub fn parse_actions(raw: &str, action_separator: &str, separator_token: &str) -
                 let error_msg = format!(
                     "⚠️ action解析失败: {}\n原始输出: {}",
                     e,
-                    crate::safe_truncate(part, 200)
+                    crate::util::safe_truncate(part, 200)
                 );
                 tracing::warn!("[PARSE] {}", error_msg);
                 actions.push(Action::Thinking { content: error_msg });

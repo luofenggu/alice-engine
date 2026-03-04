@@ -196,7 +196,7 @@ pub fn format_session_entries(entries: &[SessionEntryData]) -> String {
 
         for msg in &entry.messages {
             let content_display = if msg.content.len() > truncate_len {
-                messages::truncated_content(&crate::safe_truncate(&msg.content, truncate_len))
+                messages::truncated_content(&crate::util::safe_truncate(&msg.content, truncate_len))
             } else {
                 msg.content.clone()
             };

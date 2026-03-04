@@ -343,7 +343,7 @@ pub fn build_doing_description(action: &Action) -> String {
         Action::CreateInstance { name, knowledge } =>
             format!("create_instance: {} ({} bytes knowledge)", name, knowledge.len()),
         Action::Forget { target_action_id, summary } =>
-            format!("forget [{}]: {}", target_action_id, crate::safe_truncate(summary, 80)),
+            format!("forget [{}]: {}", target_action_id, crate::util::safe_truncate(summary, 80)),
     }
 }
 
@@ -352,7 +352,7 @@ pub fn build_doing_description(action: &Action) -> String {
 /// Truncate result text if it exceeds MAX_RESULT_BYTES.
 pub fn truncate_result(text: &str) -> String {
     if text.len() > MAX_RESULT_BYTES {
-        let truncated = crate::safe_truncate(text, MAX_RESULT_BYTES);
+        let truncated = crate::util::safe_truncate(text, MAX_RESULT_BYTES);
         truncated_output(truncated, text.len())
     } else {
         text.to_string()

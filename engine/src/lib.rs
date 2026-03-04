@@ -23,83 +23,8 @@
 //! All trace logs follow: `[TRACE_ID-instance_id] message`
 //! Example: `[MEMORY-alice] Reading persistent.txt`
 
-/// Safely truncate a string to at most `max_bytes` bytes,
-/// ensuring the cut is on a UTF-8 character boundary.
-pub fn safe_truncate(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
-/// Atomic write: write to .tmp file then rename, preventing truncation on crash.
-/// @TRACE: MEMORY
-pub fn atomic_write(path: &std::path::Path, content: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    let tmp = path.with_extension("tmp");
-    let mut file = std::fs::File::create(&tmp)
-        .map_err(|e| anyhow::anyhow!("Failed to create tmp file {}: {}", tmp.display(), e))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| anyhow::anyhow!("Failed to write tmp file {}: {}", tmp.display(), e))?;
-    file.sync_all()
-        .map_err(|e| anyhow::anyhow!("Failed to fsync tmp file {}: {}", tmp.display(), e))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| anyhow::anyhow!("Failed to rename {} -> {}: {}", tmp.display(), path.display(), e))?;
-    Ok(())
-}
-
 /// Re-exported from inference module — safe template rendering.
 pub use inference::safe_render;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_safe_truncate_ascii() {
-        assert_eq!(safe_truncate("hello world", 5), "hello");
-        assert_eq!(safe_truncate("hello", 10), "hello");
-        assert_eq!(safe_truncate("hello", 5), "hello");
-        assert_eq!(safe_truncate("", 5), "");
-    }
-
-    #[test]
-    fn test_safe_truncate_chinese() {
-        let s = "你好世界";
-        assert_eq!(safe_truncate(s, 12), "你好世界");
-        assert_eq!(safe_truncate(s, 6), "你好");
-        assert_eq!(safe_truncate(s, 7), "你好");
-        assert_eq!(safe_truncate(s, 8), "你好");
-        assert_eq!(safe_truncate(s, 9), "你好世");
-        assert_eq!(safe_truncate(s, 3), "你");
-        assert_eq!(safe_truncate(s, 2), "");
-        assert_eq!(safe_truncate(s, 1), "");
-        assert_eq!(safe_truncate(s, 0), "");
-    }
-
-    #[test]
-    fn test_safe_truncate_mixed() {
-        let s = "hi你好";
-        assert_eq!(safe_truncate(s, 8), "hi你好");
-        assert_eq!(safe_truncate(s, 5), "hi你");
-        assert_eq!(safe_truncate(s, 4), "hi");
-        assert_eq!(safe_truncate(s, 3), "hi");
-        assert_eq!(safe_truncate(s, 2), "hi");
-    }
-
-    #[test]
-    fn test_safe_truncate_emoji() {
-        let s = "👋hello";
-        assert_eq!(safe_truncate(s, 9), "👋hello");
-        assert_eq!(safe_truncate(s, 4), "👋");
-        assert_eq!(safe_truncate(s, 3), "");
-        assert_eq!(safe_truncate(s, 1), "");
-    }
-}
 
 pub mod logging;
 pub mod external;
@@ -113,3 +38,4 @@ pub mod engine;
 pub mod rpc;
 pub mod persist;
 pub mod util;
+

@@ -698,7 +698,7 @@ async fn run_inference(
                 if let Some(next_offset) = next_sep {
                     // Complete action found between two separators
                     let action_text = &full_text[abs_start..after_start + next_offset];
-                    info!("[INFER-{}] Stream action detected: {:?}", instance_id, crate::safe_truncate(action_text, 80));
+                    info!("[INFER-{}] Stream action detected: {:?}", instance_id, crate::util::safe_truncate(action_text, 80));
                     let actions = parse_actions(action_text, separator_for_parse, separator_token).unwrap_or_default();
                     info!("[INFER-{}] Parsed {} actions from stream chunk", instance_id, actions.len());
                     for action in actions {
@@ -716,7 +716,7 @@ async fn run_inference(
     // Parse any remaining actions after stream ends
     if last_parsed_pos < full_text.len() {
         let remaining = &full_text[last_parsed_pos..];
-        info!("[INFER-{}] Remaining text ({} chars): {:?}", instance_id, remaining.len(), crate::safe_truncate(remaining, 100));
+        info!("[INFER-{}] Remaining text ({} chars): {:?}", instance_id, remaining.len(), crate::util::safe_truncate(remaining, 100));
         if remaining.contains(separator) {
             info!("[INFER-{}] Parsing remaining actions", instance_id);
             let actions = parse_actions(remaining, separator_for_parse, separator_token).unwrap_or_default();

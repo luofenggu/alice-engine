@@ -172,7 +172,7 @@ fn execute_replace_in_file(
 
         let mut result_lines: Vec<String> = Vec::new();
         for block in blocks.iter() {
-            let truncated = crate::safe_truncate(&block.search, out::truncate_display_limit());
+            let truncated = crate::util::safe_truncate(&block.search, out::truncate_display_limit());
             match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str()) {
                 Ok(new_content) => {
                     content = new_content;
@@ -202,7 +202,7 @@ fn execute_replace_in_file(
         let mut result_lines: Vec<String> = Vec::new();
 
         for block in blocks.iter() {
-            let truncated = crate::safe_truncate(&block.search, out::truncate_display_limit());
+            let truncated = crate::util::safe_truncate(&block.search, out::truncate_display_limit());
             match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str()) {
                 Ok(new_content) => {
                     content = new_content;

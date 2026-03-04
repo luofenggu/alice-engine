@@ -96,7 +96,7 @@ impl Instance {
         if let Some(k) = knowledge {
             if !k.is_empty() {
                 let knowledge_file = memory_dir.join(crate::inference::beat::KNOWLEDGE_FILE);
-                crate::atomic_write(&knowledge_file, k)?;
+                crate::util::atomic_write(&knowledge_file, k)?;
             }
         }
 
@@ -246,7 +246,7 @@ impl Instance {
         }
 
         if !merged.is_empty() {
-            crate::atomic_write(knowledge_file, &merged)?;
+            crate::util::atomic_write(knowledge_file, &merged)?;
             info!(
                 "[INSTANCE-{}] Migrated keypoints.md + knowledge/*.md → knowledge.md ({} bytes)",
                 instance_id,
