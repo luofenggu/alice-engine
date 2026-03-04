@@ -5,10 +5,9 @@ const AUTH_SECRET = process.env.AUTH_SECRET || 'test-secret';
 
 test('Hello World — full end-to-end with browser', async ({ page }) => {
   // === Step 1: Login ===
-  // Engine serves its own login page (form-based POST to /login)
   await page.goto('/login');
-  await page.fill('input[name="password"]', AUTH_SECRET);
-  await page.click('button[type="submit"]');
+  await page.fill('#secretInput', AUTH_SECRET);
+  await page.click('#loginBtn');
 
   // Wait for redirect to main page (instanceList appears)
   await page.waitForSelector('#instanceList', { timeout: 10000 });

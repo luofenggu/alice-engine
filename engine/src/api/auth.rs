@@ -30,6 +30,7 @@ pub async fn check_auth(
 
     // Whitelist: login page, error reporter, public files
     if path == "/login"
+        || path == "/login.html"
         || path == "/api/auth"
         || path == "/error-reporter.js"
         || path == "/api/frontend-error"
@@ -55,68 +56,10 @@ pub async fn check_auth(
     Redirect::to("/login").into_response()
 }
 
-/// Login page — serves a simple HTML form.
-pub async fn handle_login_page(req: Request) -> axum::response::Html<String> {
-    let query = req.uri().query().unwrap_or("");
-    let show_error = query.contains("error=1");
-
-    let error_html = if show_error {
-        r#"<div class="login-error">密码错误</div>"#
-    } else {
-        ""
-    };
-
-    axum::response::Html(format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Alice - Login</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #1a1a2e; color: #e0e0e0; height: 100vh;
-            display: flex; align-items: center; justify-content: center;
-        }}
-        .login-box {{
-            background: #16213e; border: 1px solid #2a2a4a;
-            border-radius: 12px; padding: 40px; width: 360px; text-align: center;
-        }}
-        .login-box h1 {{ font-size: 28px; color: #a0a0ff; margin-bottom: 8px; }}
-        .login-box .subtitle {{ font-size: 14px; color: #888; margin-bottom: 24px; }}
-        .login-box input {{
-            width: 100%; padding: 12px 16px; background: #1a1a2e;
-            border: 1px solid #2a2a4a; border-radius: 8px; color: #e0e0e0;
-            font-size: 16px; outline: none; margin-bottom: 16px; box-sizing: border-box;
-        }}
-        .login-box input:focus {{ border-color: #4a6fa5; }}
-        .login-box button {{
-            width: 100%; padding: 12px; background: #2d5aa0; color: #fff;
-            border: none; border-radius: 8px; font-size: 16px; cursor: pointer;
-        }}
-        .login-box button:hover {{ background: #3a6fb5; }}
-        .login-error {{
-            background: #4a1a1a; border: 1px solid #ff6b6b; color: #ff6b6b;
-            padding: 10px; border-radius: 8px; margin-bottom: 16px; font-size: 14px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="login-box">
-        <h1>Alice</h1>
-        <div class="subtitle">Authentication Required</div>
-        {}
-        <form method="POST" action="login">
-            <input type="password" name="password" placeholder="Enter password" autofocus/>
-            <button type="submit">Login</button>
-        </form>
-    </div>
-</body>
-</html>"#,
-        error_html
-    ))
+/// Login page — redirects to login.html (static file).
+pub async fn handle_login_page() -> Response {
+    use axum::response::Redirect;
+    Redirect::to("/login.html").into_response()
 }
 
 /// Login POST — validates password and sets session cookie.

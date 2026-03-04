@@ -6,8 +6,8 @@ const AUTH_SECRET = process.env.AUTH_SECRET || 'test-secret';
 test('Settings, Privilege, and Knowledge — end-to-end', async ({ page, context }) => {
   // === Step 1: Login ===
   await page.goto('/login');
-  await page.fill('input[name="password"]', AUTH_SECRET);
-  await page.click('button[type="submit"]');
+  await page.fill('#secretInput', AUTH_SECRET);
+  await page.click('#loginBtn');
   await page.waitForSelector('#instanceList', { timeout: 10000 });
   console.log('✅ Login successful');
 
