@@ -94,13 +94,15 @@ pub struct AliceEngine {
     signal_hub: SignalHub,
     /// Environment configuration.
     env_config: Arc<crate::policy::EnvConfig>,
+    /// Global settings (merged from env + engine.toml + persisted global settings).
+    global_settings: crate::api::types::SettingsUpdate,
     /// Temporary buffer for instances during restore (drained to threads in run()).
     instances: Vec<(String, Alice)>,
 }
 
 impl AliceEngine {
     /// Create a new engine.
-    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub, env_config: Arc<crate::policy::EnvConfig>) -> Self {
+    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub, env_config: Arc<crate::policy::EnvConfig>, global_settings: crate::api::types::SettingsUpdate) -> Self {
         let pid_file = env_config.pid_file_path(&instances_base);
         let instance_store = InstanceStore::new(instances_base.clone());
         Self {
@@ -110,6 +112,7 @@ impl AliceEngine {
             instance_store,
             signal_hub,
             env_config,
+            global_settings,
             instances: Vec::new(),
         }
     }
@@ -147,7 +150,7 @@ impl AliceEngine {
     fn create_instance(&mut self, name: &str, instance_dir: &Path) -> Result<()> {
         let instance = crate::persist::instance::Instance::open(instance_dir)?;
         let mut settings = instance.settings.load()?;
-        settings.apply_env_fallbacks(&self.env_config);
+        settings.apply_global_fallbacks(&self.global_settings);
         settings.validate()?;
 
         let llm_config = crate::external::llm::LlmConfig {
@@ -611,11 +614,14 @@ mod tests {
     #[test]
     fn test_engine_creation() {
         let tmp = TempDir::new().unwrap();
+        let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
+        let gs = crate::api::types::SettingsUpdate::from_env_and_defaults(&env);
         let engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
-            std::sync::Arc::new(crate::policy::EnvConfig::from_env()),
+            env,
+            gs,
         );
         assert!(engine.instances.is_empty());
     }
@@ -634,11 +640,14 @@ mod tests {
             r#"{"api_key":"sk-test","model":"openrouter@test-model"}"#,
         ).unwrap();
 
+        let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
+        let gs = crate::api::types::SettingsUpdate::from_env_and_defaults(&env);
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
-            std::sync::Arc::new(crate::policy::EnvConfig::from_env()),
+            env,
+            gs,
         );
         engine.restore_instances().unwrap();
 
@@ -663,11 +672,14 @@ mod tests {
             r#"{"api_key":"sk-test","model":"test"}"#,
         ).unwrap();
 
+        let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
+        let gs = crate::api::types::SettingsUpdate::from_env_and_defaults(&env);
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
-            std::sync::Arc::new(crate::policy::EnvConfig::from_env()),
+            env,
+            gs,
         );
         engine.restore_instances().unwrap();
 
@@ -724,11 +736,14 @@ mod tests {
             r#"{"api_key":"sk-test","model":"test"}"#
         ).unwrap();
 
+        let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
+        let gs = crate::api::types::SettingsUpdate::from_env_and_defaults(&env);
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
-            std::sync::Arc::new(crate::policy::EnvConfig::from_env()),
+            env,
+            gs,
         );
         engine.restore_instances().unwrap();
 

@@ -1,3 +1,4 @@
+{{SKILL}}
 ### 知识 ###
 {{KNOWLEDGE}}
 

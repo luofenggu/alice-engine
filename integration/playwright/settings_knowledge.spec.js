@@ -116,25 +116,21 @@ test('Settings, Privilege, and Knowledge — end-to-end', async ({ page, context
   fs.writeFileSync(knowledgePath, testKnowledge);
   console.log(`✅ Knowledge file written to ${knowledgePath}`);
 
-  // === Step 7: Test Knowledge Page ===
-  const [knowledgePage] = await Promise.all([
-    context.waitForEvent('page'),
-    page.click('a[href="/knowledge.html"]')
-  ]);
-
-  await knowledgePage.waitForSelector('#instanceList', { timeout: 10000 });
+  // === Step 7: Test Knowledge Page (same-tab navigation) ===
+  await page.click('a[href="/knowledge.html"]');
+  await page.waitForSelector('#instanceList', { timeout: 10000 });
   console.log('✅ Knowledge page loaded');
 
-  const knowledgeInstances = knowledgePage.locator('#instanceList .instance-item');
+  const knowledgeInstances = page.locator('#instanceList .instance-item');
   await expect(knowledgeInstances.first()).toBeVisible({ timeout: 5000 });
   console.log('✅ Knowledge page shows instances');
 
   // Click the instance we wrote knowledge to (Test Bot)
-  const testBotItem = knowledgePage.locator('#instanceList .instance-item', { hasText: 'Test Bot' });
+  const testBotItem = page.locator('#instanceList .instance-item', { hasText: 'Test Bot' });
   await testBotItem.click();
 
   // Verify knowledge content rendered as k-sections (not empty-state)
-  const kSection = knowledgePage.locator('#contentArea .k-section');
+  const kSection = page.locator('#contentArea .k-section');
   await expect(kSection.first()).toBeVisible({ timeout: 10000 });
   console.log('✅ Knowledge content rendered as k-section');
 
@@ -148,6 +144,5 @@ test('Settings, Privilege, and Knowledge — end-to-end', async ({ page, context
   expect(sectionCount).toBeGreaterThanOrEqual(2);
   console.log(`✅ ${sectionCount} knowledge sections rendered`);
 
-  await knowledgePage.close();
   console.log('✅ All tests passed!');
 });

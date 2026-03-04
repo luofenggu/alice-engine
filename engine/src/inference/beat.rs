@@ -61,6 +61,7 @@ pub struct BeatRequest {
     pub history_content: String,
     pub session_blocks: Vec<SessionBlockData>,
     pub current_content: String,
+    pub skill_content: String,
     pub unread_count: usize,
 }
 
@@ -98,8 +99,11 @@ impl BeatRequest {
 
         let daily_rendered = self.render_session_blocks();
 
-        // Knowledge section: knowledge file + forced app guide
+        // Knowledge section (without app guide)
         let knowledge_section = self.build_knowledge_section();
+
+        // Skill section: default skill (app guide) + instance custom skill
+        let skill_section = self.build_skill_section();
 
         // Memory status
         let memory_status = make_memory_status(
@@ -108,7 +112,7 @@ impl BeatRequest {
             history_display.len(),
             daily_rendered.len(),
             current_display.len(),
-            knowledge_section.len(),
+            knowledge_section.len() + skill_section.len(),
         );
 
         let host_line = make_host_line(self.host.as_deref());
@@ -122,6 +126,7 @@ impl BeatRequest {
             ("{{INSTANCE_ID}}", &self.instance_id),
             ("{{SHELL_ENV}}", &self.shell_env),
             ("{{HOST_INFO}}", &host_line),
+            ("{{SKILL}}", &skill_section),
             ("{{KNOWLEDGE}}", &knowledge_section),
             ("{{HISTORY_MEMORY}}", &history_display),
             ("{{DAILY_MEMORY}}", &daily_rendered),
@@ -152,23 +157,27 @@ impl BeatRequest {
         sections.join("\n\n")
     }
 
-    /// Build knowledge section with title wrapper and optional app guide.
+    /// Build knowledge section (pure knowledge, no app guide).
     fn build_knowledge_section(&self) -> String {
-        let app_guide = make_app_guide_knowledge(self.host.as_deref(), &self.instance_id);
-
-        let full_knowledge = if app_guide.is_empty() {
-            self.knowledge_content.clone()
-        } else if self.knowledge_content.is_empty() {
-            app_guide
-        } else {
-            format!("{}\n\n{}", self.knowledge_content, app_guide)
-        };
-
-        if full_knowledge.trim().is_empty() {
+        if self.knowledge_content.trim().is_empty() {
             String::new()
         } else {
-            messages::knowledge_section(&full_knowledge)
+            messages::knowledge_section(&self.knowledge_content)
         }
+    }
+
+    /// Build skill section: default skill (app guide) + instance custom skill.
+    fn build_skill_section(&self) -> String {
+        let default_skill = make_app_guide_knowledge(self.host.as_deref(), &self.instance_id);
+
+        let combined = match (default_skill.is_empty(), self.skill_content.trim().is_empty()) {
+            (true, true) => return String::new(),
+            (false, true) => default_skill,
+            (true, false) => self.skill_content.clone(),
+            (false, false) => format!("{}\n\n{}", default_skill, self.skill_content),
+        };
+
+        format!("### skill ###\n{}\n", combined)
     }
 }
 

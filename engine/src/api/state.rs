@@ -30,6 +30,8 @@ pub struct EngineState {
     pub session_token: String,
     /// Session cookie name (includes port to avoid conflicts between engines on same host).
     pub session_cookie_name: String,
+    /// Path to global_settings.json.
+    pub global_settings_path: PathBuf,
 }
 
 impl EngineState {
@@ -40,6 +42,7 @@ impl EngineState {
         signal_hub: SignalHub,
         engine_config: crate::policy::EngineConfig,
         env_config: Arc<crate::policy::EnvConfig>,
+        global_settings_path: PathBuf,
     ) -> Self {
         let session_token = if env_config.auth_secret.is_empty() {
             String::new()
@@ -58,6 +61,7 @@ impl EngineState {
             env_config,
             session_token,
             session_cookie_name,
+            global_settings_path,
         }
     }
 
@@ -308,6 +312,60 @@ impl EngineState {
         }
     }
 
+    /// Get global settings.
+    pub async fn get_global_settings(&self) -> SettingsUpdate {
+        let path = self.global_settings_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            if path.exists() {
+                let content = std::fs::read_to_string(&path)?;
+                serde_json::from_str(&content).map_err(anyhow::Error::from)
+            } else {
+                Ok(SettingsUpdate::default())
+            }
+        }).await;
+
+        match result {
+            Ok(Ok(settings)) => settings,
+            Ok(Err(e)) => {
+                error!("[API] get_global_settings error: {}", e);
+                SettingsUpdate::default()
+            }
+            Err(e) => {
+                error!("[API] get_global_settings join error: {}", e);
+                SettingsUpdate::default()
+            }
+        }
+    }
+
+    /// Update global settings (merge-update).
+    pub async fn update_global_settings(&self, update: SettingsUpdate) -> ActionResult {
+        let path = self.global_settings_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut current: SettingsUpdate = if path.exists() {
+                let content = std::fs::read_to_string(&path)?;
+                serde_json::from_str(&content)?
+            } else {
+                SettingsUpdate::default()
+            };
+            current.merge_fallback(&update);
+            // For merge_fallback, update takes priority — but we want update fields to overwrite.
+            // Actually, we want: update's non-None fields overwrite current.
+            // merge_fallback fills None from fallback. So we need the opposite:
+            // start from update, fill None from current.
+            let mut merged = update;
+            merged.merge_fallback(&current);
+            let content = serde_json::to_string_pretty(&merged)?;
+            std::fs::write(&path, &content)?;
+            Ok::<_, anyhow::Error>(ActionResult::ok("Global settings updated".to_string()))
+        }).await;
+
+        match result {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => ActionResult::err(e.to_string()),
+            Err(e) => ActionResult::err(e.to_string()),
+        }
+    }
+
     /// List files in instance workspace.
     pub async fn list_files(&self, instance_id: String, path: String) -> Vec<FileInfo> {
         let store = self.instance_store.clone();
@@ -422,6 +480,32 @@ impl EngineState {
             Ok(Ok(content)) => content,
             _ => String::new(),
         }
+    }
+
+    /// Get instance skill file content.
+    pub async fn get_skill(&self, instance_id: String) -> String {
+        let store = self.instance_store.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&instance_id)?;
+            instance.skill.read().map_err(anyhow::Error::from)
+        }).await;
+
+        match result {
+            Ok(Ok(content)) => content,
+            _ => String::new(),
+        }
+    }
+
+    /// Update instance skill file content.
+    pub async fn update_skill(&self, instance_id: String, content: String) -> anyhow::Result<()> {
+        let store = self.instance_store.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let instance = store.open(&instance_id)?;
+            instance.skill.write(&content)?;
+            Ok(())
+        }).await?
     }
 }
 

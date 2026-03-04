@@ -66,6 +66,8 @@ pub fn build_beat_request(
 
     let current_content = alice.instance.memory.current.read().unwrap_or_default();
 
+    let skill_content = alice.instance.skill.read().unwrap_or_default();
+
     let unread_count = alice.count_unread_messages();
 
     BeatRequest {
@@ -76,6 +78,7 @@ pub fn build_beat_request(
         host: host.map(|s| s.to_string()),
         system_start_time: alice.system_start_time,
         knowledge_content,
+        skill_content,
         history_content,
         session_blocks,
         current_content,

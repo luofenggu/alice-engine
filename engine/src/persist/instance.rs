@@ -14,8 +14,10 @@ use tracing::info;
 use crate::persist::Document;
 use super::chat::ChatHistory;
 use super::memory::Memory;
+use crate::persist::TextFile;
 
 const SETTINGS_FILE: &str = "settings.json";
+const SKILL_FILE: &str = "skill.md";
 
 /// Preset colors for new instances.
 const PRESET_COLORS: &[&str] = &[
@@ -37,6 +39,8 @@ pub struct Instance {
     pub chat: Arc<Mutex<ChatHistory>>,
     /// Workspace root path (instance_dir/workspace).
     pub workspace: PathBuf,
+    /// Skill file (fixed knowledge, not managed by memory/capture).
+    pub skill: TextFile,
 }
 
 impl Instance {
@@ -116,6 +120,8 @@ impl Instance {
 
         info!("[INSTANCE-{}] Created for user {} at {}", id, user_id, instance_dir.display());
 
+        let skill = TextFile::open(instance_dir.join(SKILL_FILE))
+            .context("Failed to open skill file")?;
         Ok(Self {
             id,
             instance_dir,
@@ -123,6 +129,7 @@ impl Instance {
             memory,
             chat: Arc::new(Mutex::new(chat)),
             workspace,
+            skill,
         })
     }
 
@@ -198,6 +205,8 @@ impl Instance {
 
         info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
 
+        let skill = TextFile::open(instance_dir.join(SKILL_FILE))
+            .context("Failed to open skill file")?;
         Ok(Self {
             id,
             instance_dir: instance_dir.to_path_buf(),
@@ -205,6 +214,7 @@ impl Instance {
             memory,
             chat: Arc::new(Mutex::new(chat)),
             workspace,
+            skill,
         })
     }
 
@@ -246,6 +256,9 @@ impl Instance {
 
         info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
 
+        let skill = TextFile::open(instance_dir.join(SKILL_FILE))
+            .context("Failed to open skill file")?;
+
         Ok(Self {
             id,
             instance_dir: instance_dir.to_path_buf(),
@@ -253,6 +266,7 @@ impl Instance {
             memory,
             chat,
             workspace,
+            skill,
         })
     }
 
@@ -673,24 +687,22 @@ pub use crate::api::types::{InstanceSettings, SettingsUpdate};
 
 /// Extension trait for InstanceSettings — engine-specific logic.
 pub trait InstanceSettingsExt {
-    fn apply_env_fallbacks(&mut self, env_config: &crate::policy::EnvConfig);
+    fn apply_global_fallbacks(&mut self, global: &crate::api::types::SettingsUpdate);
     fn validate(&self) -> anyhow::Result<()>;
 }
 
 impl InstanceSettingsExt for InstanceSettings {
-    /// Apply environment variable fallbacks for api_key, model, and user_id.
-    /// Call this after loading from file to fill in missing values.
-    fn apply_env_fallbacks(&mut self, env_config: &crate::policy::EnvConfig) {
+    /// Apply global settings fallbacks for empty fields.
+    /// Call this after loading from file to fill in missing values from global settings.
+    fn apply_global_fallbacks(&mut self, global: &crate::api::types::SettingsUpdate) {
         if self.api_key.is_empty() {
-            self.api_key = env_config.default_api_key.clone();
+            if let Some(ref v) = global.api_key { self.api_key = v.clone(); }
         }
         if self.model.is_empty() {
-            let llm_config = &crate::policy::EngineConfig::get().llm;
-            self.model = env_config.default_model.clone()
-                .unwrap_or_else(|| llm_config.default_model.clone());
+            if let Some(ref v) = global.model { self.model = v.clone(); }
         }
         if self.user_id.is_empty() {
-            self.user_id = env_config.user_id.clone();
+            if let Some(ref v) = global.user_id { self.user_id = v.clone(); }
         }
     }
 

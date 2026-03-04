@@ -125,6 +125,19 @@ async fn handle_interrupt(
 
 // ── Settings ──
 
+async fn handle_get_global_settings(
+    State(state): State<Arc<EngineState>>,
+) -> Response {
+    json_ok(state.get_global_settings().await)
+}
+
+async fn handle_update_global_settings(
+    State(state): State<Arc<EngineState>>,
+    Json(update): Json<SettingsUpdate>,
+) -> Response {
+    json_ok(state.update_global_settings(update).await)
+}
+
 async fn handle_get_settings(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -181,6 +194,24 @@ async fn handle_get_knowledge(
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     json_ok(state.get_knowledge(id).await)
+}
+
+async fn handle_get_skill(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    json_ok(state.get_skill(id).await)
+}
+
+async fn handle_update_skill(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+    body: String,
+) -> Response {
+    match state.update_skill(id, body).await {
+        Ok(()) => json_ok("ok"),
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
 }
 
 // ── Static File Serving ──
@@ -394,10 +425,12 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         .route("/api/instances/{id}/replies", get(handle_get_replies))
         .route("/api/instances/{id}/observe", get(handle_observe))
         .route("/api/instances/{id}/interrupt", post(handle_interrupt))
+        .route("/api/settings", get(handle_get_global_settings).post(handle_update_global_settings))
         .route("/api/instances/{id}/settings", get(handle_get_settings).post(handle_update_settings))
         .route("/api/instances/{id}/files/list", get(handle_file_list))
         .route("/api/instances/{id}/files/read", get(handle_file_read))
         .route("/api/instances/{id}/knowledge", get(handle_get_knowledge))
+        .route("/api/instances/{id}/skill", get(handle_get_skill).put(handle_update_skill))
         .route("/serve/{id}/{*path}", get(handle_serve_static))
         .route("/proxy/{*path}", any(handle_proxy))
         .route("/api/auth/check", get(handle_auth_check))
