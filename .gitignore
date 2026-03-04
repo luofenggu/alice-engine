@@ -1,6 +1,4 @@
 /target/
-frontend/target/
 __pycache__/
-engine/src/lib.rs.bak
 node_modules/
 test-results/
