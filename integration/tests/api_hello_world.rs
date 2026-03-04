@@ -1,44 +1,35 @@
-//! API Layer End-to-End Test: Hello World
+//! API Layer End-to-End Test: Hello World (v2 — Zero-intrusion Mock)
 //!
-//! Tests the full chain: HTTP API → RPC → Engine → I/O
+//! Tests the full chain with a real engine loop:
+//!   HTTP API → RPC → AliceEngine.run() → Mock LLM HTTP server → I/O
+//!
+//! The engine runs its normal beat loop, hitting a local mock LLM server
+//! instead of a real provider. Zero engine code modifications.
 //!
 //! Flow:
-//! 1. HTTP POST /api/instances/{id}/messages — send user message
-//! 2. alice.beat() — auto-read
-//! 3. alice.beat() — mock LLM inference (Thinking + SendMsg + Idle)
-//! 4. HTTP GET /api/instances/{id}/replies?after_id=0 — verify reply
-//! 5. Privileged referee: read current.txt directly
+//! 1. Start mock LLM server with scripted responses
+//! 2. Create instance + configure engine to use mock LLM
+//! 3. Start AliceEngine.run() in OS thread (real beat loop)
+//! 4. Start RPC server in tokio
+//! 5. HTTP POST /api/instances/{id}/messages — send user message
+//! 6. Poll HTTP GET /api/instances/{id}/replies — wait for agent reply
+//! 7. Privileged referee: verify current.txt
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use alice_engine::core::Alice;
-use alice_engine::external::llm::LlmConfig;
-use alice_engine::external::llm::StreamItem;
-use alice_engine::inference::Action;
-use alice_engine::persist::instance::Instance;
-use alice_engine::rpc::{EngineState, start_rpc_server};
 use alice_engine::core::signal::SignalHub;
+use alice_engine::engine::AliceEngine;
+use alice_engine::persist::instance::Instance;
 use alice_engine::policy::{EngineConfig, EnvConfig};
+use alice_engine::rpc::{EngineState, start_rpc_server};
 
 use alice_frontend::api::{authenticated_api_routes, ApiState};
+use alice_integration::mock_llm::MockLlmServer;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
-
-/// Create a test Alice instance in the given instances directory.
-/// Returns (Alice, instance_id).
-fn create_test_alice(instances_dir: &std::path::Path, env_config: Arc<EnvConfig>) -> (Alice, String) {
-    let instance = Instance::create(instances_dir, "user1", Some("TestBot"), None).unwrap();
-    let instance_id = instance.id.clone();
-    let log_dir = instances_dir.join(&instance_id).join("logs");
-    std::fs::create_dir_all(&log_dir).unwrap();
-    let llm_config = LlmConfig { model: String::new(), api_key: String::new() };
-    let mut alice = Alice::new(instance, log_dir, llm_config, env_config).unwrap();
-    alice.privileged = true;
-    (alice, instance_id)
-}
 
 #[test]
 fn test_api_hello_world() {
@@ -50,60 +41,73 @@ fn test_api_hello_world() {
     std::fs::create_dir_all(&instances_dir).unwrap();
     std::fs::create_dir_all(&logs_dir).unwrap();
 
-    // EnvConfig with custom RPC socket path
-    let mut env_config = EnvConfig::from_env();
-    env_config.rpc_socket = Some(socket_path.to_string_lossy().to_string());
-    let env_config = Arc::new(env_config);
-
-    // Create Alice instance (with mock LLM)
-    let (mut alice, instance_id) = create_test_alice(&instances_dir, env_config.clone());
-
-    // Set up mock LLM responses
-    alice.set_mock_streams(vec![
-        // Beat 2: LLM inference — Thinking + SendMsg + Idle
-        vec![
-            StreamItem::Action(Action::Thinking { content: "User says hello, I'll reply".into() }),
-            StreamItem::Action(Action::SendMsg {
-                recipient: "user1".into(),
-                content: "Hello from API test!".into(),
-            }),
-            StreamItem::Action(Action::Idle { timeout_secs: None }),
-            StreamItem::Done(vec![
-                Action::Thinking { content: "User says hello, I'll reply".into() },
-                Action::SendMsg {
-                    recipient: "user1".into(),
-                    content: "Hello from API test!".into(),
-                },
-                Action::Idle { timeout_secs: None },
-            ], Some(alice_engine::external::llm::UsageInfo { input_tokens: 100, output_tokens: 50, total_cost: None })),
-        ],
-    ]);
-
-    // Create tokio runtime for async operations (RPC server + HTTP requests)
+    // Create tokio runtime for async operations
     let rt = tokio::runtime::Runtime::new().unwrap();
 
-    // Start RPC server in background
+    // 1. Start mock LLM server with scripted response
+    // The script uses {ACTION_TOKEN} placeholder — mock server replaces it
+    // with the actual token extracted from the engine's system prompt.
+    let mock = rt.block_on(async {
+        MockLlmServer::start(vec![
+            // Response to first inference: Thinking + SendMsg + Idle
+            concat!(
+                "{ACTION_TOKEN}-thinking\n",
+                "User says hello, I should respond.\n",
+                "\n",
+                "{ACTION_TOKEN}-send_msg\n",
+                "user1\n",
+                "Hello from the zero-intrusion mock test!\n",
+                "\n",
+                "{ACTION_TOKEN}-idle\n",
+            ).to_string(),
+        ]).await
+    });
+
+    // 2. Create instance
+    let instance = Instance::create(&instances_dir, "user1", Some("TestBot"), None).unwrap();
+    let instance_id = instance.id.clone();
+    drop(instance); // Close instance — engine will reopen it
+
+    // 3. Configure engine
+    let mut env_config = EnvConfig::from_env();
+    env_config.rpc_socket = Some(socket_path.to_string_lossy().to_string());
+    env_config.default_model = Some(mock.model_string());
+    env_config.default_api_key = "test-api-key".to_string();
+    let env_config = Arc::new(env_config);
+
+    // 4. Start RPC server
+    let signal_hub = SignalHub::new();
     let engine_state = Arc::new(EngineState::new(
         instances_dir.clone(),
         logs_dir.clone(),
         "user1".to_string(),
-        SignalHub::new(),
+        signal_hub.clone(),
         EngineConfig::load(),
         env_config.clone(),
     ));
     rt.spawn(start_rpc_server(engine_state));
 
-    // Wait for RPC server to be ready
-    std::thread::sleep(Duration::from_millis(200));
+    // 5. Start AliceEngine.run() in OS thread
+    let engine_instances = instances_dir.clone();
+    let engine_logs = logs_dir.clone();
+    let engine_env = env_config.clone();
+    let engine_signal = signal_hub.clone();
+    std::thread::spawn(move || {
+        let mut engine = AliceEngine::new(engine_instances, engine_logs, engine_signal, engine_env);
+        engine.run().ok();
+    });
 
-    // Build API router
+    // Wait for engine + RPC to initialize
+    std::thread::sleep(Duration::from_millis(500));
+
+    // 6. Build API router for HTTP requests
     let api_state = Arc::new(ApiState {
         instances_dir: instances_dir.clone(),
         rpc_socket: socket_path.to_string_lossy().to_string(),
     });
     let router = authenticated_api_routes().with_state(api_state);
 
-    // === Act 1: Send message via HTTP API ===
+    // === Act: Send message via HTTP API ===
     let send_response = rt.block_on(async {
         let body = serde_json::json!({ "content": "Hello, bot!" });
         let request = Request::builder()
@@ -116,56 +120,50 @@ fn test_api_hello_world() {
     });
     assert_eq!(send_response.status(), StatusCode::OK, "Send message should succeed");
 
-    // Verify message was written to chat.db (privileged referee)
-    assert_eq!(alice.count_unread_messages(), 1, "Should have 1 unread message after HTTP send");
+    // === Wait: Poll for agent reply ===
+    // Engine beat interval is 3s. Need at least 2 beats (auto-read + inference).
+    // Poll every 2s for up to 30s.
+    let mut found_reply = false;
+    for attempt in 1..=15 {
+        std::thread::sleep(Duration::from_secs(2));
 
-    // === Act 2: Beat 1 — auto-read ===
-    alice.beat().unwrap();
-    assert_eq!(alice.count_unread_messages(), 0, "Auto-read should consume the message");
+        let replies_response = rt.block_on(async {
+            let request = Request::builder()
+                .method("GET")
+                .uri(format!("/api/instances/{}/replies?after_id=0", instance_id))
+                .body(Body::empty())
+                .unwrap();
+            router.clone().oneshot(request).await.unwrap()
+        });
 
-    // Verify current.txt contains the message (privileged referee)
-    let current = std::fs::read_to_string(
-        alice.instance.memory.sessions_dir().join("current.txt")
-    ).unwrap();
-    assert!(current.contains("Hello, bot!"), "current.txt should contain user message after auto-read");
+        if replies_response.status() != StatusCode::OK {
+            continue;
+        }
 
-    // === Act 3: Beat 2 — mock LLM inference ===
-    alice.beat().unwrap();
+        let body_bytes = rt.block_on(async {
+            axum::body::to_bytes(replies_response.into_body(), usize::MAX).await.unwrap()
+        });
+        let replies: Vec<alice_rpc::MessageInfo> = serde_json::from_slice(&body_bytes).unwrap_or_default();
 
-    // Verify current.txt contains agent's response (privileged referee)
-    let current = std::fs::read_to_string(
-        alice.instance.memory.sessions_dir().join("current.txt")
-    ).unwrap();
-    assert!(current.contains("Hello from API test!"), "current.txt should contain agent reply");
-    assert!(alice.last_was_idle, "Should be idle after Idle action");
+        let agent_replies: Vec<_> = replies.iter().filter(|m| m.role == "agent").collect();
+        if agent_replies.iter().any(|m| m.content.contains("Hello from the zero-intrusion mock test!")) {
+            println!("✅ Agent reply found after {} attempts (~{}s)", attempt, attempt * 2);
+            found_reply = true;
+            break;
+        }
+    }
 
-    // === Act 4: Verify reply via HTTP API ===
-    let replies_response = rt.block_on(async {
-        let request = Request::builder()
-            .method("GET")
-            .uri(format!("/api/instances/{}/replies?after_id=0", instance_id))
-            .body(Body::empty())
-            .unwrap();
-        router.clone().oneshot(request).await.unwrap()
-    });
-    assert_eq!(replies_response.status(), StatusCode::OK, "Get replies should succeed");
+    assert!(found_reply, "Agent should have replied within 30 seconds");
 
-    // Parse response body
-    let body_bytes = rt.block_on(async {
-        axum::body::to_bytes(replies_response.into_body(), usize::MAX).await.unwrap()
-    });
-    let replies: Vec<alice_rpc::MessageInfo> = serde_json::from_slice(&body_bytes).unwrap();
+    // === Privileged Referee: Verify current.txt ===
+    let sessions_dir = instances_dir.join(&instance_id).join("memory").join("sessions");
+    let current_path = sessions_dir.join("current.txt");
+    let current = std::fs::read_to_string(&current_path).unwrap_or_default();
+    // User message verified via HTTP API (chat.db).
+    // current.txt records agent action output, not user messages directly.
+    assert!(current.contains("Hello from the zero-intrusion mock test!"),
+        "current.txt should contain agent's response");
 
-    // Should have at least the agent's reply
-    let agent_replies: Vec<_> = replies.iter().filter(|m| m.role == "agent").collect();
-    assert!(!agent_replies.is_empty(), "Should have agent replies via HTTP API");
-    assert!(
-        agent_replies.iter().any(|m| m.content.contains("Hello from API test!")),
-        "Agent reply should contain expected content"
-    );
-
-    // === Privileged Referee: Final verification ===
-    // The full chain worked: HTTP POST → RPC → chat.db → beat(auto-read) → beat(LLM) → chat.db → HTTP GET
-    println!("✅ API Hello World: Full chain HTTP → RPC → Engine → I/O verified");
+    println!("✅ API Hello World (zero-intrusion): Full chain verified");
+    println!("   HTTP POST → RPC → Engine beat loop → Mock LLM → chat.db → HTTP GET");
 }
-

@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 description = "Integration tests: API layer → RPC → Engine end-to-end"
 
-# No lib or bin — tests only
 [lib]
 name = "alice_integration"
 path = "src/lib.rs"
@@ -20,3 +19,4 @@ axum = "0.8"
 tower = "0.5"
 http-body-util = "0.1"
 hyper = "1"
+regex = "1"
