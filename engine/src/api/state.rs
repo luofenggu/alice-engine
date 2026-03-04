@@ -121,8 +121,8 @@ impl EngineState {
         let store = self.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let ch = store.get_chat(&instance_id)?;
-            let ch = ch.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = store.open(&instance_id)?;
+            let ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(after) = after_id {
                 let rows = ch.get_messages_after(after, limit)?;
                 let messages: Vec<MessageInfo> = rows.into_iter().map(|(id, role, content, timestamp)| {
@@ -169,8 +169,8 @@ impl EngineState {
         let name = instance_id.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let ch = store.get_chat(&name)?;
-            let mut ch = ch.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = store.open(&name)?;
+            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
             let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
             let id = ch.write_user_message(&user_id, &content, &timestamp)?;
             info!("[MSG] API: message sent to {}, id={}", name, id);
@@ -189,8 +189,8 @@ impl EngineState {
         let store = self.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let ch = store.get_chat(&instance_id)?;
-            let ch = ch.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = store.open(&instance_id)?;
+            let ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
             ch.get_agent_replies_after(after_id)
         }).await;
 

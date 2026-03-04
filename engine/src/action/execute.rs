@@ -62,7 +62,7 @@ fn execute_idle(_alice: &mut Alice, tx: &mut Transaction, timeout_secs: Option<u
 fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
     info!("[ACTION-{}] read_msg", tx.instance_id);
 
-    let messages = alice.instance.chat.read_unread_user_messages()
+    let messages = alice.instance.chat.lock().unwrap().read_unread_user_messages()
         .context("Failed to read unread messages")?;
 
     if messages.is_empty() {
@@ -87,7 +87,7 @@ fn execute_send_msg(alice: &mut Alice, tx: &mut Transaction, recipient: &str, co
     }
 
     let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
-    alice.instance.chat.write_agent_reply(&alice.instance.id, content, &timestamp)
+    alice.instance.chat.lock().unwrap().write_agent_reply(&alice.instance.id, content, &timestamp)
         .context("Failed to write agent reply")?;
 
     Ok(out::send_success(&timestamp))
@@ -448,8 +448,8 @@ mod tests {
     #[test]
     fn test_execute_read_msg_with_messages() {
         let (mut alice, mut tx, _tmp) = setup();
-        alice.instance.chat.write_user_message("24007", "hello agent", "20260220120000").unwrap();
-        alice.instance.chat.write_user_message("24007", "how are you?", "20260220120001").unwrap();
+        alice.instance.chat.lock().unwrap().write_user_message("24007", "hello agent", "20260220120000").unwrap();
+        alice.instance.chat.lock().unwrap().write_user_message("24007", "how are you?", "20260220120001").unwrap();
 
         let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).unwrap();
         assert!(result.contains("24007"));
@@ -458,7 +458,7 @@ mod tests {
         // Verify MSG timestamp markers
         assert!(result.contains("[MSG:20260220120000]"));
         assert!(result.contains("[MSG:20260220120001]"));
-        assert_eq!(alice.instance.chat.count_unread_user_messages().unwrap(), 0);
+        assert_eq!(alice.instance.chat.lock().unwrap().count_unread_user_messages().unwrap(), 0);
     }
 
     #[test]
@@ -473,7 +473,7 @@ mod tests {
         // Verify MSG timestamp marker in result
         assert!(result.contains("[MSG:"));
 
-        let replies = alice.instance.chat.read_unread_agent_replies().unwrap();
+        let replies = alice.instance.chat.lock().unwrap().read_unread_agent_replies().unwrap();
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].1, "hello user!");
     }

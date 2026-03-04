@@ -127,8 +127,9 @@ test('Settings, Privilege, and Knowledge — end-to-end', async ({ page, context
   await expect(knowledgeInstances.first()).toBeVisible({ timeout: 5000 });
   console.log('✅ Knowledge page shows instances');
 
-  // Click first instance to view knowledge
-  await knowledgeInstances.first().click();
+  // Click the instance we wrote knowledge to (Test Bot)
+  const testBotItem = knowledgePage.locator('#instanceList .instance-item', { hasText: 'Test Bot' });
+  await testBotItem.click();
 
   // Verify knowledge content rendered as k-sections (not empty-state)
   const kSection = knowledgePage.locator('#contentArea .k-section');

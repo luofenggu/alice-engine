@@ -535,7 +535,7 @@ impl Alice {
 
     /// Count unread user messages (delegates to ChatHistory).
     pub fn count_unread_messages(&self) -> i64 {
-        self.instance.chat.count_unread_user_messages().unwrap_or(0)
+        self.instance.chat.lock().unwrap().count_unread_user_messages().unwrap_or(0)
     }
 
     /// Set inference backoff after a failure. Returns the backoff duration in seconds.
@@ -562,7 +562,7 @@ impl Alice {
         self.instance.memory.append_current(&marker).ok();
 
         let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
-        self.instance.chat.write_agent_reply(
+        self.instance.chat.lock().unwrap().write_agent_reply(
             &self.instance.id,
             message,
             &timestamp,

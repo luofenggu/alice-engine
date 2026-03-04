@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use tracing::info;
 
@@ -32,8 +33,8 @@ pub struct Instance {
     pub settings: Document<InstanceSettings>,
     /// Memory subsystem (knowledge, history, current, sessions).
     pub memory: Memory,
-    /// Chat history (SQLite in data/chat.db).
-    pub chat: ChatHistory,
+    /// Chat history (SQLite connection, shared via Arc for reuse).
+    pub chat: Arc<Mutex<ChatHistory>>,
     /// Workspace root path (instance_dir/workspace).
     pub workspace: PathBuf,
 }
@@ -120,7 +121,7 @@ impl Instance {
             instance_dir,
             settings,
             memory,
-            chat,
+            chat: Arc::new(Mutex::new(chat)),
             workspace,
         })
     }
@@ -202,6 +203,54 @@ impl Instance {
             instance_dir: instance_dir.to_path_buf(),
             settings,
             memory,
+            chat: Arc::new(Mutex::new(chat)),
+            workspace,
+        })
+    }
+
+    /// Open with an injected (cached) chat connection.
+    pub fn open_with_chat(instance_dir: &Path, chat: Arc<Mutex<ChatHistory>>) -> Result<Self> {
+        let id = instance_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Invalid instance directory: {}", instance_dir.display()))?
+            .to_string();
+
+        let memory_dir = instance_dir.join("memory");
+        let knowledge_dir = memory_dir.join("knowledge");
+        let workspace = instance_dir.join("workspace");
+        let data_dir = instance_dir.join("data");
+
+        // Ensure directories exist (backward compatibility)
+        std::fs::create_dir_all(&memory_dir)
+            .with_context(|| format!("Failed to create memory dir: {}", memory_dir.display()))?;
+        std::fs::create_dir_all(&knowledge_dir)
+            .with_context(|| format!("Failed to create knowledge dir: {}", knowledge_dir.display()))?;
+        std::fs::create_dir_all(&workspace)
+            .with_context(|| format!("Failed to create workspace dir: {}", workspace.display()))?;
+        std::fs::create_dir_all(&data_dir)
+            .with_context(|| format!("Failed to create data dir: {}", data_dir.display()))?;
+
+        // One-time migration: keypoints.md + knowledge/*.md → knowledge.md
+        let knowledge_file = memory_dir.join(crate::inference::beat::KNOWLEDGE_FILE);
+        if !knowledge_file.exists() {
+            Self::migrate_knowledge(&knowledge_dir, &knowledge_file, &id)?;
+        }
+
+        let settings_path = instance_dir.join(SETTINGS_FILE);
+        let settings = Document::open(&settings_path)
+            .with_context(|| format!("Failed to open settings: {}", settings_path.display()))?;
+
+        let memory = Memory::open(&memory_dir)
+            .context("Failed to open memory")?;
+
+        info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
+
+        Ok(Self {
+            id,
+            instance_dir: instance_dir.to_path_buf(),
+            settings,
+            memory,
             chat,
             workspace,
         })
@@ -272,15 +321,15 @@ impl Instance {
 ///   Memory (child) — manages memory files
 pub struct InstanceStore {
     instances_dir: PathBuf,
-    /// Cached ChatHistory connections per instance (connection reuse).
-    chat_cache: std::sync::Arc<std::sync::RwLock<HashMap<String, std::sync::Arc<std::sync::Mutex<ChatHistory>>>>>,
+    /// SQLite connections — the only resource that needs reuse.
+    connections: Arc<std::sync::RwLock<HashMap<String, Arc<Mutex<ChatHistory>>>>>,
 }
 
 impl Clone for InstanceStore {
     fn clone(&self) -> Self {
         Self {
             instances_dir: self.instances_dir.clone(),
-            chat_cache: self.chat_cache.clone(),
+            connections: self.connections.clone(),
         }
     }
 }
@@ -290,13 +339,36 @@ impl InstanceStore {
     pub fn new(instances_dir: PathBuf) -> Self {
         Self {
             instances_dir,
-            chat_cache: std::sync::Arc::new(std::sync::RwLock::new(HashMap::new())),
+            connections: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 
     /// The root directory containing all instances.
     pub fn instances_dir(&self) -> &Path {
         &self.instances_dir
+    }
+
+    /// Get or create a cached SQLite connection for an instance.
+    fn get_connection(&self, id: &str) -> Result<Arc<Mutex<ChatHistory>>> {
+        // Fast path: read lock
+        {
+            let cache = self.connections.read().unwrap();
+            if let Some(ch) = cache.get(id) {
+                return Ok(ch.clone());
+            }
+        }
+        // Slow path: write lock, open connection
+        let mut cache = self.connections.write().unwrap();
+        // Double-check after acquiring write lock
+        if let Some(ch) = cache.get(id) {
+            return Ok(ch.clone());
+        }
+        let instance_dir = self.instances_dir.join(id);
+        let chat_db_path = instance_dir.join("data").join("chat.db");
+        let ch = ChatHistory::open(&chat_db_path)?;
+        let arc = Arc::new(Mutex::new(ch));
+        cache.insert(id.to_string(), arc.clone());
+        Ok(arc)
     }
 
     /// Create a new instance atomically.
@@ -307,39 +379,21 @@ impl InstanceStore {
         knowledge: Option<&str>,
         initial_settings: Option<&SettingsUpdate>,
     ) -> Result<Instance> {
-        Instance::create(&self.instances_dir, user_id, display_name, knowledge, initial_settings)
+        let instance = Instance::create(&self.instances_dir, user_id, display_name, knowledge, initial_settings)?;
+        // Cache the connection from the newly created instance
+        let mut cache = self.connections.write().unwrap();
+        cache.insert(instance.id.clone(), instance.chat.clone());
+        Ok(instance)
     }
 
-    /// Open an existing instance by ID.
+    /// Open an existing instance by ID (with cached SQLite connection).
     pub fn open(&self, id: &str) -> Result<Instance> {
         let instance_dir = self.instances_dir.join(id);
         if !instance_dir.exists() {
             anyhow::bail!("Instance not found: {}", id);
         }
-        Instance::open(&instance_dir)
-    }
-
-    /// Get or create a cached ChatHistory connection for an instance.
-    pub fn get_chat(&self, id: &str) -> Result<std::sync::Arc<std::sync::Mutex<ChatHistory>>> {
-        // Fast path: read lock
-        {
-            let cache = self.chat_cache.read().unwrap();
-            if let Some(ch) = cache.get(id) {
-                return Ok(ch.clone());
-            }
-        }
-        // Slow path: write lock, open connection
-        let mut cache = self.chat_cache.write().unwrap();
-        // Double-check after acquiring write lock
-        if let Some(ch) = cache.get(id) {
-            return Ok(ch.clone());
-        }
-        let instance_dir = self.instances_dir.join(id);
-        let chat_db_path = instance_dir.join("data").join("chat.db");
-        let ch = ChatHistory::open(&chat_db_path)?;
-        let arc = std::sync::Arc::new(std::sync::Mutex::new(ch));
-        cache.insert(id.to_string(), arc.clone());
-        Ok(arc)
+        let chat = self.get_connection(id)?;
+        Instance::open_with_chat(&instance_dir, chat)
     }
 
     /// Delete an instance by moving it to .trash directory.
@@ -368,7 +422,7 @@ impl InstanceStore {
             .with_context(|| format!("Failed to move {} to trash", id))?;
 
         // Clear cached connection
-        if let Ok(mut cache) = self.chat_cache.write() {
+        if let Ok(mut cache) = self.connections.write() {
             cache.remove(id);
         }
 

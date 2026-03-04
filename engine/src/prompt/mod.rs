@@ -26,7 +26,7 @@ pub fn extract_session_block_data(block_entries: &[crate::persist::SessionBlockE
 
         // Fetch chat messages from database (raw, no truncation here)
         if !entry.first_msg.is_empty() && !entry.last_msg.is_empty() {
-            if let Ok(db_messages) = alice.instance.chat.read_messages_in_range(&entry.first_msg, &entry.last_msg) {
+            if let Ok(db_messages) = alice.instance.chat.lock().unwrap().read_messages_in_range(&entry.first_msg, &entry.last_msg) {
                 for msg in &db_messages {
                     messages.push(PromptMessage {
                         sender: msg.sender.clone(),
@@ -134,8 +134,8 @@ mod tests {
     #[test]
     fn test_extract_session_block_data() {
         let (mut alice, _tmp) = setup_alice();
-        alice.instance.chat.write_user_message("24007", "hello world", "20260223155500").unwrap();
-        alice.instance.chat.write_agent_reply("alice", "hi back", "20260223155600").unwrap();
+        alice.instance.chat.lock().unwrap().write_user_message("24007", "hello world", "20260223155500").unwrap();
+        alice.instance.chat.lock().unwrap().write_agent_reply("alice", "hi back", "20260223155600").unwrap();
 
         let block_entries = vec![crate::persist::SessionBlockEntry {
             first_msg: "20260223155500".to_string(),
@@ -187,7 +187,7 @@ mod tests {
     fn test_build_beat_request_with_session_block() {
         let (mut alice, _tmp) = setup_alice();
         alice.instance.memory.history.write("some history").unwrap();
-        alice.instance.chat.write_user_message("24007", "hi there", "20260223120000").unwrap();
+        alice.instance.chat.lock().unwrap().write_user_message("24007", "hi there", "20260223120000").unwrap();
         let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
         alice.instance.memory.append_session_block("20260223120000", jsonl).unwrap();
 
