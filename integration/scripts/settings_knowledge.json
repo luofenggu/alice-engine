@@ -1,0 +1,6 @@
+[
+  {
+    "response": "{ACTION_TOKEN}-thinking\nUser is testing settings.\n\n{ACTION_TOKEN}-send_msg\ntest-user\nSettings test response.\n\n{ACTION_TOKEN}-idle\n",
+    "expected_user_contains": null
+  }
+]
