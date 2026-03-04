@@ -96,13 +96,15 @@ test('Settings, Privilege, and Knowledge — end-to-end', async ({ page, context
   await page.waitForSelector('#settingsOverlay', { state: 'hidden', timeout: 5000 });
 
   // === Step 6: Prepare knowledge content ===
-  // Get instance ID from API
+  // Get instance ID from API — find the "Test Bot" instance specifically
   const instances = await page.evaluate(async () => {
     const res = await fetch('api/instances');
     return res.json();
   });
-  const instanceId = instances[0].id;
-  console.log(`Instance ID: ${instanceId}`);
+  const testBotInstance = instances.find(i => i.name === 'Test Bot');
+  if (!testBotInstance) throw new Error(`Test Bot instance not found. Available: ${JSON.stringify(instances.map(i => ({id: i.id, name: i.name})))}`);
+  const instanceId = testBotInstance.id;
+  console.log(`Instance ID: ${instanceId} (found ${instances.length} instances total)`);
 
   // Write test knowledge file directly to instance directory
   const fs = require('fs');
