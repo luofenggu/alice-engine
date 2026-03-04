@@ -374,7 +374,7 @@ impl Alice {
             log_dir,
             current_infer_log_path: None,
             llm_client,
-            last_was_idle: false,
+            last_was_idle: true,
             idle_timeout_secs: None,
             idle_since: None,
             privileged: false,
@@ -1169,7 +1169,7 @@ mod scripted_tests {
 
         // Verify initial state
         assert_eq!(alice.count_unread_messages(), 0);
-        assert!(!alice.last_was_idle);
+        assert!(alice.last_was_idle, "initial state should be idle (wait for user)");
 
         // === Act 1: User sends a message ===
         alice.instance.chat.write_user_message("user1", "你好，小白！", "20260301120000").unwrap();
@@ -1182,7 +1182,7 @@ mod scripted_tests {
         assert_eq!(alice.count_unread_messages(), 0);
         let current = std::fs::read_to_string(alice.instance.memory.sessions_dir().join("current.txt")).unwrap();
         assert!(current.contains("你好，小白！"), "current should contain the user message after auto-read");
-        assert!(!alice.last_was_idle, "auto-read should not set last_was_idle");
+        assert!(alice.last_was_idle, "auto-read should not change last_was_idle");
 
         // === Act 3: Second beat — LLM inference (mock) ===
         alice.set_mock_streams(vec![

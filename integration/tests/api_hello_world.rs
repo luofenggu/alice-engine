@@ -25,7 +25,7 @@ use alice_engine::policy::{EngineConfig, EnvConfig};
 use alice_engine::rpc::{EngineState, start_rpc_server};
 
 use alice_frontend::api::{authenticated_api_routes, ApiState};
-use alice_integration::mock_llm::MockLlmServer;
+use alice_integration::mock_llm::{MockLlmServer, MockScript};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -50,16 +50,19 @@ fn test_api_hello_world() {
     let mock = rt.block_on(async {
         MockLlmServer::start(vec![
             // Response to first inference: Thinking + SendMsg + Idle
-            concat!(
-                "{ACTION_TOKEN}-thinking\n",
-                "User says hello, I should respond.\n",
-                "\n",
-                "{ACTION_TOKEN}-send_msg\n",
-                "user1\n",
-                "Hello from the zero-intrusion mock test!\n",
-                "\n",
-                "{ACTION_TOKEN}-idle\n",
-            ).to_string(),
+            MockScript::with_user_assert(
+                concat!(
+                    "{ACTION_TOKEN}-thinking\n",
+                    "User says hello, I should respond.\n",
+                    "\n",
+                    "{ACTION_TOKEN}-send_msg\n",
+                    "user1\n",
+                    "Hello from the zero-intrusion mock test!\n",
+                    "\n",
+                    "{ACTION_TOKEN}-idle\n",
+                ),
+                "Hello",
+            ),
         ]).await
     });
 
