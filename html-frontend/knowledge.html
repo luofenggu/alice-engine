@@ -126,9 +126,9 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: -
         if (!data) return;
         const list = document.getElementById('instanceList');
         list.innerHTML = '';
-        data.sort((a, b) => (b.knowledgeSize || 0) - (a.knowledgeSize || 0));
+        data.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
         for (const inst of data) {
-            const size = inst.knowledgeSize || 0;
+            const size = 0;
             const level = getWaterLevel(size);
             const pct = Math.min(100, (size / 1024 / 70) * 100);
             const item = document.createElement('div');
@@ -137,7 +137,7 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: -
                 <div class="instance-header">
                     <div class="instance-avatar" style="background:${inst.color || '#6c5ce7'}">${inst.avatar || '🤖'}</div>
                     <div>
-                        <div class="instance-name">${escHtml(inst.displayName || inst.name)}</div>
+                        <div class="instance-name">${escHtml(inst.name)}</div>
                         <div class="instance-id">${inst.id}</div>
                     </div>
                 </div>

@@ -1857,7 +1857,7 @@ async function togglePrivileged() {
     const currentVal = inst && inst.privileged;
     const newVal = !currentVal;
     const res = await api("POST", "/api/instances/" + currentInstance + "/settings", { privileged: newVal });
-    if (res && res.status === "ok") {
+    if (res && res.success) {
         if (inst) inst.privileged = newVal;
         updatePrivilegedBtn();
         frontendLog("INFO", "privileged", currentInstance + " privileged=" + newVal);
