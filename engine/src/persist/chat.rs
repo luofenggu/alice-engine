@@ -32,7 +32,7 @@ impl Message {
     /// Role value: user message
     const ROLE_USER: &'static str = "user";
     /// Role value: agent/assistant message
-    pub const ROLE_AGENT: &'static str = "agent";
+    const ROLE_AGENT: &'static str = "agent";
     /// Read status: already consumed
     const STATUS_READ: &'static str = "read";
     /// Read status: waiting to be consumed
@@ -322,14 +322,14 @@ impl ChatHistory {
     }
 
     /// Get agent replies with id > after_id (for polling without read_status).
-    /// Returns Vec<(id, content, timestamp)>.
-    pub fn get_agent_replies_after(&self, after_id: i64) -> Result<Vec<(i64, String, String)>> {
+    /// Returns Vec<(id, role, content, timestamp)>.
+    pub fn get_agent_replies_after(&self, after_id: i64) -> Result<Vec<(i64, String, String, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, timestamp FROM messages WHERE role = ? AND id > ? ORDER BY id"
+            "SELECT id, role, content, timestamp FROM messages WHERE role = ? AND id > ? ORDER BY id"
         )?;
-        let replies: Vec<(i64, String, String)> = stmt.query_map(
+        let replies: Vec<(i64, String, String, String)> = stmt.query_map(
             rusqlite::params![Message::ROLE_AGENT, after_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?.filter_map(|r| r.ok()).collect();
         Ok(replies)
     }

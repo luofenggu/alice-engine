@@ -204,8 +204,8 @@ impl EngineState {
 
         match result {
             Ok(Ok(replies)) => {
-                replies.into_iter().map(|(id, content, timestamp)| {
-                    MessageInfo { id, role: crate::persist::chat::Message::ROLE_AGENT.to_string(), content, timestamp }
+                replies.into_iter().map(|(id, role, content, timestamp)| {
+                    MessageInfo { id, role, content, timestamp }
                 }).collect()
             }
             Ok(Err(e)) => {
