@@ -83,6 +83,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "alice-integration"
+version = "0.1.0"
+dependencies = [
+ "alice-engine",
+ "alice-frontend",
+ "alice-rpc",
+ "axum",
+ "http-body-util",
+ "hyper",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "alice-rpc"
 version = "0.1.0"
 dependencies = [
