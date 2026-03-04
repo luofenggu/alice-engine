@@ -128,7 +128,12 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: -
         list.innerHTML = '';
         data.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
         for (const inst of data) {
-            const size = 0;
+            let size = 0;
+            try {
+                const kData = await apiFetch(`/api/instances/${inst.id}/knowledge`);
+                const kContent = typeof kData === 'string' ? kData : (kData && kData.content || '');
+                size = new TextEncoder().encode(kContent).length;
+            } catch(e) {}
             const level = getWaterLevel(size);
             const pct = Math.min(100, (size / 1024 / 70) * 100);
             const item = document.createElement('div');
