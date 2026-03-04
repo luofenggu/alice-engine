@@ -184,21 +184,20 @@ impl EngineState {
         }
     }
 
-    /// Get replies after a given message ID (polling).
+    /// Get agent replies after a given message ID (polling).
     pub async fn get_replies_after(&self, instance_id: String, after_id: i64) -> Vec<MessageInfo> {
         let store = self.instance_store.clone();
-        let max_page = self.engine_config.rpc.max_page_size;
 
         let result = tokio::task::spawn_blocking(move || {
             let ch = store.get_chat(&instance_id)?;
             let ch = ch.lock().unwrap_or_else(|e| e.into_inner());
-            ch.get_messages_after(after_id, max_page)
+            ch.get_agent_replies_after(after_id)
         }).await;
 
         match result {
-            Ok(Ok(messages)) => {
-                messages.into_iter().map(|(id, role, content, timestamp)| {
-                    MessageInfo { id, role, content, timestamp }
+            Ok(Ok(replies)) => {
+                replies.into_iter().map(|(id, content, timestamp)| {
+                    MessageInfo { id, role: "agent".to_string(), content, timestamp }
                 }).collect()
             }
             Ok(Err(e)) => {

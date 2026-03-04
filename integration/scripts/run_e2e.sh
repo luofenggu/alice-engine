@@ -77,8 +77,9 @@ ALICE_INSTANCES_DIR="$INSTANCES_DIR" \
 ALICE_LOGS_DIR="$LOGS_DIR" \
 ALICE_AUTH_SECRET="$AUTH_SECRET" \
 ALICE_USER_ID="test-user" \
-ALICE_DEFAULT_MODEL="http://127.0.0.1:$MOCK_LLM_PORT/v1/chat/completions@test-model" \
+ALICE_DEFAULT_MODEL="mock@test-model" \
 ALICE_DEFAULT_API_KEY="test-api-key" \
+ALICE_LLM_PROVIDER_URL="http://127.0.0.1:$MOCK_LLM_PORT/v1/chat/completions" \
 "$ENGINE_BIN" &
 ENGINE_PID=$!
 
