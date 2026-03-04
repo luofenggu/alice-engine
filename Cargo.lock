@@ -41,6 +41,7 @@ dependencies = [
  "mockall",
  "rand 0.8.5",
  "reqwest",
+ "route-macro",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1333,6 +1334,15 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "route-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

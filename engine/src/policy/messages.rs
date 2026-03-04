@@ -160,6 +160,10 @@ pub fn empty_placeholder() -> &'static str {
     "(空)"
 }
 
+pub fn global_settings_updated() -> String {
+    "Global settings updated".to_string()
+}
+
 pub fn session_summary(summary: &str) -> String {
     format!("[总结] {}", summary)
 }

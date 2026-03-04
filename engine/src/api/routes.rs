@@ -4,14 +4,15 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path as AxumPath, Query, State},
-    http::{header, HeaderMap, Method, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, delete, get, post},
     Json, Router,
 };
+use route_macro::*;
 use serde::Deserialize;
 
-
+use super::http_protocol;
 use super::state::EngineState;
 use super::types::*;
 
@@ -58,10 +59,12 @@ pub struct CreateInstanceBody {
 
 // ── Instance Handlers ──
 
+#[get("/api/instances")]
 async fn handle_get_instances(State(state): State<Arc<EngineState>>) -> Response {
     json_ok(state.get_instances().await)
 }
 
+#[post("/api/instances")]
 async fn handle_create_instance(
     State(state): State<Arc<EngineState>>,
     Json(body): Json<CreateInstanceBody>,
@@ -70,6 +73,7 @@ async fn handle_create_instance(
     json_ok(state.create_instance(name, body.settings).await)
 }
 
+#[delete("/api/instances/{id}")]
 async fn handle_delete_instance(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -79,18 +83,20 @@ async fn handle_delete_instance(
 
 // ── Message Handlers ──
 
+#[get("/api/instances/{id}/messages")]
 async fn handle_get_messages(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
     Query(query): Query<MessagesQuery>,
 ) -> Response {
-    let limit = query.limit.unwrap_or(50);
+    let limit = query.limit.unwrap_or(http_protocol::DEFAULT_MESSAGE_LIMIT);
     match state.get_messages(id, query.before_id, query.after_id, limit).await {
         Ok(result) => json_ok(result),
         Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
 
+#[post("/api/instances/{id}/messages")]
 async fn handle_send_message(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -99,6 +105,7 @@ async fn handle_send_message(
     json_ok(state.send_message(id, body.content).await)
 }
 
+#[get("/api/instances/{id}/replies")]
 async fn handle_get_replies(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -109,6 +116,7 @@ async fn handle_get_replies(
 
 // ── Observe & Control ──
 
+#[get("/api/instances/{id}/observe")]
 async fn handle_observe(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -116,6 +124,7 @@ async fn handle_observe(
     json_ok(state.observe(id).await)
 }
 
+#[post("/api/instances/{id}/interrupt")]
 async fn handle_interrupt(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -125,12 +134,14 @@ async fn handle_interrupt(
 
 // ── Settings ──
 
+#[get("/api/settings")]
 async fn handle_get_global_settings(
     State(state): State<Arc<EngineState>>,
 ) -> Response {
     json_ok(state.get_global_settings().await)
 }
 
+#[post("/api/settings")]
 async fn handle_update_global_settings(
     State(state): State<Arc<EngineState>>,
     Json(update): Json<SettingsUpdate>,
@@ -138,6 +149,7 @@ async fn handle_update_global_settings(
     json_ok(state.update_global_settings(update).await)
 }
 
+#[get("/api/instances/{id}/settings")]
 async fn handle_get_settings(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -145,22 +157,19 @@ async fn handle_get_settings(
     let settings = state.get_settings(id).await;
     // Mask API keys for security
     let mut val = serde_json::to_value(&settings).unwrap_or_default();
-    mask_api_keys(&mut val);
-    json_ok(val)
-}
-
-fn mask_api_keys(val: &mut serde_json::Value) {
     if let Some(obj) = val.as_object_mut() {
-        if let Some(key) = obj.get_mut("api_key") {
-            if let Some(s) = key.as_str() {
-                if s.len() > 8 {
-                    *key = serde_json::Value::String(format!("{}...{}", &s[..4], &s[s.len()-4..]));
+        if let Some(key_val) = obj.get_mut(http_protocol::API_KEY_FIELD_NAME) {
+            if let Some(s) = key_val.as_str() {
+                if s.len() > http_protocol::API_KEY_MASK_MIN_LEN {
+                    *key_val = serde_json::Value::String(http_protocol::mask_api_key(s));
                 }
             }
         }
     }
+    json_ok(val)
 }
 
+#[post("/api/instances/{id}/settings")]
 async fn handle_update_settings(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -171,6 +180,7 @@ async fn handle_update_settings(
 
 // ── Files & Knowledge ──
 
+#[get("/api/instances/{id}/files/list")]
 async fn handle_file_list(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -180,6 +190,7 @@ async fn handle_file_list(
     json_ok(state.list_files(id, path).await)
 }
 
+#[get("/api/instances/{id}/files/read")]
 async fn handle_file_read(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -189,6 +200,7 @@ async fn handle_file_read(
     json_ok(state.read_file(id, path).await)
 }
 
+#[get("/api/instances/{id}/knowledge")]
 async fn handle_get_knowledge(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -196,6 +208,7 @@ async fn handle_get_knowledge(
     json_ok(state.get_knowledge(id).await)
 }
 
+#[get("/api/instances/{id}/skill")]
 async fn handle_get_skill(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
@@ -203,36 +216,39 @@ async fn handle_get_skill(
     json_ok(state.get_skill(id).await)
 }
 
+#[put("/api/instances/{id}/skill")]
 async fn handle_update_skill(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
     body: String,
 ) -> Response {
     match state.update_skill(id, body).await {
-        Ok(()) => json_ok("ok"),
+        Ok(()) => json_ok(serde_json::json!({"status": "ok"})),
         Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }
 
 // ── Static File Serving ──
 
+#[get("/serve/{id}/{*path}")]
 async fn handle_serve_static(
     State(state): State<Arc<EngineState>>,
     AxumPath((instance_id, path)): AxumPath<(String, String)>,
 ) -> Response {
-    let workspace = state.instance_store.instances_dir().join(&instance_id).join("workspace");
+    let workspace = state.instance_store.workspace_dir(&instance_id);
     serve_workspace_file(&workspace, &path).await
 }
 
 /// Public static files — only apps/ directory, no auth required.
+#[get("/public/{id}/{*path}")]
 pub async fn handle_public_static(
     State(state): State<Arc<EngineState>>,
     AxumPath((instance_id, path)): AxumPath<(String, String)>,
 ) -> Response {
-    if !path.starts_with("apps/") {
+    if !path.starts_with(http_protocol::PUBLIC_DIR_PREFIX) {
         return json_error(StatusCode::FORBIDDEN, "Public access only allowed for apps/ directory");
     }
-    let workspace = state.instance_store.instances_dir().join(&instance_id).join("workspace");
+    let workspace = state.instance_store.workspace_dir(&instance_id);
     serve_workspace_file(&workspace, &path).await
 }
 
@@ -256,7 +272,8 @@ async fn serve_workspace_file(workspace: &std::path::Path, rel_path: &str) -> Re
         return json_error(StatusCode::NOT_FOUND, "File not found");
     }
 
-    let content_type = guess_content_type(&target);
+    let ext = target.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let content_type = http_protocol::content_type_for_extension(&ext);
     match tokio::fs::read(&target).await {
         Ok(data) => {
             let mut headers = HeaderMap::new();
@@ -267,91 +284,39 @@ async fn serve_workspace_file(workspace: &std::path::Path, rel_path: &str) -> Re
     }
 }
 
-fn guess_content_type(path: &std::path::Path) -> &'static str {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    match ext.as_str() {
-        "html" | "htm" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" => "application/javascript; charset=utf-8",
-        "json" => "application/json; charset=utf-8",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "svg" => "image/svg+xml",
-        "ico" => "image/x-icon",
-        "txt" | "md" => "text/plain; charset=utf-8",
-        "pdf" => "application/pdf",
-        "zip" => "application/zip",
-        "wasm" => "application/wasm",
-        "mp3" => "audio/mpeg",
-        "mp4" => "video/mp4",
-        "webp" => "image/webp",
-        "webm" => "video/webm",
-        _ => "application/octet-stream",
-    }
-}
-
 // ── Reverse Proxy ──
 
+#[any_method("/proxy/{*path}")]
 pub async fn handle_proxy(
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
-    method: Method,
+    method: axum::http::Method,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     let path = uri.path();
-    let rest = match path.strip_prefix("/proxy/") {
+    let rest = match path.strip_prefix(http_protocol::PROXY_PATH_PREFIX) {
         Some(r) => r,
         None => return json_error(StatusCode::BAD_REQUEST, "Invalid proxy path"),
     };
 
-    let (port_str, target_path) = match rest.find('/') {
-        Some(pos) => (&rest[..pos], &rest[pos..]),
-        None => (rest, "/"),
+    let (port, target_path) = match http_protocol::parse_proxy_target(rest) {
+        Some(result) => result,
+        None => return json_error(StatusCode::BAD_REQUEST, "Invalid port (must be >= 1024)"),
     };
 
-    let port: u16 = match port_str.parse() {
-        Ok(p) if p >= 1024 => p,
-        _ => return json_error(StatusCode::BAD_REQUEST, "Invalid port (must be >= 1024)"),
-    };
-
-    let mut target_url = format!("http://localhost:{}{}", port, target_path);
-    if let Some(query) = uri.query() {
-        target_url.push('?');
-        target_url.push_str(query);
-    }
+    let target_url = http_protocol::build_proxy_url(port, target_path, uri.query());
 
     let client = reqwest::Client::new();
-    let req_method = match method.as_str() {
-        "GET" => reqwest::Method::GET,
-        "POST" => reqwest::Method::POST,
-        "PUT" => reqwest::Method::PUT,
-        "DELETE" => reqwest::Method::DELETE,
-        "PATCH" => reqwest::Method::PATCH,
-        "HEAD" => reqwest::Method::HEAD,
-        "OPTIONS" => reqwest::Method::OPTIONS,
-        _ => reqwest::Method::GET,
-    };
+    let req_method = http_protocol::to_reqwest_method(&method);
 
     let mut req = client.request(req_method, &target_url);
-
-    // Forward request headers (skip hop-by-hop)
-    for (name, value) in headers.iter() {
-        match name.as_str() {
-            "host" | "connection" | "keep-alive" | "transfer-encoding" | "te" | "trailer" | "upgrade" => {}
-            _ => {
-                if let Ok(v) = value.to_str() {
-                    req = req.header(name.as_str(), v);
-                }
-            }
-        }
-    }
+    req = http_protocol::forward_request_headers(&headers, req);
 
     if !body.is_empty() {
         req = req.body(body.to_vec());
     }
 
-    let proxy_prefix = format!("/proxy/{}", port);
+    let proxy_prefix = http_protocol::build_proxy_prefix(port);
 
     match req.send().await {
         Ok(resp) => {
@@ -359,28 +324,11 @@ pub async fn handle_proxy(
             let mut out_headers = HeaderMap::new();
 
             for (name, value) in resp.headers().iter() {
-                let name_str = name.as_str().to_lowercase();
                 if let Ok(val_str) = value.to_str() {
-                    match name_str.as_str() {
-                        "location" => {
-                            let rewritten = if val_str.starts_with('/') && !val_str.starts_with(&proxy_prefix) {
-                                format!("{}{}", proxy_prefix, val_str)
-                            } else {
-                                val_str.to_string()
-                            };
-                            if let Ok(v) = rewritten.parse() {
-                                out_headers.insert(name.clone(), v);
-                            }
-                        }
-                        "set-cookie" => {
-                            let rewritten = rewrite_cookie_path(val_str, &proxy_prefix);
-                            if let Ok(v) = rewritten.parse() {
-                                out_headers.append(name.clone(), v);
-                            }
-                        }
-                        "connection" | "keep-alive" | "transfer-encoding" | "te" | "trailer" => {}
-                        _ => {
-                            if let Ok(hv) = val_str.parse() {
+                    match http_protocol::process_proxy_response_header(name.as_str(), val_str, &proxy_prefix) {
+                        None => {} // hop-by-hop header, strip it
+                        Some(rewritten) => {
+                            if let Ok(hv) = rewritten.parse() {
                                 out_headers.append(name.clone(), hv);
                             }
                         }
@@ -395,52 +343,40 @@ pub async fn handle_proxy(
     }
 }
 
-fn rewrite_cookie_path(cookie: &str, proxy_prefix: &str) -> String {
-    let lower = cookie.to_lowercase();
-    if let Some(idx) = lower.find("path=/") {
-        let path_start = idx + 5;
-        let path_end = cookie[path_start..].find(';').map(|i| path_start + i).unwrap_or(cookie.len());
-        let original_path = &cookie[path_start..path_end];
-        if !original_path.starts_with(proxy_prefix) {
-            let new_path = format!("{}{}", proxy_prefix, original_path);
-            return format!("{}{}{}", &cookie[..path_start], new_path, &cookie[path_end..]);
-        }
-    }
-    cookie.to_string()
-}
-
 // ── Router Builders ──
 
-/// Authenticated API routes — require valid session cookie.
 /// Auth check — returns authenticated status (already passed auth middleware).
+#[get("/api/auth/check")]
 async fn handle_auth_check() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({ "authenticated": true }))
 }
 
+/// Authenticated API routes — require valid session cookie.
 pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
     Router::new()
-        .route("/api/instances", get(handle_get_instances).post(handle_create_instance))
-        .route("/api/instances/{id}", delete(handle_delete_instance))
-        .route("/api/instances/{id}/messages", get(handle_get_messages).post(handle_send_message))
-        .route("/api/instances/{id}/replies", get(handle_get_replies))
-        .route("/api/instances/{id}/observe", get(handle_observe))
-        .route("/api/instances/{id}/interrupt", post(handle_interrupt))
-        .route("/api/settings", get(handle_get_global_settings).post(handle_update_global_settings))
-        .route("/api/instances/{id}/settings", get(handle_get_settings).post(handle_update_settings))
-        .route("/api/instances/{id}/files/list", get(handle_file_list))
-        .route("/api/instances/{id}/files/read", get(handle_file_read))
-        .route("/api/instances/{id}/knowledge", get(handle_get_knowledge))
-        .route("/api/instances/{id}/skill", get(handle_get_skill).put(handle_update_skill))
-        .route("/serve/{id}/{*path}", get(handle_serve_static))
-        .route("/proxy/{*path}", any(handle_proxy))
-        .route("/api/auth/check", get(handle_auth_check))
+        .route(ROUTE_HANDLE_GET_INSTANCES, get(handle_get_instances).post(handle_create_instance))
+        .route(ROUTE_HANDLE_DELETE_INSTANCE, delete(handle_delete_instance))
+        .route(ROUTE_HANDLE_GET_MESSAGES, get(handle_get_messages).post(handle_send_message))
+        .route(ROUTE_HANDLE_GET_REPLIES, get(handle_get_replies))
+        .route(ROUTE_HANDLE_OBSERVE, get(handle_observe))
+        .route(ROUTE_HANDLE_INTERRUPT, post(handle_interrupt))
+        .route(ROUTE_HANDLE_GET_GLOBAL_SETTINGS, get(handle_get_global_settings).post(handle_update_global_settings))
+        .route(ROUTE_HANDLE_GET_SETTINGS, get(handle_get_settings).post(handle_update_settings))
+        .route(ROUTE_HANDLE_FILE_LIST, get(handle_file_list))
+        .route(ROUTE_HANDLE_FILE_READ, get(handle_file_read))
+        .route(ROUTE_HANDLE_GET_KNOWLEDGE, get(handle_get_knowledge))
+        .route(ROUTE_HANDLE_GET_SKILL, get(handle_get_skill).put(handle_update_skill))
+        .route(ROUTE_HANDLE_SERVE_STATIC, get(handle_serve_static))
+        .route(ROUTE_HANDLE_PROXY, any(handle_proxy))
+        .route(ROUTE_HANDLE_AUTH_CHECK, get(handle_auth_check))
 }
 
 /// Public API routes — no auth required.
 pub fn public_api_routes() -> Router<Arc<EngineState>> {
     Router::new()
-        .route("/public/{id}/{*path}", get(handle_public_static))
+        .route(ROUTE_HANDLE_PUBLIC_STATIC, get(handle_public_static))
 }
+
 /// Build the complete application router.
 ///
 /// Combines public routes, authenticated API routes, login/logout,
@@ -455,10 +391,10 @@ pub fn build_router(
 
     Router::new()
         // Login/logout (auth middleware whitelist covers /login)
-        .route("/login", get(auth::handle_login_page).post(auth::handle_login_post))
-        .route("/api/logout", get(auth::handle_logout))
-        .route("/api/frontend-error", post(auth::handle_frontend_error))
-        .route("/api/auth", post(auth::handle_legacy_login))
+        .route(auth::ROUTE_HANDLE_LOGIN_PAGE, get(auth::handle_login_page).post(auth::handle_login_post))
+        .route(auth::ROUTE_HANDLE_LOGOUT, get(auth::handle_logout))
+        .route(auth::ROUTE_HANDLE_FRONTEND_ERROR, post(auth::handle_frontend_error))
+        .route(auth::ROUTE_HANDLE_LEGACY_LOGIN, post(auth::handle_legacy_login))
         // Authenticated API routes
         .merge(authenticated_api_routes())
         // Public API routes (auth middleware whitelist covers /public/)

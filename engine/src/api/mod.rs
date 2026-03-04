@@ -5,6 +5,7 @@
 
 pub mod types;
 pub mod auth;
+pub mod http_protocol;
 pub mod routes;
 pub mod state;
 

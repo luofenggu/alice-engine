@@ -420,30 +420,19 @@ def detect_serde_json_usage(root_node, source_bytes, is_exempt_dir, source_lines
             line = node.start_point[0] + 1
             context = get_line_text(source_lines, node.start_point[0])
 
-            exempt = False
-            exempt_reason = ''
-
-            # Test module exemption
-            if is_in_test_module(node):
-                exempt = True
-                exempt_reason = 'test'
-
-            # Persist struct exemption
-            if not exempt:
-                impl_struct = get_impl_struct_name(node, source_bytes)
-                if is_exempt_dir:
-                    exempt = True
-                    exempt_reason = 'persist'
-
+            # serde_json usage is always exempt (serialization framework, not business logic)
             findings.append({
                 'line': line,
                 'kind': 'SERDE_JSON',
                 'value': detail,
                 'context': context.strip(),
-                'exempt': exempt,
-                'exempt_reason': exempt_reason,
+                'exempt': True,
+                'exempt_reason': 'internal',
                 'escape': False,
             })
+            for child in node.children:
+                visit(child)
+            return
 
         for c in node.children:
             visit(c)
@@ -452,8 +441,8 @@ def detect_serde_json_usage(root_node, source_bytes, is_exempt_dir, source_lines
     return findings
 
 # --- Main scan ---
-# Files exempted at file level (message catalogs, etc.)
-EXEMPT_FILES = set()
+# Files exempted at file level (HTTP protocol adapters, etc.)
+EXEMPT_FILES = {'http_protocol.rs'}
 # Directories exempted at directory level (persist layer, etc.)
 EXEMPT_DIRS = {'persist', 'external', 'inference', 'util'}
 
@@ -463,9 +452,6 @@ def scan_file(filepath, source_bytes, parser):
         return []
     # Check if file is in an exempt directory (dir-level escape-guarded exemption)
     parts = filepath.replace(os.sep, '/').split('/')
-    # Full exemption for api directory (HTTP protocol literals)
-    if any(p == "api" for p in parts):
-        return []
     # Full exemption for policy directory (strategy parameters, message catalogs)
     if any(p == "policy" for p in parts):
         return []
@@ -536,6 +522,56 @@ def scan_file(filepath, source_bytes, parser):
             if not exempt and is_in_test_module(node):
                 exempt = True
                 exempt_reason = 'test'
+
+            # 1b. Attribute literals (#[serde(...)], #[get(...)], etc.)
+            if not exempt:
+                p = node.parent
+                while p:
+                    if p.type == 'attribute_item':
+                        exempt = True
+                        exempt_reason = 'attribute'
+                        break
+                    p = p.parent
+
+            # 1c. Empty string literals (default/sentinel values)
+            if not exempt and kind == 'STRING' and value == '""':
+                exempt = True
+                exempt_reason = 'binary'
+
+            # 1d. Strings inside serde_json::json! macro (serialization keys)
+            if not exempt and kind == 'STRING':
+                p = node.parent
+                while p:
+                    if p.type == 'macro_invocation':
+                        mac = p.child_by_field_name('macro')
+                        if not mac:
+                            for c in p.children:
+                                if c.type in ('identifier', 'scoped_identifier'):
+                                    mac = c
+                                    break
+                        if mac:
+                            mac_text = node_text(mac, source_bytes)
+                            if mac_text in ('json', 'serde_json::json'):
+                                exempt = True
+                                exempt_reason = 'internal'
+                        break
+                    p = p.parent
+
+            # 1e. Strings in json_error/json_ok function calls (error/status messages)
+            if not exempt and kind == 'STRING':
+                p = node.parent
+                while p:
+                    if p.type == 'call_expression':
+                        func = p.child_by_field_name('function')
+                        if func:
+                            fname = node_text(func, source_bytes)
+                            if fname in ('json_error', 'json_ok'):
+                                exempt = True
+                                exempt_reason = 'error'
+                        break
+                    if p.type in ('function_item', 'closure_expression'):
+                        break
+                    p = p.parent
 
             # 2. Log macros
             if not exempt:

@@ -163,7 +163,7 @@ impl SettingsUpdate {
     /// Initialize global settings: load from file, merge with seed, write back.
     /// Returns (global_settings, path).
     pub fn init_global(base_dir: &std::path::Path, env: &crate::policy::EnvConfig) -> (Self, std::path::PathBuf) {
-        let path = base_dir.join("global_settings.json");
+        let path = base_dir.join(crate::persist::GLOBAL_SETTINGS_FILE);
         let seed = Self::from_env_and_defaults(env);
         let mut gs = if path.exists() {
             std::fs::read_to_string(&path)

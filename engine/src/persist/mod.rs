@@ -15,6 +15,9 @@ pub mod memory;
 pub mod instance;
 pub mod chat;
 
+/// Global settings filename constant.
+pub const GLOBAL_SETTINGS_FILE: &str = "global_settings.json";
+
 use anyhow::{Result, Context};
 
 // ─── Document ────────────────────────────────────────────────────

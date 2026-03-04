@@ -51,7 +51,7 @@ impl EngineState {
             let hash = Sha256::digest(env_config.auth_secret.as_bytes());
             hex::encode(hash)
         };
-        let session_cookie_name = format!("alice_session_{}", env_config.http_port);
+        let session_cookie_name = super::http_protocol::build_session_cookie_name(&env_config.http_port.to_string());
         Self {
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
@@ -205,7 +205,7 @@ impl EngineState {
         match result {
             Ok(Ok(replies)) => {
                 replies.into_iter().map(|(id, content, timestamp)| {
-                    MessageInfo { id, role: "agent".to_string(), content, timestamp }
+                    MessageInfo { id, role: crate::persist::chat::Message::ROLE_AGENT.to_string(), content, timestamp }
                 }).collect()
             }
             Ok(Err(e)) => {
@@ -356,7 +356,7 @@ impl EngineState {
             merged.merge_fallback(&current);
             let content = serde_json::to_string_pretty(&merged)?;
             std::fs::write(&path, &content)?;
-            Ok::<_, anyhow::Error>(ActionResult::ok("Global settings updated".to_string()))
+            Ok::<_, anyhow::Error>(ActionResult::ok(crate::policy::messages::global_settings_updated()))
         }).await;
 
         match result {

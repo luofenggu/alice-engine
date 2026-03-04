@@ -362,6 +362,11 @@ impl InstanceStore {
         &self.instances_dir
     }
 
+    /// The workspace directory for a given instance.
+    pub fn workspace_dir(&self, id: &str) -> PathBuf {
+        self.instances_dir.join(id).join("workspace")
+    }
+
     /// Get or create a cached SQLite connection for an instance.
     fn get_connection(&self, id: &str) -> Result<Arc<Mutex<ChatHistory>>> {
         // Fast path: read lock
