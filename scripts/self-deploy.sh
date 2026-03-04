@@ -1,91 +1,92 @@
 #!/bin/bash
-# Self-Deploy Script for Alice Dev Engine
-# 自己给自己做手术：编译 → 后台切换 → 新引擎接管
-#
-# Usage: bash /data/alice-dev/scripts/self-deploy.sh
+# Alice Engine 自我部署脚本
+# 前置检查 → 优雅切换（不中断当前beat）
 
-set -euo pipefail
+set -e
 
 PROJECT_DIR="/data/alice-dev"
-CARGO_TARGET="/data/rust-target-dev"
-ENGINE_BIN="$CARGO_TARGET/release/alice-engine"
-DEPLOY_LOG="/data/alice-dev-runtime/logs/self-deploy.log"
+ENGINE_BIN="/data/rust-target-dev/release/alice-engine"
+RUNTIME_DIR="/data/alice-dev-runtime"
+PID_FILE="$RUNTIME_DIR/engine.pid"
 
-# 环境变量（硬编码，免得记的累）
-export ALICE_HTTP_PORT=9527
-export ALICE_HTML_DIR=/data/alice-dev/html-frontend
-export ALICE_INSTANCES_DIR=/data/alice-dev-runtime/instances
-export ALICE_LOGS_DIR=/data/alice-dev-runtime/logs
-export ALICE_AUTH_SECRET=uk100777
-export ALICE_USER_ID=24007
-export ALICE_DEFAULT_MODEL="zenmux@anthropic/claude-opus-4.6"
-export ALICE_DEFAULT_API_KEY="sk-ss-v1-14bc674abc4b2558d23ecb259ec933393681dc014a7edbc5f8ed3f99402d52a9"
-export ALICE_PID_FILE=/var/run/alice-engine-dev.pid
-export ALICE_INFER_LOG_IN=true
-export ALICE_INFER_LOG_RETENTION_DAYS=365
-export ALICE_HOST=47.77.237.69:9527
-export ALICE_SHELL_ENV="Linux系统（Alibaba Cloud Linux 3），请生成bash脚本"
+cd "$PROJECT_DIR"
 
-echo "[DEPLOY] $(date '+%Y-%m-%d %H:%M:%S') Starting self-deploy..." | tee -a "$DEPLOY_LOG"
+echo "========================================="
+echo "  Alice Engine Self-Deploy"
+echo "========================================="
 
-if [ ! -f "$ENGINE_BIN" ]; then
-    echo "[DEPLOY] ERROR: Binary not found! Run 'cargo build --release' first." | tee -a "$DEPLOY_LOG"
+# === 前置检查 ===
+echo ""
+echo "[1/4] Guardian..."
+GUARDIAN_OUTPUT=$(python3 defense/guardian/guardian.py engine/src 2>&1)
+if echo "$GUARDIAN_OUTPUT" | grep -q "0 violations"; then
+    echo "  ✅ Guardian passed"
+else
+    echo "  ❌ Guardian FAILED:"
+    echo "$GUARDIAN_OUTPUT" | tail -5
     exit 1
 fi
 
-# === Step 1: Get current engine PID ===
-OLD_PID=$(pgrep -f "$ENGINE_BIN" | head -1)
-if [ -z "$OLD_PID" ]; then
-    echo "[DEPLOY] WARNING: No running engine found, starting fresh." | tee -a "$DEPLOY_LOG"
-    # 直接启动
-    nohup "$ENGINE_BIN" >> "$DEPLOY_LOG" 2>&1 &
-    echo "[DEPLOY] Engine started (PID: $!)." | tee -a "$DEPLOY_LOG"
-    exit 0
+echo "[2/4] Unit tests..."
+TEST_OUTPUT=$(CARGO_TARGET_DIR=/data/rust-target-dev cargo test --release 2>&1)
+if echo "$TEST_OUTPUT" | grep -q "FAILED"; then
+    echo "  ❌ Unit tests FAILED:"
+    echo "$TEST_OUTPUT" | grep -E "(FAILED|failures)" | head -10
+    exit 1
+else
+    PASSED=$(echo "$TEST_OUTPUT" | grep "test result: ok" | head -1)
+    echo "  ✅ Unit tests passed ($PASSED)"
 fi
 
-echo "[DEPLOY] Current engine PID: $OLD_PID" | tee -a "$DEPLOY_LOG"
+echo "[3/4] E2E test: hello_world..."
+E2E1_OUTPUT=$(bash integration/scripts/run_e2e.sh hello_world 2>&1)
+if echo "$E2E1_OUTPUT" | grep -q "E2E Test 'hello_world' PASSED"; then
+    echo "  ✅ E2E hello_world passed"
+else
+    echo "  ❌ E2E hello_world FAILED"
+    echo "$E2E1_OUTPUT" | tail -10
+    exit 1
+fi
 
-# === Step 2: Background switchover ===
-# Fork到后台执行切换，主脚本立即返回（让script action完成）
-nohup bash -c "
-    DEPLOY_LOG='$DEPLOY_LOG'
-    ENGINE_BIN='$ENGINE_BIN'
-    OLD_PID='$OLD_PID'
-    
-    echo '[DEPLOY] Switchover: waiting 3s for current beat to finish...' >> \"\$DEPLOY_LOG\"
+echo "[4/4] E2E test: settings_knowledge..."
+E2E2_OUTPUT=$(bash integration/scripts/run_e2e.sh settings_knowledge 2>&1)
+if echo "$E2E2_OUTPUT" | grep -q "E2E Test 'settings_knowledge' PASSED"; then
+    echo "  ✅ E2E settings_knowledge passed"
+else
+    echo "  ❌ E2E settings_knowledge FAILED"
+    echo "$E2E2_OUTPUT" | tail -10
+    exit 1
+fi
+
+echo ""
+echo "========================================="
+echo "  All checks passed ✅ Deploying..."
+echo "========================================="
+
+# === 部署：后台切换 ===
+OLD_PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
+
+# 启动新进程（后台）
+nohup bash -c '
     sleep 3
-    
-    echo '[DEPLOY] Switchover: sending SIGTERM to PID \$OLD_PID...' >> \"\$DEPLOY_LOG\"
-    kill \$OLD_PID 2>/dev/null || true
-    
-    # 等旧进程退出（最多等15秒）
-    for i in \$(seq 1 30); do
-        if ! kill -0 \$OLD_PID 2>/dev/null; then
-            echo '[DEPLOY] Switchover: old engine stopped.' >> \"\$DEPLOY_LOG\"
-            break
-        fi
-        sleep 0.5
-    done
-    
-    # 确保端口释放
-    sleep 1
-    
-    echo '[DEPLOY] Switchover: starting new engine...' >> \"\$DEPLOY_LOG\"
-    nohup \"\$ENGINE_BIN\" >> \"\$DEPLOY_LOG\" 2>&1 &
-    NEW_PID=\$!
-    echo \"[DEPLOY] Switchover: new engine started (PID: \$NEW_PID).\" >> \"\$DEPLOY_LOG\"
-    
-    # 等新引擎就绪（最多等20秒）
-    for i in \$(seq 1 40); do
-        if curl -s 'http://127.0.0.1:9527/login' >/dev/null 2>&1; then
-            echo '[DEPLOY] Switchover: new engine is ready! Deploy complete.' >> \"\$DEPLOY_LOG\"
-            exit 0
-        fi
-        sleep 0.5
-    done
-    
-    echo '[DEPLOY] WARNING: new engine did not respond within 20s!' >> \"\$DEPLOY_LOG\"
-" >> "$DEPLOY_LOG" 2>&1 &
+    # Kill旧进程
+    OLD_PID="'"$OLD_PID"'"
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        kill "$OLD_PID"
+        sleep 1
+    fi
+    # 启动新引擎
+    ALICE_HTTP_PORT=9527 \
+    ALICE_HTML_DIR='"$PROJECT_DIR"'/html-frontend \
+    ALICE_INSTANCES_DIR='"$RUNTIME_DIR"'/instances \
+    ALICE_LOGS_DIR='"$RUNTIME_DIR"'/logs \
+    ALICE_AUTH_SECRET=alice-dev-secret \
+    ALICE_USER_ID=24007 \
+    ALICE_DEFAULT_MODEL="openrouter@anthropic/claude-sonnet-4" \
+    ALICE_DEFAULT_API_KEY=$(cat /data/alice-env/api_key.txt 2>/dev/null || echo "") \
+    '"$ENGINE_BIN"' &
+    echo $! > '"$PID_FILE"'
+' > /dev/null 2>&1 &
 
-echo "[DEPLOY] Switchover scheduled in background (PID: $!)." | tee -a "$DEPLOY_LOG"
-echo "[DEPLOY] Current engine will be stopped in ~3 seconds." | tee -a "$DEPLOY_LOG"
+echo "Deploy scheduled. Engine will restart in ~3 seconds."
+echo "Old PID: ${OLD_PID:-none}"
