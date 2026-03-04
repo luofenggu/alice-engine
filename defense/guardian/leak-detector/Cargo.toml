@@ -1,0 +1,14 @@
+[package]
+name = "literal_leak_detector"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+syn = { version = "2", features = ["full", "parsing", "visit"] }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+
+
+

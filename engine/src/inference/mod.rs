@@ -53,11 +53,11 @@ pub fn safe_render(template: &str, vars: &[(&str, &str)]) -> String {
 // ---------------------------------------------------------------------------
 
 /// `<<<SEARCH` marker for replace_in_file blocks.
-pub const SEARCH_MARKER: &str = "<<<SEARCH";
+const SEARCH_MARKER: &str = "<<<SEARCH";
 /// `===REPLACE` marker for replace_in_file blocks
-pub const REPLACE_MARKER: &str = "===REPLACE";
+const REPLACE_MARKER: &str = "===REPLACE";
 /// `>>>END` end marker for replace_in_file blocks
-pub const BLOCK_END_MARKER: &str = ">>>END";
+const BLOCK_END_MARKER: &str = ">>>END";
 
 
 use std::fmt;

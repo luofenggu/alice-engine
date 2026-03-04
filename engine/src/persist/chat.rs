@@ -30,15 +30,15 @@ pub struct Message {
 
 impl Message {
     /// Role value: user message
-    pub const ROLE_USER: &'static str = "user";
+    const ROLE_USER: &'static str = "user";
     /// Role value: agent/assistant message
     pub const ROLE_AGENT: &'static str = "agent";
     /// Read status: already consumed
-    pub const STATUS_READ: &'static str = "read";
+    const STATUS_READ: &'static str = "read";
     /// Read status: waiting to be consumed
-    pub const STATUS_UNREAD: &'static str = "unread";
+    const STATUS_UNREAD: &'static str = "unread";
     /// Message type: normal chat
-    pub const TYPE_CHAT: &'static str = "chat";
+    const TYPE_CHAT: &'static str = "chat";
 }
 
 // ---------------------------------------------------------------------------
