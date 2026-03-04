@@ -1131,3 +1131,84 @@ mod tests {
         assert!(!Action::WriteFile { path: "".into(), content: "".into() }.is_blocking());
     }
 }
+// ─── Scripted Tests (Episode 1: Hello World) ────────────────────
+
+#[cfg(test)]
+mod scripted_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a test Alice with privilege mode for scripted testing.
+    fn create_scripted_alice() -> (Alice, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let settings_path = tmp.path().join("settings.json");
+        std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
+        let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
+        let log_dir = tmp.path().join("logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        let llm_config = LlmConfig { model: String::new(), api_key: String::new() };
+        let env_config = Arc::new(crate::policy::EnvConfig::from_env());
+        let mut alice = Alice::new(instance, log_dir, llm_config, env_config).unwrap();
+        alice.privileged = true;
+        (alice, tmp)
+    }
+
+    #[test]
+    fn test_episode_1_hello_world() {
+        // === Setup ===
+        let (mut alice, _tmp) = create_scripted_alice();
+
+        // Verify initial state
+        assert_eq!(alice.count_unread_messages(), 0);
+        assert!(!alice.last_was_idle);
+
+        // === Act 1: User sends a message ===
+        alice.instance.chat.write_user_message("user1", "你好，小白！", "20260301120000").unwrap();
+        assert_eq!(alice.count_unread_messages(), 1);
+
+        // === Act 2: First beat — auto-read (hard-control) ===
+        alice.beat().unwrap();
+
+        // After auto-read: message consumed, current updated
+        assert_eq!(alice.count_unread_messages(), 0);
+        let current = std::fs::read_to_string(alice.instance.memory.sessions_dir().join("current.txt")).unwrap();
+        assert!(current.contains("你好，小白！"), "current should contain the user message after auto-read");
+        assert!(!alice.last_was_idle, "auto-read should not set last_was_idle");
+
+        // === Act 3: Second beat — LLM inference (mock) ===
+        alice.set_mock_streams(vec![
+            vec![
+                StreamItem::Action(Action::Thinking { content: "用户在打招呼，我来回复".into() }),
+                StreamItem::Action(Action::SendMsg { recipient: "user1".into(), content: "你好！很高兴见到你！".into() }),
+                StreamItem::Action(Action::Idle { timeout_secs: None }),
+                StreamItem::Done(vec![
+                    Action::Thinking { content: "用户在打招呼，我来回复".into() },
+                    Action::SendMsg { recipient: "user1".into(), content: "你好！很高兴见到你！".into() },
+                    Action::Idle { timeout_secs: None },
+                ], None),
+            ],
+        ]);
+
+        alice.beat().unwrap();
+
+        // After inference: current has all action records
+        let current = std::fs::read_to_string(alice.instance.memory.sessions_dir().join("current.txt")).unwrap();
+        assert!(current.contains("用户在打招呼"), "current should contain thinking content");
+        assert!(current.contains("你好！很高兴见到你！"), "current should contain send_msg content");
+        assert!(current.contains("idle"), "current should contain idle record");
+
+        // Agent reply should be in chat
+        let replies = alice.instance.chat.read_unread_agent_replies().unwrap();
+        assert_eq!(replies.len(), 1, "should have exactly one agent reply");
+        assert!(replies[0].1.contains("你好！很高兴见到你！"), "reply content should match");
+
+        // State: last_was_idle should be true
+        assert!(alice.last_was_idle, "should be idle after Idle action");
+
+        // === Act 4: Third beat — should skip (no unread + idle) ===
+        alice.beat().unwrap();
+        // Current should not have grown (beat was skipped)
+        let current_after_skip = std::fs::read_to_string(alice.instance.memory.sessions_dir().join("current.txt")).unwrap();
+        assert_eq!(current.len(), current_after_skip.len(), "current should not change on skipped beat");
+    }
+}
