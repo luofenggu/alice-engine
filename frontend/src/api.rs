@@ -441,6 +441,7 @@ async fn handle_get_instances(State(state): State<Arc<ApiState>>) -> Response {
 #[derive(serde::Deserialize)]
 struct CreateInstanceBody {
     name: Option<String>,
+    settings: Option<alice_rpc::SettingsUpdate>,
 }
 
 async fn handle_create_instance(
@@ -453,7 +454,7 @@ async fn handle_create_instance(
     };
 
     let name = body.name.unwrap_or_default();
-    match client.create_instance(rpc_ctx(), name).await {
+    match client.create_instance(rpc_ctx(), name, body.settings).await {
         Ok(result) => json_ok(&result),
         Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }

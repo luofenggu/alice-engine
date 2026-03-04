@@ -221,8 +221,8 @@ pub trait AliceEngine {
     /// 获取所有实例列表
     async fn get_instances() -> Vec<InstanceInfo>;
 
-    /// Create a new instance with optional display name
-    async fn create_instance(display_name: String) -> ActionResult;
+    /// Create a new instance with optional display name and initial settings
+    async fn create_instance(display_name: String, initial_settings: Option<SettingsUpdate>) -> ActionResult;
 
     /// Delete an instance (move to trash)
     async fn delete_instance(instance_id: String) -> ActionResult;

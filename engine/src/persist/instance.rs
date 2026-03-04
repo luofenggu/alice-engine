@@ -48,6 +48,7 @@ impl Instance {
         user_id: &str,
         display_name: Option<&str>,
         knowledge: Option<&str>,
+        initial_settings: Option<&SettingsUpdate>,
     ) -> Result<Self> {
         // Generate 6-char random hex ID
         let id: String = (0..6)
@@ -80,12 +81,15 @@ impl Instance {
         let color = PRESET_COLORS[rand::random::<usize>() % PRESET_COLORS.len()];
 
         // Write settings.json
-        let settings_obj = InstanceSettings {
+        let mut settings_obj = InstanceSettings {
             user_id: user_id.to_string(),
             color: Some(color.to_string()),
             name: display_name.map(|n| n.to_string()),
             ..Default::default()
         };
+        if let Some(update) = initial_settings {
+            update.apply_to(&mut settings_obj);
+        }
         let settings_path = instance_dir.join(SETTINGS_FILE);
         let settings_json = serde_json::to_string_pretty(&settings_obj)
             .context("Failed to serialize settings")?;
@@ -301,8 +305,9 @@ impl InstanceStore {
         user_id: &str,
         display_name: Option<&str>,
         knowledge: Option<&str>,
+        initial_settings: Option<&SettingsUpdate>,
     ) -> Result<Instance> {
-        Instance::create(&self.instances_dir, user_id, display_name, knowledge)
+        Instance::create(&self.instances_dir, user_id, display_name, knowledge, initial_settings)
     }
 
     /// Open an existing instance by ID.
@@ -410,7 +415,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let instances_dir = tmp.path();
 
-        let instance = Instance::create(instances_dir, "user1", Some("TestBot"), None).unwrap();
+        let instance = Instance::create(instances_dir, "user1", Some("TestBot"), None, None).unwrap();
 
         assert_eq!(instance.id.len(), 6);
         assert!(instance.instance_dir.exists());
@@ -435,6 +440,7 @@ mod tests {
             "user1",
             Some("TestBot"),
             Some("# Test Knowledge\nHello world"),
+            None,
         )
         .unwrap();
 
@@ -449,7 +455,7 @@ mod tests {
         let instances_dir = tmp.path();
 
         // Create first
-        let created = Instance::create(instances_dir, "user1", Some("TestBot"), None).unwrap();
+        let created = Instance::create(instances_dir, "user1", Some("TestBot"), None, None).unwrap();
         let id = created.id.clone();
         let dir = created.instance_dir.clone();
         drop(created);
@@ -465,7 +471,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let instances_dir = tmp.path();
 
-        let instance = Instance::create(instances_dir, "user1", None, None).unwrap();
+        let instance = Instance::create(instances_dir, "user1", None, None, None).unwrap();
 
         // All subdirectories should exist immediately after create
         assert!(instance.instance_dir.join("memory").exists());
@@ -539,7 +545,7 @@ mod tests {
         assert!(ids.is_empty());
 
         // Create an instance
-        let instance = store.create("user1", Some("Test Agent"), None).unwrap();
+        let instance = store.create("user1", Some("Test Agent"), None, None).unwrap();
         assert_eq!(instance.id.len(), 6);
 
         // List should return it
@@ -553,7 +559,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = InstanceStore::new(tmp.path().to_path_buf());
 
-        let created = store.create("user1", None, Some("test knowledge")).unwrap();
+        let created = store.create("user1", None, Some("test knowledge"), None).unwrap();
         let id = created.id.clone();
         drop(created);
 
@@ -567,7 +573,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = InstanceStore::new(tmp.path().to_path_buf());
 
-        let instance = store.create("user1", Some("Doomed"), None).unwrap();
+        let instance = store.create("user1", Some("Doomed"), None, None).unwrap();
         let id = instance.id.clone();
         drop(instance);
 

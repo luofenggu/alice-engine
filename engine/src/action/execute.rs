@@ -348,6 +348,7 @@ fn execute_create_instance(
         &alice.user_id,
         Some(name),
         knowledge_opt,
+        None,
     ).context("Failed to create instance")?;
 
     info!("[ACTION-{}] Created new instance: {} (name: {}, knowledge: {} bytes, awaiting hot-scan)",

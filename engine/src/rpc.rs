@@ -223,11 +223,11 @@ impl AliceEngine for AliceEngineServer {
     }
 
 
-    async fn create_instance(self, _: Context, display_name: String) -> ActionResult {
+    async fn create_instance(self, _: Context, display_name: String, initial_settings: Option<SettingsUpdate>) -> ActionResult {
         let display_name = display_name.trim().to_string();
         let name_opt = if display_name.is_empty() { None } else { Some(display_name.as_str()) };
 
-        match self.state.instance_store.create(&self.state.user_id, name_opt, None) {
+        match self.state.instance_store.create(&self.state.user_id, name_opt, None, initial_settings.as_ref()) {
             Ok(instance) => {
                 info!("[RPC] Created instance: id={}, name={:?}", instance.id, name_opt);
                 ActionResult::ok(instance.id)

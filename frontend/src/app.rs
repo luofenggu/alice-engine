@@ -164,7 +164,7 @@ pub async fn report_frontend_error(error_type: String, message: String, source: 
 #[server(CreateInstanceFn)]
 pub async fn create_instance_fn(display_name: String) -> Result<String, ServerFnError> {
     let client = rpc_client().await?;
-    let result = client.create_instance(rpc_ctx(), display_name).await
+    let result = client.create_instance(rpc_ctx(), display_name, None).await
         .map_err(|e| ServerFnError::new(format!("[RPC] create_instance: {}", e)))?;
     if result.success {
         Ok(result.message.unwrap_or_default())

@@ -64,7 +64,7 @@ fn test_api_hello_world() {
     });
 
     // 2. Create instance
-    let instance = Instance::create(&instances_dir, "user1", Some("TestBot"), None).unwrap();
+    let instance = Instance::create(&instances_dir, "user1", Some("TestBot"), None, None).unwrap();
     let instance_id = instance.id.clone();
     drop(instance); // Close instance — engine will reopen it
 

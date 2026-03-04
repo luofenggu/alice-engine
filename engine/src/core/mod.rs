@@ -358,6 +358,15 @@ impl Alice {
 
         let llm_client = LlmClient::new(llm_config);
 
+        // Read settings overrides before instance is moved into struct
+        let mem_cfg = &crate::policy::EngineConfig::get().memory;
+        let settings = instance.settings.load().ok();
+        let session_blocks_limit = settings.as_ref().and_then(|s| s.session_blocks_limit).unwrap_or(mem_cfg.session_blocks_limit);
+        let session_block_kb = settings.as_ref().and_then(|s| s.session_block_kb).unwrap_or(mem_cfg.session_block_kb);
+        let history_kb = settings.as_ref().and_then(|s| s.history_kb).unwrap_or(mem_cfg.history_kb);
+        let safety_max_consecutive_beats = settings.as_ref().and_then(|s| s.safety_max_consecutive_beats).unwrap_or(mem_cfg.safety_max_consecutive_beats);
+        let safety_cooldown_secs = settings.as_ref().and_then(|s| s.safety_cooldown_secs).unwrap_or(mem_cfg.safety_cooldown_secs);
+
         info!("[INSTANCE-{}] Alice created for user {} at {}", instance.id, user_id, instance.instance_dir.display());
         Ok(Self {
             instance,
@@ -380,11 +389,11 @@ impl Alice {
             signals: None,
             inference_failures: Counter::<u32>::new(),
             inference_backoff_until: None,
-            session_blocks_limit: crate::policy::EngineConfig::get().memory.session_blocks_limit,
-            session_block_kb: crate::policy::EngineConfig::get().memory.session_block_kb,
-            history_kb: crate::policy::EngineConfig::get().memory.history_kb,
-            safety_max_consecutive_beats: crate::policy::EngineConfig::get().memory.safety_max_consecutive_beats,
-            safety_cooldown_secs: crate::policy::EngineConfig::get().memory.safety_cooldown_secs,
+            session_blocks_limit,
+            session_block_kb,
+            history_kb,
+            safety_max_consecutive_beats,
+            safety_cooldown_secs,
             stream_poll_interval_ms: crate::policy::EngineConfig::get().streaming.poll_interval_ms,
             env_config,
         })
