@@ -1211,4 +1211,68 @@ mod scripted_tests {
         let current_after_skip = std::fs::read_to_string(alice.instance.memory.sessions_dir().join("current.txt")).unwrap();
         assert_eq!(current.len(), current_after_skip.len(), "current should not change on skipped beat");
     }
+
+    #[test]
+    fn test_episode_2_file_ops_and_script() {
+        // === Setup ===
+        let (mut alice, _tmp) = create_scripted_alice();
+
+        // === Act 1: User sends a message ===
+        alice.instance.chat.write_user_message("user1", "帮我写个文件", "20260301130000").unwrap();
+        alice.beat().unwrap(); // auto-read
+
+        // === Act 2: Agent writes file then runs script (script is blocking) ===
+        alice.set_mock_streams(vec![
+            vec![
+                StreamItem::Action(Action::Thinking { content: "用户要写文件，我来操作".into() }),
+                StreamItem::Action(Action::WriteFile {
+                    path: "hello.txt".into(),
+                    content: "Hello World\n第二行".into(),
+                }),
+                StreamItem::Action(Action::Script { content: "cat hello.txt && echo done".into() }),
+                // Script is blocking — beat ends here, Done won't be consumed
+                StreamItem::Done(vec![], None),
+            ],
+        ]);
+
+        alice.beat().unwrap();
+
+        // Verify: file created in workspace
+        let file_path = alice.instance.workspace.join("hello.txt");
+        assert!(file_path.exists(), "hello.txt should exist in workspace");
+        let file_content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(file_content, "Hello World\n第二行", "file content should match");
+
+        // Verify: current contains script output
+        let current_path = alice.instance.memory.sessions_dir().join("current.txt");
+        let current = std::fs::read_to_string(&current_path).unwrap();
+        assert!(current.contains("Hello World"), "current should contain script stdout");
+        assert!(current.contains("done"), "current should contain 'done' from echo");
+        assert!(current.contains("write file"), "current should record write_file action");
+
+        // Script is blocking, so last_was_idle should be false
+        assert!(!alice.last_was_idle, "blocking script should not set idle");
+
+        // === Act 3: Next beat — agent reports back ===
+        alice.set_mock_streams(vec![
+            vec![
+                StreamItem::Action(Action::SendMsg {
+                    recipient: "user1".into(),
+                    content: "文件写好了，内容已确认".into(),
+                }),
+                StreamItem::Action(Action::Idle { timeout_secs: Some(60) }),
+                StreamItem::Done(vec![], None),
+            ],
+        ]);
+
+        alice.beat().unwrap();
+
+        // Verify: agent reply in chat
+        let replies = alice.instance.chat.read_unread_agent_replies().unwrap();
+        assert!(replies.iter().any(|r| r.1.contains("文件写好了")), "agent should have replied about file");
+
+        // Verify: idle with timeout
+        assert!(alice.last_was_idle);
+        assert_eq!(alice.idle_timeout_secs, Some(60));
+    }
 }
