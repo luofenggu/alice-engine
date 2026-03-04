@@ -1667,8 +1667,8 @@ async function pollInference() {
     if (data.inferring) {
         // Inferring state: show brain icon + reasoning info
         if (icon) icon.textContent = '🧠';
-        if (data.inferOutput && data.inferOutput.length > 0) {
-            const rawOutput = data.inferOutput;
+        if (data.infer_output && data.infer_output.length > 0) {
+            const rawOutput = data.infer_output;
             const displayOutput = devMode ? rawOutput : filterSummaryOutput(rawOutput);
             const isSummaryHidden = (displayOutput !== rawOutput);
             label.textContent = isSummaryHidden ? 'Reasoning (整理记忆中)' : 'Reasoning (' + rawOutput.length + ' chars)';
@@ -1687,8 +1687,8 @@ async function pollInference() {
     } else if (data.idle) {
         // Idle state: show sleep icon + idle info
         if (icon) icon.textContent = '💤';
-        if (data.idleTimeoutSecs && data.idleSince) {
-            const remaining = Math.max(0, data.idleTimeoutSecs - Math.floor(Date.now() / 1000 - data.idleSince));
+        if (data.idle_timeout_secs && data.idle_since) {
+            const remaining = Math.max(0, data.idle_timeout_secs - Math.floor(Date.now() / 1000 - data.idle_since));
             label.textContent = 'idle ' + remaining + 's';
         } else {
             label.textContent = 'idle';
@@ -1704,24 +1704,14 @@ async function pollInference() {
             content.innerHTML = '<span class="inference-empty">No active reasoning</span>';
         }
     }
-    // Update model switch button
-    const modelBtn = document.getElementById('modelSwitchBtn');
-    if (modelBtn && data.modelCount > 1) {
-        modelBtn.style.display = '';
-        modelBtn.textContent = data.activeModel === 0 ? '🤖 Primary' : '🤖 Extra ' + data.activeModel;
-        modelBtn.style.color = data.activeModel === 0 ? '' : '#FF9800';
-        modelBtn.dataset.modelCount = data.modelCount;
-        modelBtn.dataset.activeModel = data.activeModel;
-    } else if (modelBtn) {
-        modelBtn.style.display = 'none';
-    }
+
     // Update executing script
     const scriptEl = document.getElementById('observeScript');
     const scriptContent = document.getElementById('observeScriptContent');
     const scriptLabel = document.getElementById('observeScriptLabel');
-    if (data.executingScript) {
+    if (data.executing_script) {
         scriptEl.classList.add('active');
-        scriptContent.textContent = data.executingScript;
+        scriptContent.textContent = data.executing_script;
         scriptLabel.textContent = 'Executing script...';
     } else {
         scriptEl.classList.remove('active');
