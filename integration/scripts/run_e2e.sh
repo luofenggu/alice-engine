@@ -72,6 +72,7 @@ echo "[E2E] Mock LLM ready (PID: $MOCK_PID)"
 
 # === Step 2: Start Engine ===
 echo "[E2E] Starting Alice Engine on port $ENGINE_PORT..."
+ALICE_BASE_DIR="$TMP_DIR" \
 ALICE_HTTP_PORT="$ENGINE_PORT" \
 ALICE_HTML_DIR="$PROJECT_DIR/html-frontend" \
 ALICE_INSTANCES_DIR="$INSTANCES_DIR" \
