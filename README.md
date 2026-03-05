@@ -1,115 +1,70 @@
 # Alice Engine
 
-A self-hosted AI agent engine written in Rust. One binary, zero external dependencies beyond an LLM provider.
-
-Alice Engine manages autonomous agent instances — each with its own memory, knowledge, skills, and a persistent workspace. Agents communicate through messages, execute shell scripts, read and write files, and evolve their knowledge over time.
-
-## Features
-
-- **Single binary** — HTTP API server + static file serving, no separate frontend deployment
-- **Multi-instance** — Run multiple agent instances, each with isolated memory and workspace
-- **Persistent memory** — Four-layer memory system: knowledge, history, session blocks, and current context
-- **Action system** — Agents execute actions (shell scripts, file I/O, messaging, self-management) through a structured protocol
-- **Streaming inference** — Real-time streaming from LLM providers with action parsing
-- **Three-layer settings** — Environment variables → global settings → per-instance settings, with runtime merge
-- **Provider agnostic** — Any OpenAI-compatible API endpoint (configure via URL)
-- **Built-in auth** — Cookie-based authentication with configurable secret
-- **Static file serving** — Serve agent workspace files and public apps directory
+A self-evolving AI agent engine. Each agent gets its own workspace, memory, and tools — powered by any OpenAI-compatible LLM.
 
 ## Quick Start
 
-### Prerequisites
+### Option 1: Download & Run
 
-- Rust toolchain (1.75+)
-- An LLM API key (OpenAI, Anthropic via OpenRouter/ZenMux, or any OpenAI-compatible provider)
-
-### Build
+Download the latest binary from [Releases](https://github.com/anthropic/alice-engine/releases), then:
 
 ```bash
+chmod +x alice-engine
+./alice-engine
+```
+
+Open http://localhost:8081 in your browser. The setup page will guide you through configuration.
+
+### Option 2: Build from Source
+
+```bash
+git clone https://github.com/anthropic/alice-engine.git
+cd alice-engine
 cargo build --release
-```
-
-### Run
-
-```bash
-# Minimal startup
-ALICE_AUTH_SECRET=your-secret \
-ALICE_DEFAULT_API_KEY=sk-your-api-key \
-ALICE_DEFAULT_MODEL="openrouter@anthropic/claude-sonnet-4" \
 ./target/release/alice-engine
 ```
 
-The engine starts on port `8081` by default. Open `http://localhost:8081` in your browser, log in with your auth secret, and create your first agent instance.
+Open http://localhost:8081 — the setup page will ask for your API key and model.
 
-### Production Example
+## Configuration
 
-```bash
-ALICE_HTTP_PORT=9527 \
-ALICE_HOST=your-server.com:9527 \
-ALICE_HTML_DIR=./html-frontend \
-ALICE_BASE_DIR=/var/lib/alice \
-ALICE_INSTANCES_DIR=/var/lib/alice/instances \
-ALICE_LOGS_DIR=/var/lib/alice/logs \
-ALICE_AUTH_SECRET=your-secret \
-ALICE_USER_ID=admin \
-ALICE_DEFAULT_MODEL="openrouter@anthropic/claude-sonnet-4" \
-ALICE_DEFAULT_API_KEY=sk-your-api-key \
-ALICE_INFER_LOG_IN=true \
-./target/release/alice-engine
-```
+On first launch, Alice shows a setup page where you set:
 
-## Environment Variables
+- **API Key** — your LLM provider API key
+- **Model** — choose a provider and model (e.g. `anthropic/claude-sonnet-4`)
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ALICE_HTTP_PORT` | `8081` | HTTP listen port |
-| `ALICE_HOST` | *(none)* | Public host address (shown to agents for URL generation) |
-| `ALICE_AUTH_SECRET` | `alice-local-default` | Authentication secret (used as login password) |
-| `ALICE_SKIP_AUTH` | `false` | Skip authentication (development only) |
-| `ALICE_USER_ID` | `user` | User identifier |
-| `ALICE_BASE_DIR` | `.` | Base directory for relative paths |
-| `ALICE_INSTANCES_DIR` | `{base}/instances` | Instance data storage |
-| `ALICE_LOGS_DIR` | `{base}/logs` | Log file storage |
-| `ALICE_HTML_DIR` | `{base}/html` | HTML frontend directory |
-| `ALICE_DEFAULT_API_KEY` | *(empty)* | Default LLM API key for new instances |
-| `ALICE_DEFAULT_MODEL` | *(from engine.toml)* | Default model in `provider@model` format |
-| `ALICE_PID_FILE` | `{base}/alice-engine.pid` | PID file path |
-| `ALICE_INFER_LOG_IN` | `false` | Enable inference input logging |
-| `ALICE_INFER_LOG_RETENTION_DAYS` | `7` | Days to retain inference logs |
-| `ALICE_SHELL_ENV` | `Linux系统，请生成bash脚本` | Shell environment description (included in agent prompts) |
-| `ALICE_SHUTDOWN_SIGNAL_FILE` | `/var/run/alice-engine-shutdown.signal` | Graceful shutdown signal file |
+That's it. You're ready to create your first agent.
 
-### Model Format
+### Environment Variables (Optional)
 
-Models are specified as `provider@model-name`, where the provider maps to an API endpoint defined in `engine.toml`:
+For production deployments, configure via environment variables:
 
-```
-openrouter@anthropic/claude-sonnet-4
-openai@gpt-4o
-zenmux@anthropic/claude-opus-4
-```
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ALICE_AUTH_SECRET` | Login password (skip if unset) | No password |
+| `ALICE_DEFAULT_API_KEY` | Default API key for new instances | — |
+| `ALICE_DEFAULT_MODEL` | Default model (e.g. `openrouter@anthropic/claude-sonnet-4`) | `openrouter@anthropic/claude-opus-4.6` |
+| `ALICE_PORT` | HTTP port | `8081` |
+| `ALICE_BASE_DIR` | Data directory | `.` (current dir) |
+| `ALICE_USER_ID` | Owner user ID | `default` |
+| `ALICE_HOST` | Hostname for display | — |
+| `ALICE_SKIP_AUTH` | Skip authentication (`true`/`false`) | `false` |
 
-Custom providers can be added to `engine.toml` under `[llm.providers]`:
+Model format: `provider@model_id`. Built-in providers: `openrouter`, `openai`, `zenmux`. Use a full URL as provider for custom endpoints.
 
-```toml
-[llm.providers]
-openrouter = "https://openrouter.ai/api/v1/chat/completions"
-openai = "https://api.openai.com/v1/chat/completions"
-my-provider = "https://my-llm-proxy.com/v1/chat/completions"
-```
+## How It Works
+
+Each agent instance has:
+- **Inbox/Outbox** — communicate via messages
+- **Workspace** — read/write files, run scripts
+- **Memory** — knowledge, history, session context (auto-managed)
+- **Skills** — injectable prompt knowledge
+
+The engine runs a beat loop: check messages → invoke LLM → execute actions → repeat.
 
 ## API Reference
 
-All API endpoints require authentication via cookie (obtain by `POST /login`).
-
-### Authentication
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/login` | Login page |
-| POST | `/login` | Authenticate (form field: `password`) |
-| GET | `/api/auth/check` | Check authentication status |
-| GET | `/api/logout` | Log out |
+All endpoints under `/api/`. Authentication via session cookie (set `ALICE_AUTH_SECRET` to enable).
 
 ### Instances
 
@@ -124,16 +79,21 @@ All API endpoints require authentication via cookie (obtain by `POST /login`).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/instances/{id}/messages` | Get message history |
+| GET | `/api/instances/{id}/messages` | Get messages (paginated) |
 | POST | `/api/instances/{id}/messages` | Send message to instance |
-| GET | `/api/instances/{id}/replies` | Poll for new replies (long-polling) |
+| GET | `/api/instances/{id}/replies` | Poll for new replies |
 
 ### Instance Management
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/instances/{id}/observe` | Observe instance state |
-| POST | `/api/instances/{id}/interrupt` | Interrupt ongoing inference |
+| POST | `/api/instances/{id}/interrupt` | Interrupt current inference |
+| GET | `/api/instances/{id}/files/list` | List workspace files |
+| GET | `/api/instances/{id}/files/read` | Read a workspace file |
+| GET | `/api/instances/{id}/knowledge` | Get instance knowledge |
+| GET | `/api/instances/{id}/skill` | Get instance skill |
+| PUT | `/api/instances/{id}/skill` | Update instance skill |
 
 ### Settings
 
@@ -141,68 +101,53 @@ All API endpoints require authentication via cookie (obtain by `POST /login`).
 |--------|------|-------------|
 | GET | `/api/settings` | Get global settings |
 | POST | `/api/settings` | Update global settings |
-| GET | `/api/instances/{id}/settings` | Get instance settings (merged) |
+| GET | `/api/instances/{id}/settings` | Get instance settings |
 | POST | `/api/instances/{id}/settings` | Update instance settings |
-
-### Knowledge & Skills
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/instances/{id}/knowledge` | Get instance knowledge |
-| GET | `/api/instances/{id}/skill` | Get instance skill |
-| PUT | `/api/instances/{id}/skill` | Update instance skill |
-
-### Files
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/instances/{id}/files/list` | List workspace files |
-| GET | `/api/instances/{id}/files/read` | Read workspace file |
 
 ### Static Files
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/serve/{id}/{path}` | Serve file from instance workspace (authenticated) |
-| GET | `/public/{id}/apps/{path}` | Serve public file (no auth, `apps/` directory only) |
-| ANY | `/proxy/{port}/{path}` | Reverse proxy to localhost port (authenticated) |
+| Path | Description |
+|------|-------------|
+| `/serve/{id}/{path}` | Serve files from instance workspace |
+| `/public/{id}/{path}` | Public files (no auth required) |
 
-## Project Structure
+## Development
+
+### Project Structure
 
 ```
-alice-engine/
-├── engine/              # Core engine crate
-│   ├── src/
-│   │   ├── core/        # Alice struct, transaction, beat/roll cycle
-│   │   ├── action/      # Action execution (script, file I/O, messaging, etc.)
-│   │   ├── api/         # HTTP API (routes, auth, state management)
-│   │   ├── inference/   # LLM inference protocol (request/response/streaming)
-│   │   ├── prompt/      # Prompt assembly and data extraction
-│   │   ├── persist/     # Persistence layer (settings, file I/O)
-│   │   ├── policy/      # Policy configuration (engine.toml, env config)
-│   │   ├── external/    # External system adapters
-│   │   └── util/        # Pure utility functions
-│   └── templates/       # Prompt templates
-├── html-frontend/       # Static HTML frontend
-├── route-macro/         # Proc-macro for route path extraction
-├── integration/         # End-to-end integration tests
-├── defense/guardian/     # Static analysis tooling
-└── scripts/             # Deployment scripts
+engine/          — Core engine (Rust, axum HTTP server)
+html-frontend/   — Web UI (static HTML/JS)
+route-macro/     — Proc-macro for route annotations
+integration/     — End-to-end tests (Playwright + mock LLM)
+defense/         — Code quality tools (guardian, leak-detector)
+scripts/         — Build & deploy scripts
 ```
 
-## Configuration
+### Building
 
-Engine behavior is configured through `engine/src/policy/engine.toml`:
+```bash
+cargo build --release
+```
 
-- **`[engine]`** — Beat interval, error backoff, disk checks, sandbox settings
-- **`[memory]`** — Session block limits, history size, knowledge capacity
-- **`[llm]`** — Default model, temperature, max tokens
-- **`[llm.providers]`** — Provider name → API endpoint URL mapping
-- **`[streaming]`** — Stream polling interval
-- **`[file_browse]`** — Binary extensions, hidden directories, max file size
-- **`[rpc]`** — Pagination settings, heartbeat timeout
+### Testing
+
+```bash
+# Unit tests
+cargo test
+
+# End-to-end tests (requires Node.js + Playwright)
+cd integration && npm test
+```
+
+### Guardian (Code Quality)
+
+Static analysis tool that enforces literal placement rules:
+
+```bash
+python3 defense/guardian/guardian.py engine/src
+```
 
 ## License
 
-[MIT](LICENSE)
-
+MIT — see [LICENSE](LICENSE).

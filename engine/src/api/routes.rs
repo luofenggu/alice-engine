@@ -394,6 +394,7 @@ pub fn build_router(
         .route(auth::ROUTE_HANDLE_LOGIN_PAGE, get(auth::handle_login_page).post(auth::handle_login_post))
         .route(auth::ROUTE_HANDLE_LOGOUT, get(auth::handle_logout))
         .route(auth::ROUTE_HANDLE_FRONTEND_ERROR, post(auth::handle_frontend_error))
+        .route(auth::ROUTE_HANDLE_SETUP, post(auth::handle_setup))
         // Authenticated API routes
         .merge(authenticated_api_routes())
         // Public API routes (auth middleware whitelist covers /public/)

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tracing::{info, error};
 
 use crate::persist::instance::InstanceStore;
+use std::sync::atomic::AtomicBool;
 use crate::persist::{Settings, GlobalSettingsStore};
 use crate::core::signal::SignalHub;
 use crate::api::types::*;
@@ -33,6 +34,7 @@ pub struct EngineState {
     pub session_cookie_name: String,
     /// Global settings store.
     pub global_settings_store: GlobalSettingsStore,
+    pub setup_completed: AtomicBool,
 }
 
 impl EngineState {
@@ -53,6 +55,9 @@ impl EngineState {
             hex::encode(hash)
         };
         let session_cookie_name = super::http_protocol::build_session_cookie_name(&env_config.http_port.to_string());
+        let setup_done = global_settings_store.load()
+            .map(|s| s.api_key.as_ref().map_or(false, |k| !k.is_empty()))
+            .unwrap_or(false);
         Self {
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
@@ -63,6 +68,7 @@ impl EngineState {
             session_token,
             session_cookie_name,
             global_settings_store,
+            setup_completed: AtomicBool::new(setup_done),
         }
     }
 

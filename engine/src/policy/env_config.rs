@@ -60,6 +60,8 @@ impl EnvConfig {
     pub const DEFAULT_LOGS_DIR: &str = "logs";
     /// Default subdirectory name for HTML static files.
     pub const DEFAULT_HTML_DIR: &str = "html";
+
+    pub const DEFAULT_AUTH_SECRET: &str = "alice-local-default";
     /// CLI positional argument index for instances directory.
     pub const CLI_ARG_INSTANCES: usize = 1;
     /// CLI positional argument index for logs directory.
@@ -92,7 +94,7 @@ impl EnvConfig {
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("/var/run/alice-engine-shutdown.signal")),
             auth_secret: std::env::var("ALICE_AUTH_SECRET")
-                .unwrap_or_else(|_| "alice-local-default".to_string()),
+                .unwrap_or_else(|_| Self::DEFAULT_AUTH_SECRET.to_string()),
             skip_auth: std::env::var("ALICE_SKIP_AUTH")
                 .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
                 .unwrap_or(false),

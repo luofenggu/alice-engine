@@ -1,8 +1,9 @@
-//! Authentication middleware and login/logout handlers.
+//! Authentication middleware and login/logout/setup handlers.
 //!
 //! Uses EngineState for auth configuration (session_token, auth_secret, skip_auth).
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -10,10 +11,17 @@ use route_macro::*;
 
 use crate::api::http_protocol;
 use crate::api::state::EngineState;
+use crate::persist::Settings;
 
 #[derive(serde::Deserialize)]
 pub struct LoginForm {
     password: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct SetupPayload {
+    api_key: String,
+    model: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -27,6 +35,8 @@ pub struct FrontendErrorPayload {
 }
 
 /// Auth check middleware — redirects unauthenticated requests to /login.
+///
+/// Flow: skip_auth → whitelist → setup check → default-secret skip → cookie check → redirect login
 pub async fn check_auth(
     State(state): State<Arc<EngineState>>,
     req: Request,
@@ -40,12 +50,23 @@ pub async fn check_auth(
 
     let path = req.uri().path().to_string();
 
-    // Whitelist: login page, route-annotated public endpoints, static files, public prefix
+    // Whitelist: login, setup, frontend-error, static files, public prefix
     if path == http_protocol::LOGIN_PATH
         || path == ROUTE_HANDLE_FRONTEND_ERROR
+        || path == ROUTE_HANDLE_SETUP
         || http_protocol::AUTH_WHITELIST_STATIC.contains(&path.as_str())
         || http_protocol::AUTH_WHITELIST_PREFIXES.iter().any(|p| path.starts_with(p))
     {
+        return next.run(req).await;
+    }
+
+    // Setup not completed — redirect to setup page
+    if !state.setup_completed.load(Ordering::Relaxed) {
+        return Redirect::to(http_protocol::SETUP_PAGE_FILE).into_response();
+    }
+
+    // Default auth secret — skip auth (local play mode, no password needed)
+    if state.env_config.auth_secret == crate::policy::EnvConfig::DEFAULT_AUTH_SECRET {
         return next.run(req).await;
     }
 
@@ -115,6 +136,23 @@ pub async fn handle_frontend_error(
 
     tracing::warn!("[FRONTEND-ERROR] [{}] {} | source: {}", error_type, message, source);
     axum::http::StatusCode::OK
+}
+
+/// Setup handler — saves initial configuration (API key + model).
+#[post("/api/setup")]
+pub async fn handle_setup(
+    State(state): State<Arc<EngineState>>,
+    axum::Json(payload): axum::Json<SetupPayload>,
+) -> Response {
+    let update = Settings {
+        api_key: Some(payload.api_key),
+        model: Some(payload.model),
+        ..Default::default()
+    };
+    state.update_global_settings(update).await;
+    state.setup_completed.store(true, Ordering::Relaxed);
+    tracing::info!("[SETUP] Initial configuration saved");
+    axum::Json(serde_json::json!({"status": "ok"})).into_response() // log: setup response
 }
 
 

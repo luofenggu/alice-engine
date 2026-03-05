@@ -74,6 +74,7 @@ body::before {
     letter-spacing: 1px;
     margin-bottom: 8px;
 }
+.form-group select,
 .form-group input {
     width: 100%;
     padding: 14px 16px;
@@ -85,18 +86,18 @@ body::before {
     outline: none;
     transition: border-color 0.2s;
 }
-.form-group input:focus { border-color: var(--accent); }
+.form-group select { cursor: pointer; }
+.form-group select option { background: #1a1a26; }
+.form-group input:focus,
+.form-group select:focus { border-color: var(--accent); }
 .form-group input::placeholder { color: var(--text-muted); }
 .form-group .hint {
     color: var(--text-muted);
     font-size: 12px;
     margin-top: 6px;
 }
-.form-group .hint a {
-    color: var(--accent-light);
-    text-decoration: none;
-}
-.form-group .hint a:hover { text-decoration: underline; }
+.custom-url { display: none; margin-top: 8px; }
+.custom-url.visible { display: block; }
 button.submit-btn {
     width: 100%;
     padding: 16px;
@@ -120,11 +121,6 @@ button.submit-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none;
     margin-top: 16px;
     min-height: 20px;
 }
-.success-msg {
-    color: var(--success);
-    font-size: 14px;
-    margin-top: 16px;
-}
 </style>
 </head>
 <body>
@@ -133,21 +129,24 @@ button.submit-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none;
     <div class="subtitle">Welcome! Let's get you set up.</div>
 
     <div class="form-group">
-        <label>API URL</label>
-        <input type="text" id="apiUrlInput" value="https://zenmux.ai/api/v1/chat/completions">
-        <div class="hint">OpenAI-compatible endpoint. Shortcuts: <code>openrouter</code>, <code>openai</code>, <code>zenmux</code></div>
+        <label>Provider</label>
+        <select id="providerSelect" onchange="onProviderChange()">
+            <option value="openrouter">OpenRouter</option>
+            <option value="openai">OpenAI</option>
+            <option value="custom">Custom URL</option>
+        </select>
+        <input type="text" id="customUrlInput" class="custom-url" placeholder="https://your-api.com/v1/chat/completions">
     </div>
 
     <div class="form-group">
         <label>API Key</label>
         <input type="password" id="apiKeyInput" placeholder="sk-..." autofocus>
-        <div class="hint">Your API key for the provider above</div>
     </div>
 
     <div class="form-group">
         <label>Model</label>
-        <input type="text" id="modelInput" value="anthropic/claude-opus-4.6">
-        <div class="hint">Model identifier, e.g. anthropic/claude-sonnet-4</div>
+        <input type="text" id="modelInput" value="anthropic/claude-sonnet-4-20250514">
+        <div class="hint">e.g. anthropic/claude-sonnet-4-20250514, gpt-4o, deepseek/deepseek-chat</div>
     </div>
 
     <button class="submit-btn" id="submitBtn" onclick="doSetup()">Start</button>
@@ -155,34 +154,50 @@ button.submit-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none;
 </div>
 
 <script>
-async function doSetup() {
-    const apiUrl = document.getElementById('apiUrlInput').value.trim();
-    const apiKey = document.getElementById('apiKeyInput').value.trim();
-    const model = document.getElementById('modelInput').value.trim();
-    const btn = document.getElementById('submitBtn');
-    const err = document.getElementById('errorMsg');
+function onProviderChange() {
+    var sel = document.getElementById('providerSelect');
+    var custom = document.getElementById('customUrlInput');
+    if (sel.value === 'custom') {
+        custom.className = 'custom-url visible';
+        custom.focus();
+    } else {
+        custom.className = 'custom-url';
+    }
+}
 
-    if (!apiUrl) { err.textContent = 'Please enter the API URL'; return; }
+async function doSetup() {
+    var provider = document.getElementById('providerSelect').value;
+    var customUrl = document.getElementById('customUrlInput').value.trim();
+    var apiKey = document.getElementById('apiKeyInput').value.trim();
+    var modelName = document.getElementById('modelInput').value.trim();
+    var btn = document.getElementById('submitBtn');
+    var err = document.getElementById('errorMsg');
+
     if (!apiKey) { err.textContent = 'Please enter your API key'; return; }
-    if (!model) { err.textContent = 'Please enter a model name'; return; }
+    if (!modelName) { err.textContent = 'Please enter a model name'; return; }
+    if (provider === 'custom' && !customUrl) { err.textContent = 'Please enter the API URL'; return; }
+
+    // Build model string: provider@model or url@model
+    var prefix = provider === 'custom' ? customUrl : provider;
+    var model = prefix + '@' + modelName;
 
     btn.disabled = true;
     btn.textContent = 'Setting up...';
     err.textContent = '';
 
     try {
-        const res = await fetch('api/setup', {
+        var res = await fetch('api/setup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ api_url: apiUrl, api_key: apiKey, model: model }),
+            body: JSON.stringify({ api_key: apiKey, model: model }),
         });
 
         if (res.ok) {
             btn.textContent = '✓ Ready';
             btn.style.background = 'var(--success)';
-            setTimeout(() => { window.location.href = '/'; }, 2000);
+            setTimeout(function() { window.location.href = './'; }, 1500);
         } else {
-            const data = await res.json().catch(() => ({}));
+            var data = await res.json().catch(function() { return {}; });
             err.textContent = data.error || 'Setup failed';
             btn.disabled = false;
             btn.textContent = 'Start';
