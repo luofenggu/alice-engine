@@ -26,7 +26,7 @@ ENGINE_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); prin
 AUTH_SECRET="test-secret-e2e"
 
 # Binary paths
-CARGO_TARGET="/data/rust-target-dev"
+CARGO_TARGET="${CARGO_TARGET_DIR:-target}"
 ENGINE_BIN="$CARGO_TARGET/release/alice-engine"
 MOCK_LLM_BIN="$CARGO_TARGET/release/mock-llm-server"
 

@@ -1,9 +1,12 @@
 #!/bin/bash
-# 准入测试：自部署前必须全部通过
-# 用法：bash scripts/pre-deploy-check.sh
+# Pre-deploy admission tests — all must pass before deployment
+# Usage: bash scripts/pre-deploy-check.sh
 
 set -e
-cd /data/alice-dev
+
+# Resolve project root (parent of scripts/)
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJECT_DIR"
 
 echo "========================================="
 echo "  Pre-Deploy Checks"
@@ -24,13 +27,13 @@ fi
 # 2. Unit Tests
 echo ""
 echo "[2/4] Unit Tests..."
-CARGO_TARGET_DIR=/data/rust-target-dev cargo test --release 2>&1 | tail -3
+cargo test --release 2>&1 | tail -3
 echo "  ✅ Unit tests passed"
 
 # 3. Build
 echo ""
 echo "[3/4] Build..."
-CARGO_TARGET_DIR=/data/rust-target-dev cargo build --release 2>&1 | tail -3
+cargo build --release 2>&1 | tail -3
 echo "  ✅ Build passed"
 
 # 4. E2E Tests
