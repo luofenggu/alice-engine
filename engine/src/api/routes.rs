@@ -377,16 +377,50 @@ pub fn public_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_PUBLIC_STATIC, get(handle_public_static))
 }
 
+// ── Embedded HTML (compiled into binary) ──
+
+const EMBEDDED_INDEX: &str = include_str!("../../../html-frontend/index.html");
+const EMBEDDED_SETUP: &str = include_str!("../../../html-frontend/setup.html");
+const EMBEDDED_LOGIN: &str = include_str!("../../../html-frontend/login.html");
+const EMBEDDED_KNOWLEDGE: &str = include_str!("../../../html-frontend/knowledge.html");
+
+/// Fallback handler: serve HTML from disk (dev mode) or embedded (release).
+async fn html_fallback(
+    State(state): State<Arc<EngineState>>,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    use axum::http::{header, StatusCode};
+
+    let path = uri.path().trim_start_matches('/');
+    let filename = if path.is_empty() || path == "index" { "index.html" } else { path };
+
+    // Try disk first (dev mode: html_dir has files)
+    let disk_path = state.html_dir.join(filename);
+    if disk_path.is_file() {
+        if let Ok(content) = tokio::fs::read_to_string(&disk_path).await {
+            return ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], content).into_response();
+        }
+    }
+
+    // Fallback to embedded
+    match filename {
+        "index.html" => ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], EMBEDDED_INDEX).into_response(),
+        "setup.html" => ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], EMBEDDED_SETUP).into_response(),
+        "login.html" => ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], EMBEDDED_LOGIN).into_response(),
+        "knowledge.html" => ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], EMBEDDED_KNOWLEDGE).into_response(),
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// Build the complete application router.
 ///
 /// Combines public routes, authenticated API routes, login/logout,
-/// static file serving, and auth middleware.
+/// embedded HTML serving, and auth middleware.
 pub fn build_router(
     engine_state: Arc<EngineState>,
-    html_dir: &std::path::Path,
 ) -> Router {
     use axum::routing::{get, post};
-    use tower_http::services::ServeDir;
     use crate::api::auth;
 
     Router::new()
@@ -399,8 +433,8 @@ pub fn build_router(
         .merge(authenticated_api_routes())
         // Public API routes (auth middleware whitelist covers /public/)
         .merge(public_api_routes())
-        // Static HTML files (fallback for non-API paths)
-        .fallback_service(ServeDir::new(html_dir))
+        // HTML fallback: disk (dev) → embedded (release)
+        .fallback(html_fallback)
         // Auth middleware (applied to all routes, whitelist inside)
         .layer(axum::middleware::from_fn_with_state(
             engine_state.clone(),

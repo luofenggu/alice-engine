@@ -34,6 +34,8 @@ pub struct EngineState {
     pub session_cookie_name: String,
     /// Global settings store.
     pub global_settings_store: GlobalSettingsStore,
+    /// HTML directory for frontend files (fallback to embedded if not found).
+    pub html_dir: PathBuf,
     pub setup_completed: AtomicBool,
 }
 
@@ -41,6 +43,7 @@ impl EngineState {
     pub fn new(
         instances_dir: PathBuf,
         logs_dir: PathBuf,
+        html_dir: PathBuf,
         user_id: String,
         signal_hub: SignalHub,
         engine_config: crate::policy::EngineConfig,
@@ -61,6 +64,7 @@ impl EngineState {
         Self {
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
+            html_dir,
             user_id,
             signal_hub,
             engine_config,

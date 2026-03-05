@@ -105,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
     let engine_state = Arc::new(EngineState::new(
         instances_dir.clone(),
         logs_dir.clone(),
+        html_dir,
         env_config.user_id.clone(),
         signal_hub.clone(),
         engine_config,
@@ -112,8 +113,8 @@ async fn main() -> anyhow::Result<()> {
         global_settings_store.clone(),
     ));
 
-    // Build HTTP router (routes, auth, static files — all in api/)
-    let app = routes::build_router(engine_state.clone(), &html_dir);
+    // Build HTTP router (routes, auth, embedded HTML — all in api/)
+    let app = routes::build_router(engine_state.clone());
 
     // Start HTTP server
     let addr = SocketAddr::from(([0, 0, 0, 0], http_port));
