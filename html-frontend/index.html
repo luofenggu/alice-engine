@@ -358,6 +358,7 @@ body {
     color: var(--text-primary);
     font-size: 15px;
     resize: none;
+    overflow-y: hidden;
     height: 80px;
     max-height: 200px;
     font-family: inherit;
@@ -1352,9 +1353,11 @@ function autoResize(el) {
     const minH = window.innerWidth > 768 ? 80 : 46;
     const maxH = window.innerWidth > 768 ? 200 : 120;
     el.style.height = minH + 'px';
-    if (el.scrollHeight > minH) {
-        el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
+    const newH = Math.min(el.scrollHeight, maxH);
+    if (newH > minH) {
+        el.style.height = newH + 'px';
     }
+    el.style.overflowY = newH >= maxH ? 'auto' : 'hidden';
 }
 
 /* @SEC: js-poll — startPolling + pollReplies + updateUptime */

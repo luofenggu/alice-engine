@@ -540,12 +540,18 @@ fn build_instance_info(id: String, instance: &crate::persist::instance::Instance
         privileged = settings.privileged_or_default();
     }
 
+    let last_active = instance.chat.lock()
+        .ok()
+        .and_then(|chat| chat.get_last_message_time().ok())
+        .unwrap_or(0);
+
     InstanceInfo {
         id,
         name: display_name,
         avatar,
         color,
         privileged,
+        last_active,
     }
 }
 

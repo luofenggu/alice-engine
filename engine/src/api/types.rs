@@ -18,6 +18,8 @@ pub struct InstanceInfo {
     pub color: String,
     #[serde(default)]
     pub privileged: bool,
+    #[serde(rename = "lastActive")]
+    pub last_active: i64,
 }
 
 // ============================================================
