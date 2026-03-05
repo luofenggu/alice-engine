@@ -20,9 +20,9 @@ Download the binary for your platform:
 
 | Platform | Download |
 |----------|----------|
-| Linux x86_64 | [alice-engine-linux-x86_64](https://github.com/luofenggu/alice-engine/releases/latest/download/alice-engine-linux-x86_64) |
-| macOS Apple Silicon | [alice-engine-macos-arm64](https://github.com/luofenggu/alice-engine/releases/latest/download/alice-engine-macos-arm64) |
-| macOS Intel | [alice-engine-macos-x86_64](https://github.com/luofenggu/alice-engine/releases/latest/download/alice-engine-macos-x86_64) |
+| Linux x86_64 | [alice-engine-linux-x86_64](http://8.149.243.230/release/latest/alice-engine-linux-x86_64) |
+| macOS Apple Silicon | [alice-engine-macos-arm64](http://8.149.243.230/release/latest/alice-engine-macos-arm64) |
+| macOS Intel | [alice-engine-macos-x86_64](http://8.149.243.230/release/latest/alice-engine-macos-x86_64) |
 
 Then:
 

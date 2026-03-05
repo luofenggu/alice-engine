@@ -12,8 +12,8 @@ ALICE_DATA="$ALICE_HOME/data"
 ALICE_VERSION="$ALICE_HOME/version.txt"
 ALICE_PORT=8081
 
-# Download source (will migrate to GitHub Releases later)
-BASE_URL="https://github.com/luofenggu/alice-engine/releases/latest/download"
+# Download source
+BASE_URL="http://8.149.243.230/release/latest"
 
 # --- Detect platform ---
 detect_platform() {
