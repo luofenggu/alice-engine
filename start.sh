@@ -6,9 +6,6 @@
 
 set -e
 
-# Data directory = where this script lives
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 ALICE_CACHE="$HOME/.alice"
 ALICE_BIN="$ALICE_CACHE/alice-engine"
 ALICE_VERSION="$ALICE_CACHE/version.txt"
@@ -137,15 +134,15 @@ main() {
     ALICE_PORT=$(find_port)
     echo ""
     echo "🚀 Starting Alice Engine on port $ALICE_PORT..."
-    echo "   Data directory: $SCRIPT_DIR"
+    echo "   Data directory: $(pwd)"
     echo ""
 
     # Open browser after a short delay
     (sleep 2 && open_browser) &
 
-    # Start engine in script directory (data lives here)
-    cd "$SCRIPT_DIR"
+    # Start engine in current directory (data lives here)
     export ALICE_HTTP_PORT="$ALICE_PORT"
+    export ALICE_BASE_DIR="$(pwd)"
     exec "$ALICE_BIN"
 }
 
