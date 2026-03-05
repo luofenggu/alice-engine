@@ -1,0 +1,10 @@
+[
+  {
+    "response": "",
+    "status_code": 402
+  },
+  {
+    "response": "{ACTION_TOKEN}-send_msg\ntest-user\nChannel rotation works! This is from channel B.\n\n{ACTION_TOKEN}-idle\n"
+  }
+]
+

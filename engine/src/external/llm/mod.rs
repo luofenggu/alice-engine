@@ -28,6 +28,7 @@ pub mod stream;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Result, Context};
 use tracing::{info, warn, error};
 use serde::{Deserialize, Serialize};
@@ -134,19 +135,56 @@ impl ChatMessage {
 
 /// HTTP client for LLM inference via OpenRouter.
 ///
+/// Supports multiple channels (provider+key combos) with round-robin rotation.
+/// On inference error, `advance_channel()` moves to the next channel so the
+/// next retry uses a different provider.
+///
 /// @TRACE: INFER — `[INFER-{id}] Starting inference`
 pub struct LlmClient {
-    pub(crate) config: LlmConfig,
+    configs: Vec<LlmConfig>,
+    channel_index: AtomicU64,
     http_client: reqwest::Client,
 }
 
 impl LlmClient {
-    pub fn new(config: LlmConfig) -> Self {
+    pub fn new(configs: Vec<LlmConfig>) -> Self {
+        assert!(!configs.is_empty(), "LlmClient requires at least one config");
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("Failed to build HTTP client");
-        Self { config, http_client }
+        Self { configs, channel_index: AtomicU64::new(0), http_client }
+    }
+
+    /// Get the current channel's config (round-robin by channel_index).
+    pub fn current_config(&self) -> LlmConfig {
+        let idx = self.channel_index.load(Ordering::Relaxed) as usize % self.configs.len();
+        self.configs[idx].clone()
+    }
+
+    /// Access primary channel's model (for hot-reload comparison).
+    pub fn primary_model(&self) -> &str { &self.configs[0].model }
+
+    /// Access primary channel's api_key (for hot-reload comparison).
+    pub fn primary_api_key(&self) -> &str { &self.configs[0].api_key }
+
+    /// Update primary channel's model (hot-reload).
+    pub fn set_primary_model(&mut self, model: String) { self.configs[0].model = model; }
+
+    /// Update primary channel's api_key (hot-reload).
+    pub fn set_primary_api_key(&mut self, api_key: String) { self.configs[0].api_key = api_key; }
+
+    /// Clone all configs (for passing to background tasks like RollTask).
+    pub fn all_configs(&self) -> Vec<LlmConfig> { self.configs.clone() }
+
+    /// Advance to the next channel (called on inference error).
+    pub fn advance_channel(&self) {
+        let old = self.channel_index.fetch_add(1, Ordering::Relaxed);
+        let new_idx = (old + 1) as usize % self.configs.len();
+        if self.configs.len() > 1 {
+            info!("[CHANNEL] Rotated to channel {} (model={})",
+                new_idx, self.configs[new_idx].model);
+        }
     }
 
     /// Synchronous (non-streaming) LLM inference. Returns plain text response.
@@ -160,7 +198,7 @@ impl LlmClient {
         messages: Vec<ChatMessage>,
         instance_id: &str,
     ) -> Result<(String, Option<UsageInfo>)> {
-        let config = self.config.clone();
+        let config = self.current_config();
         let http_client = self.http_client.clone();
         let instance_id = instance_id.to_string();
 
@@ -197,7 +235,7 @@ impl LlmClient {
         instance_id: &str,
         log_path: Option<&Path>,
     ) -> Result<(String, Option<UsageInfo>)> {
-        let config = self.config.clone();
+        let config = self.current_config();
         let http_client = self.http_client.clone();
         let instance_id = instance_id.to_string();
         let log_path = log_path.map(|p| p.to_path_buf());
@@ -239,10 +277,11 @@ impl LlmClient {
         // Write input log if enabled
         if infer_log_enabled {
             let llm_policy = &crate::policy::EngineConfig::get().llm;
-            let (resolved_url, _) = llm_policy.resolve_model(&self.config.model);
+            let current = self.current_config();
+            let (resolved_url, _) = llm_policy.resolve_model(&current.model);
             crate::logging::write_infer_input_log(
                 log_dir, &instance_id, log_timestamp,
-                &self.config.model, &resolved_url,
+                &current.model, &resolved_url,
                 &system_prompt, &user_prompt,
             );
         }
@@ -295,7 +334,7 @@ impl LlmClient {
     ) -> InferenceStream {
         let (tx, rx) = mpsc::channel();
 
-        let config = self.config.clone();
+        let config = self.current_config();
         let http_client = self.http_client.clone();
         let separator = format!("###ACTION_{}###-", separator_token);
         let separator_for_parse = format!("###ACTION_{}", separator_token);

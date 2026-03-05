@@ -96,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     // ── Global Settings: three-layer merge ──
     // seed = env vars ∪ engine.toml defaults (env wins)
     // global = seed ∪ persisted global_settings.json (persisted wins)
-    let (global_settings, global_settings_store) =
+    let (_global_settings, global_settings_store) =
         alice_engine::persist::GlobalSettingsStore::init(&base_dir, &env_config)?;
     tracing::info!("Global settings initialized");
 
@@ -130,9 +130,9 @@ async fn main() -> anyhow::Result<()> {
     let engine_instances_dir = instances_dir.clone();
     let engine_logs_dir = logs_dir.clone();
     let engine_env_config = env_config.clone();
-    let engine_global_settings = global_settings.clone();
+    let engine_gs_store = global_settings_store.clone();
     let engine_handle = std::thread::spawn(move || {
-        let mut engine = AliceEngine::new(engine_instances_dir, engine_logs_dir, signal_hub, engine_env_config, engine_global_settings);
+        let mut engine = AliceEngine::new(engine_instances_dir, engine_logs_dir, signal_hub, engine_env_config, engine_gs_store);
         if let Err(e) = engine.run() {
             tracing::error!("Engine error: {}", e);
         }

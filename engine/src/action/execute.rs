@@ -375,7 +375,8 @@ mod tests {
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let mut alice = Alice::new(instance, tmp.path().join("logs"), crate::external::llm::LlmConfig { model: String::new(), api_key: String::new(), temperature: None, max_tokens: None }, env_config).unwrap();
+        let llm_config = crate::external::llm::LlmConfig { model: String::new(), api_key: String::new(), temperature: None, max_tokens: None };
+        let mut alice = Alice::new(instance, tmp.path().join("logs"), vec![llm_config], env_config).unwrap();
         alice.privileged = true;
         let tx = Transaction::new("test");
         (alice, tx, tmp)

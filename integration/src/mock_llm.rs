@@ -21,27 +21,34 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 
 /// A scripted response with optional user line assertion.
 ///
 /// - `response`: the LLM response text (with placeholders)
 /// - `expected_user_contains`: if Some, assert the last user message contains this keyword
+/// - `status_code`: if Some, return this HTTP status instead of 200 (for error simulation)
 pub struct MockScript {
     pub response: String,
     pub expected_user_contains: Option<String>,
+    pub status_code: Option<u16>,
 }
 
 impl MockScript {
     /// Create a script without user assertion.
     pub fn new(response: impl Into<String>) -> Self {
-        Self { response: response.into(), expected_user_contains: None }
+        Self { response: response.into(), expected_user_contains: None, status_code: None }
     }
 
     /// Create a script with user line assertion.
     pub fn with_user_assert(response: impl Into<String>, expected: impl Into<String>) -> Self {
-        Self { response: response.into(), expected_user_contains: Some(expected.into()) }
+        Self { response: response.into(), expected_user_contains: Some(expected.into()), status_code: None }
+    }
+
+    /// Create a script that returns an HTTP error status.
+    pub fn with_error(status_code: u16) -> Self {
+        Self { response: String::new(), expected_user_contains: None, status_code: Some(status_code) }
     }
 }
 
@@ -54,6 +61,8 @@ pub struct MockLlmServer {
 struct MockState {
     scripts: Mutex<VecDeque<MockScript>>,
     total_scripts: usize,
+    /// Record of models received in each request (for channel rotation testing).
+    request_models: Mutex<Vec<String>>,
 }
 
 impl MockLlmServer {
@@ -66,10 +75,12 @@ impl MockLlmServer {
         let state = Arc::new(MockState {
             scripts: Mutex::new(VecDeque::from(scripts)),
             total_scripts: total,
+            request_models: Mutex::new(Vec::new()),
         });
 
         let app = Router::new()
             .route("/v1/chat/completions", post(handle_completion))
+            .route("/stats", get(handle_stats))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
@@ -89,10 +100,12 @@ impl MockLlmServer {
         let state = Arc::new(MockState {
             scripts: Mutex::new(VecDeque::from(scripts)),
             total_scripts: total,
+            request_models: Mutex::new(Vec::new()),
         });
 
         let app = Router::new()
             .route("/v1/chat/completions", post(handle_completion))
+            .route("/stats", get(handle_stats))
             .with_state(state);
 
         let addr = format!("127.0.0.1:{}", port);
@@ -163,6 +176,10 @@ async fn handle_completion(
         .unwrap_or("<no user msg>");
     let last_user_preview: String = last_user_content.chars().take(60).collect();
 
+    // Record the requested model for stats
+    let request_model = body_json["model"].as_str().unwrap_or("unknown").to_string();
+    state.request_models.lock().unwrap().push(request_model.clone());
+
     // Now consume the next scripted response
     let mock_script = {
         let mut scripts = state.scripts.lock().unwrap();
@@ -171,8 +188,8 @@ async fn handle_completion(
         match &script {
             Some(s) => {
                 let idx = state.total_scripts - remaining + 1;
-                eprintln!("[MOCK-LLM] Consuming script #{} ({} remaining) | user: {}", 
-                    idx, remaining - 1, last_user_preview);
+                eprintln!("[MOCK-LLM] Consuming script #{} ({} remaining) | model: {} | user: {}", 
+                    idx, remaining - 1, request_model, last_user_preview);
                 // Assert user line if expected — search full content, not just preview
                 if let Some(ref expected) = s.expected_user_contains {
                     assert!(last_user_content.contains(expected.as_str()),
@@ -183,8 +200,8 @@ async fn handle_completion(
             None => {
                 // All scripts consumed — return idle instead of panicking
                 let user_preview: String = last_user_content.chars().take(60).collect();
-                eprintln!("[MOCK-LLM] All {} scripts consumed, returning idle | user: {}", 
-                    state.total_scripts, user_preview);
+                eprintln!("[MOCK-LLM] All {} scripts consumed, returning idle | model: {} | user: {}", 
+                    state.total_scripts, request_model, user_preview);
                 let idle_content = format!("{}-idle\n", token);
                 let sse_body = format_sse_response(&idle_content);
                 return axum::response::Response::builder()
@@ -196,6 +213,23 @@ async fn handle_completion(
         }
         script.unwrap()
     };
+
+    // If script specifies a non-200 status code, return error response
+    if let Some(status_code) = mock_script.status_code {
+        eprintln!("[MOCK-LLM] Returning error status {}", status_code);
+        let error_body = serde_json::json!({
+            "error": {
+                "code": status_code.to_string(),
+                "type": "mock_error",
+                "message": format!("Mock LLM error {}", status_code)
+            }
+        }).to_string();
+        return axum::response::Response::builder()
+            .status(status_code)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(error_body))
+            .unwrap();
+    }
 
     // Collect all message content for action_id searching
     let all_content = collect_message_content(&body_json);
@@ -219,6 +253,18 @@ async fn handle_completion(
             .body(axum::body::Body::from(json_body))
             .unwrap()
     }
+}
+
+/// Return request statistics (models seen so far).
+async fn handle_stats(
+    State(state): State<Arc<MockState>>,
+) -> axum::response::Response {
+    let models = state.request_models.lock().unwrap().clone();
+    let body = serde_json::json!({ "models": models }).to_string();
+    axum::response::Response::builder()
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .unwrap()
 }
 
 /// Replace all placeholders in the script.

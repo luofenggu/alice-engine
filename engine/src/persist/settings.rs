@@ -5,6 +5,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// An inference channel: provider+model bound to an API key.
+///
+/// Used for extra channels in round-robin failover.
+/// The `model` field uses the same `provider@model_id` format as the main model setting.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Channel {
+    pub api_key: String,
+    pub model: String,
+}
+
 /// Unified settings struct — used at both global and instance level.
 ///
 /// All fields are Option for merge semantics:
@@ -47,6 +57,10 @@ pub struct Settings {
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell_env: Option<String>,
+    /// Extra inference channels for round-robin failover.
+    /// Each channel has its own api_key and model (provider@model_id).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_channels: Option<Vec<Channel>>,
 }
 
 impl Settings {
@@ -69,6 +83,7 @@ impl Settings {
         if self.max_tokens.is_none() { self.max_tokens = fallback.max_tokens; }
         if self.host.is_none() { self.host = fallback.host.clone(); }
         if self.shell_env.is_none() { self.shell_env = fallback.shell_env.clone(); }
+        if self.extra_channels.is_none() { self.extra_channels = fallback.extra_channels.clone(); }
     }
 
     /// Build seed settings from environment variables and engine.toml defaults.
@@ -93,6 +108,7 @@ impl Settings {
             max_tokens: Some(llm.max_tokens),
             host: env.host.clone(),
             shell_env: if env.shell_env.is_empty() { None } else { Some(env.shell_env.clone()) },
+            extra_channels: None,
         }
     }
 

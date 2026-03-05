@@ -131,7 +131,7 @@ mod tests {
         std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let alice = Alice::new(instance, tmp.path().join("logs"), Default::default(), env_config).unwrap();
+        let alice = Alice::new(instance, tmp.path().join("logs"), vec![Default::default()], env_config).unwrap();
         (alice, tmp)
     }
 

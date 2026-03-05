@@ -350,10 +350,10 @@ impl Alice {
     /// Create a new Alice instance from an instance directory.
     ///
     /// @TRACE: INSTANCE
-    pub fn new(instance: instance::Instance, log_dir: PathBuf, llm_config: LlmConfig, env_config: Arc<crate::policy::EnvConfig>) -> Result<Self> {
+    pub fn new(instance: instance::Instance, log_dir: PathBuf, llm_configs: Vec<LlmConfig>, env_config: Arc<crate::policy::EnvConfig>) -> Result<Self> {
         let user_id = instance.user_id().to_string();
 
-        let llm_client = LlmClient::new(llm_config);
+        let llm_client = LlmClient::new(llm_configs);
 
         // Read settings overrides before instance is moved into struct
         let mem_cfg = &crate::policy::EngineConfig::get().memory;
@@ -448,15 +448,15 @@ impl Alice {
             current_history: current_history.clone(),
         };
 
-        // Clone LLM config for background thread
-        let llm_config = self.llm_client.config.clone();
+        // Clone LLM configs for background thread
+        let llm_configs = self.llm_client.all_configs();
 
         Ok(Some(RollTask {
             memory: self.instance.memory.clone(),
             oldest_block: oldest_block.clone(),
             request,
             instance_id: self.instance.id.clone(),
-            llm_config,
+            llm_configs,
         }))
     }
 
@@ -552,6 +552,7 @@ impl Alice {
             policy.inference_backoff_cap_secs,
         );
         self.inference_backoff_until = Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
+        self.llm_client.advance_channel();
         warn!("[BACKOFF-{}] Inference failed ({} consecutive), backing off {}s",
             self.instance.id, self.inference_failures.value(), backoff_secs);
         backoff_secs
@@ -811,7 +812,7 @@ pub struct RollTask {
     pub oldest_block: String,
     pub request: crate::inference::compress::CompressRequest,
     pub instance_id: String,
-    pub llm_config: crate::external::llm::LlmConfig,
+    pub llm_configs: Vec<crate::external::llm::LlmConfig>,
 }
 
 /// Prepare history rolling if needed (fast, non-blocking).
@@ -821,7 +822,7 @@ pub struct RollTask {
 /// Does LLM call + commit history via Memory (atomic write + delete block).
 pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     // Create a temporary LLM client for this task
-    let llm_client = crate::external::llm::LlmClient::new(task.llm_config);
+    let llm_client = crate::external::llm::LlmClient::new(task.llm_configs);
 
     info!("[ROLL-{}] Background: calling LLM for history compression", task.instance_id);
     let (new_history, usage) = llm_client.infer_compress(
@@ -866,7 +867,7 @@ mod tests {
         let log_dir = tmp.path().join("logs");
         let llm_config = LlmConfig { model: String::new(), api_key: String::new(), temperature: None, max_tokens: None };
         let env_config = Arc::new(crate::policy::EnvConfig::from_env());
-        let alice = Alice::new(instance, log_dir, llm_config, env_config).unwrap();
+        let alice = Alice::new(instance, log_dir, vec![llm_config], env_config).unwrap();
         (alice, tmp)
     }
 

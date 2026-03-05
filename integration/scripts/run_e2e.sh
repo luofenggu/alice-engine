@@ -99,6 +99,7 @@ cd "$PLAYWRIGHT_DIR"
 ENGINE_URL="http://127.0.0.1:$ENGINE_PORT" \
 AUTH_SECRET="$AUTH_SECRET" \
 INSTANCES_DIR="$INSTANCES_DIR" \
+MOCK_LLM_PORT="$MOCK_LLM_PORT" \
 npx playwright test "${TEST_NAME}.spec.js" --reporter=list
 
 echo ""

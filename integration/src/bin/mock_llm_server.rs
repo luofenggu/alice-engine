@@ -22,6 +22,7 @@ use serde::Deserialize;
 struct ScriptEntry {
     response: String,
     expected_user_contains: Option<String>,
+    status_code: Option<u16>,
 }
 
 #[tokio::main]
@@ -50,10 +51,12 @@ async fn main() {
         });
 
     let scripts: Vec<MockScript> = entries.into_iter().map(|e| {
-        match e.expected_user_contains {
+        let mut script = match e.expected_user_contains {
             Some(expected) => MockScript::with_user_assert(e.response, expected),
             None => MockScript::new(e.response),
-        }
+        };
+        script.status_code = e.status_code;
+        script
     }).collect();
 
     let count = scripts.len();
