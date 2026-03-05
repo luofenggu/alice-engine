@@ -118,7 +118,7 @@ All endpoints under `/api/`. Authentication via session cookie (set `ALICE_AUTH_
 ```
 engine/          — Core engine (Rust, axum HTTP server)
 html-frontend/   — Web UI (static HTML/JS)
-route-macro/     — Proc-macro for route annotations
+engine/route-macro/ — Proc-macro for route annotations
 integration/     — End-to-end tests (Playwright + mock LLM)
 defense/         — Code quality tools (guardian, leak-detector)
 scripts/         — Build & deploy scripts
