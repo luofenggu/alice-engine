@@ -542,8 +542,9 @@ impl Alice {
         self.instance.chat.lock().unwrap().count_unread_user_messages().unwrap_or(0)
     }
 
-    /// Set inference backoff after a failure. Returns the backoff duration in seconds.
-    fn set_inference_backoff(&mut self) -> u64 {
+    /// Set inference backoff after a failure.
+    /// Returns (backoff_secs, rotation_info) where rotation_info is Some((from, to)) if channel rotated.
+    fn set_inference_backoff(&mut self) -> (u64, Option<(String, String)>) {
         self.inference_failures.increment();
         let policy = &crate::policy::EngineConfig::get().engine;
         let backoff_secs = self.inference_failures.exponential_backoff(
@@ -552,10 +553,10 @@ impl Alice {
             policy.inference_backoff_cap_secs,
         );
         self.inference_backoff_until = Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
-        self.llm_client.advance_channel();
+        let rotation = self.llm_client.advance_channel();
         warn!("[BACKOFF-{}] Inference failed ({} consecutive), backing off {}s",
             self.instance.id, self.inference_failures.value(), backoff_secs);
-        backoff_secs
+        (backoff_secs, rotation)
     }
 
     /// Unified anomaly notification: write to both agent memory and user-visible chat.
@@ -699,8 +700,8 @@ impl Alice {
             match stream.next_or_timeout(std::time::Duration::from_millis(self.stream_poll_interval_ms)) {
                 RecvResult::Timeout => continue,
                 RecvResult::Disconnected => {
-                    let backoff = self.set_inference_backoff();
-                    anyhow::bail!("推理连接异常断开，将在{}秒后重试。", backoff);
+                    let (backoff, rotation) = self.set_inference_backoff();
+                    anyhow::bail!("{}", crate::policy::messages::inference_disconnected(backoff, rotation.as_ref()));
                 }
                 RecvResult::Item(item) => match item {
                     StreamItem::Action(action) => {
@@ -778,8 +779,8 @@ impl Alice {
                         break;
                     }
                     StreamItem::Error(e) => {
-                        let backoff = self.set_inference_backoff();
-                        anyhow::bail!("推理过程出错: {}，将在{}秒后重试。", e, backoff);
+                        let (backoff, rotation) = self.set_inference_backoff();
+                        anyhow::bail!("{}", crate::policy::messages::inference_error(&e, backoff, rotation.as_ref()));
                     }
                 },
 

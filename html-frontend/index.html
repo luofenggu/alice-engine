@@ -1257,8 +1257,6 @@ async function sendMessage() {
     input.value = '';
     input.style.height = '46px';
     if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
-    messages[currentInstance].msgs.push({ role: 'user', content: text, timestamp: nowTimestamp() });
-    renderMessages();
     const sendResult = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
     if (sendResult && sendResult.data) { const sentId = parseInt(sendResult.data); if (sentId > 0) { messages[currentInstance].lastMsgId = sentId; } }
     refreshInstances();

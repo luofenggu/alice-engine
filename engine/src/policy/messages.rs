@@ -127,6 +127,28 @@ pub fn beat_error(e: &anyhow::Error) -> String {
     format!("Beat error: {}", e)
 }
 
+/// Format inference error with optional channel rotation info.
+pub fn inference_error(error: &str, backoff_secs: u64, rotation: Option<&(String, String)>) -> String {
+    match rotation {
+        Some((from, to)) => format!(
+            "{} 推理出错: {}，已轮换到 {}，将在{}秒后重试。",
+            from, error, to, backoff_secs
+        ),
+        None => format!("推理过程出错: {}，将在{}秒后重试。", error, backoff_secs),
+    }
+}
+
+/// Format inference disconnection with optional channel rotation info.
+pub fn inference_disconnected(backoff_secs: u64, rotation: Option<&(String, String)>) -> String {
+    match rotation {
+        Some((from, to)) => format!(
+            "{} 推理连接异常断开，已轮换到 {}，将在{}秒后重试。",
+            from, to, backoff_secs
+        ),
+        None => format!("推理连接异常断开，将在{}秒后重试。", backoff_secs),
+    }
+}
+
 // === Sequence defense (hallucination defense) ===
 
 pub fn sequence_reject_after_blocking(instance_id: &str, action: &str) -> String {

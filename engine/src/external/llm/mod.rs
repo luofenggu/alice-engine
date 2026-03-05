@@ -177,13 +177,26 @@ impl LlmClient {
     /// Clone all configs (for passing to background tasks like RollTask).
     pub fn all_configs(&self) -> Vec<LlmConfig> { self.configs.clone() }
 
+    /// Get display name for a channel index: 0 → "primary", N → "extraN".
+    pub fn channel_display_name(idx: usize) -> String {
+        if idx == 0 { "primary".to_string() } else { format!("extra{}", idx) }
+    }
+
     /// Advance to the next channel (called on inference error).
-    pub fn advance_channel(&self) {
+    /// Returns (old_name, new_name) if rotation happened (multi-channel), None if single channel.
+    pub fn advance_channel(&self) -> Option<(String, String)> {
         let old = self.channel_index.fetch_add(1, Ordering::Relaxed);
-        let new_idx = (old + 1) as usize % self.configs.len();
-        if self.configs.len() > 1 {
-            info!("[CHANNEL] Rotated to channel {} (model={})",
-                new_idx, self.configs[new_idx].model);
+        let len = self.configs.len();
+        if len > 1 {
+            let old_idx = old as usize % len;
+            let new_idx = (old + 1) as usize % len;
+            let old_name = Self::channel_display_name(old_idx);
+            let new_name = Self::channel_display_name(new_idx);
+            info!("[CHANNEL] Rotated from {} to {} (model={})",
+                old_name, new_name, self.configs[new_idx].model);
+            Some((old_name, new_name))
+        } else {
+            None
         }
     }
 
