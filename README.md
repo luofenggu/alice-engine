@@ -7,7 +7,7 @@ A self-evolving AI agent engine. Each agent gets its own workspace, memory, and 
 ### One-Line Install & Run
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/luofenggu/alice-engine/main/start.sh | bash
+curl -fsSL http://8.149.243.230/release/latest/start.sh | bash
 ```
 
 This will download the binary to `~/.alice/`, start the engine, and open your browser. Run the same command again to launch — it won't re-download unless there's an update.
