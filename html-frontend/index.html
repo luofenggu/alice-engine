@@ -562,6 +562,11 @@ body {
 .settings-actions button:hover { opacity: 0.85; }
 .settings-add-btn { background: none; border: 1px dashed var(--border); color: var(--text-secondary); border-radius: 4px; cursor: pointer; padding: 5px 10px; font-size: 12px; width: 100%; margin-top: 4px; }
 .settings-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+.settings-global-mode .settings-instance-only { display: none; }
+.settings-channel-label { font-size: 11px; color: var(--text-dim); margin: 8px 0 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.settings-channel-label:first-child { margin-top: 0; }
+.settings-global-btn { background: none; border: 1px solid var(--border); color: var(--text-secondary); border-radius: 6px; cursor: pointer; padding: 6px 12px; font-size: 12px; width: 100%; margin-top: 4px; }
+.settings-global-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* @SEC: css-files ===== File Browser ===== */
 .file-browser {
@@ -783,6 +788,7 @@ body {
     <div class="create-bar">
         <button onclick="createInstance()">+ New</button>
     </div>
+    <button class="settings-global-btn" onclick="openGlobalSettings()">⚙️ Global Settings</button>
     <div id="sidebarFooter" style="padding:8px 20px;font-size:11px;color:var(--text-dim);opacity:0.4;user-select:all;"></div>
 </div>
 
@@ -1738,70 +1744,106 @@ function toggleInference() {
     if (inferenceExpanded) pollInference();
 }
 
-// @SEC: js-settings ===== Instance Settings Modal =====
+// @SEC: js-settings ===== Settings Modal =====
+var settingsMode = 'instance'; // 'instance' or 'global'
+
 async function openSettings() {
     if (!currentInstance) return;
     document.getElementById('opsMenu').classList.remove('open');
+    settingsMode = 'instance';
+    document.getElementById('settingsPanel').classList.remove('settings-global-mode');
     const res = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/settings');
     if (!res) return;
     document.getElementById('settingsTitle').textContent = (res.name || currentInstance) + ' Settings';
     document.getElementById('setName').value = res.name || '';
     document.getElementById('setAvatar').value = res.avatar || '';
     document.getElementById('setColor').value = res.color || '#6c5ce7';
-    document.getElementById('setApiKey').value = '';
-    document.getElementById('setApiKey').placeholder = res.api_key ? 'Current: ' + res.api_key : 'Not set (using default)';
-    document.getElementById('setModel').value = res.model || '';
     document.getElementById('setPrivileged').checked = res.privileged || false;
-    // Extra models
-    const list = document.getElementById('extraModelsList');
-    list.innerHTML = '';
-    if (res.extra_models && res.extra_models.length) {
-        res.extra_models.forEach(function(m) { addExtraModelRow(m.api_key || '', m.model || ''); });
-    }
+    populateChannelFields(res);
     document.getElementById('settingsOverlay').classList.add('open');
 }
 
-function addExtraModelRow(apiKey, model) {
-    const list = document.getElementById('extraModelsList');
-    const row = document.createElement('div');
+async function openGlobalSettings() {
+    settingsMode = 'global';
+    document.getElementById('settingsPanel').classList.add('settings-global-mode');
+    const res = await api('GET', 'api/settings');
+    if (!res) return;
+    document.getElementById('settingsTitle').textContent = 'Global Settings';
+    populateChannelFields(res);
+    document.getElementById('settingsOverlay').classList.add('open');
+}
+
+function populateChannelFields(res) {
+    document.getElementById('setApiKey').value = '';
+    document.getElementById('setApiKey').placeholder = res.api_key ? 'Current: ' + res.api_key : 'Not set';
+    document.getElementById('setModel').value = res.model || '';
+    var list = document.getElementById('extraChannelsList');
+    list.innerHTML = '';
+    if (res.extra_channels && res.extra_channels.length) {
+        res.extra_channels.forEach(function(ch) { addExtraChannelRow(ch.api_key || '', ch.model || ''); });
+    }
+}
+
+function addExtraChannelRow(apiKey, model) {
+    var list = document.getElementById('extraChannelsList');
+    var idx = list.children.length + 1;
+    var row = document.createElement('div');
     row.className = 'settings-extra-row';
-    row.innerHTML = '<input placeholder="API Key" value="' + (apiKey||'').replace(/"/g,'&quot;') + '">'
-        + '<input placeholder="Model" value="' + (model||'').replace(/"/g,'&quot;') + '">'
-        + '<button onclick="this.parentElement.remove()">✕</button>';
+    row.innerHTML = '<div class="settings-channel-label" style="width:100%;margin:4px 0 2px">Extra ' + idx + '</div>'
+        + '<div style="display:flex;gap:6px;width:100%;align-items:center">'
+        + '<input placeholder="API Key" value="' + (apiKey||'').replace(/"/g,'&quot;') + '" style="flex:1">'
+        + '<input placeholder="Model" value="' + (model||'').replace(/"/g,'&quot;') + '" style="flex:1">'
+        + '<button onclick="this.closest(\'.settings-extra-row\').remove();renumberExtraChannels()">✕</button>'
+        + '</div>';
     list.appendChild(row);
+}
+
+function renumberExtraChannels() {
+    var rows = document.querySelectorAll('#extraChannelsList .settings-extra-row');
+    rows.forEach(function(row, i) {
+        var label = row.querySelector('.settings-channel-label');
+        if (label) label.textContent = 'Extra ' + (i + 1);
+    });
 }
 
 function closeSettings() { document.getElementById('settingsOverlay').classList.remove('open'); }
 
 async function saveSettings() {
-    if (!currentInstance) return;
-    const body = {};
-    const name = document.getElementById('setName').value.trim();
-    const avatar = document.getElementById('setAvatar').value.trim();
-    const color = document.getElementById('setColor').value;
-    const apiKey = document.getElementById('setApiKey').value.trim();
-    const model = document.getElementById('setModel').value.trim();
-    const privileged = document.getElementById('setPrivileged').checked;
-    if (name) body.name = name;
-    if (avatar) body.avatar = avatar;
-    if (color) body.color = color;
+    var body = {};
+    var apiKey = document.getElementById('setApiKey').value.trim();
+    var model = document.getElementById('setModel').value.trim();
     if (apiKey) body.api_key = apiKey;
     if (model) body.model = model;
-    body.privileged = privileged;
-    // Extra models
-    const rows = document.querySelectorAll('#extraModelsList .settings-extra-row');
-    const extras = [];
+
+    // Extra channels
+    var rows = document.querySelectorAll('#extraChannelsList .settings-extra-row');
+    var extras = [];
     rows.forEach(function(row) {
-        const inputs = row.querySelectorAll('input');
-        const k = inputs[0].value.trim(), m = inputs[1].value.trim();
+        var inputs = row.querySelectorAll('input');
+        var k = inputs[0].value.trim(), m = inputs[1].value.trim();
         if (k || m) extras.push({api_key: k, model: m});
     });
-    body.extra_models = extras;
-    const res = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/settings', body);
+    body.extra_channels = extras;
+
+    if (settingsMode === 'instance') {
+        if (!currentInstance) return;
+        var name = document.getElementById('setName').value.trim();
+        var avatar = document.getElementById('setAvatar').value.trim();
+        var color = document.getElementById('setColor').value;
+        var privileged = document.getElementById('setPrivileged').checked;
+        if (name) body.name = name;
+        if (avatar) body.avatar = avatar;
+        if (color) body.color = color;
+        body.privileged = privileged;
+        var res = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/settings', body);
+    } else {
+        var res = await api('POST', 'api/settings', body);
+    }
+
     if (res && res.success) {
         frontendLog('INFO', 'settings', 'Updated: ' + (res.updated||[]).join(', '));
         closeSettings();
-        refreshInstances();
+        if (settingsMode === 'instance') refreshInstances();
     }
 }
 
@@ -1905,24 +1947,29 @@ setTimeout(updateSidebarFooter, 500);
 
 <!-- Settings Modal -->
 <div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
-    <div class="settings-panel">
-        <h3 id="settingsTitle">Instance Settings</h3>
-        <label>Name</label>
-        <input id="setName" placeholder="Display name">
-        <div style="display:flex;gap:8px">
-            <div style="flex:1"><label>Avatar (emoji)</label><input id="setAvatar" placeholder="🤖" style="width:100%"></div>
-            <div style="flex:1"><label>Color</label><input id="setColor" type="color" style="width:100%;height:33px;padding:2px"></div>
+    <div class="settings-panel" id="settingsPanel">
+        <h3 id="settingsTitle">Settings</h3>
+        <div class="settings-instance-only">
+            <label>Name</label>
+            <input id="setName" placeholder="Display name">
+            <div style="display:flex;gap:8px">
+                <div style="flex:1"><label>Avatar (emoji)</label><input id="setAvatar" placeholder="🤖" style="width:100%"></div>
+                <div style="flex:1"><label>Color</label><input id="setColor" type="color" style="width:100%;height:33px;padding:2px"></div>
+            </div>
         </div>
+        <div class="settings-channel-label">Primary Channel</div>
         <label>API Key</label>
         <input id="setApiKey" placeholder="Leave empty to keep current">
         <label>Model</label>
         <input id="setModel" placeholder="openrouter@anthropic/claude-sonnet-4">
-        <label>Extra Models</label>
-        <div id="extraModelsList"></div>
-        <button class="settings-add-btn" onclick="addExtraModelRow()">+ Add extra model</button>
-        <label style="margin-top:12px">
-            <input type="checkbox" id="setPrivileged" style="width:auto;margin-right:6px">Privileged
-        </label>
+        <label style="margin-top:14px">Extra Channels</label>
+        <div id="extraChannelsList"></div>
+        <button class="settings-add-btn" onclick="addExtraChannelRow()">+ Add extra channel</button>
+        <div class="settings-instance-only">
+            <label style="margin-top:12px">
+                <input type="checkbox" id="setPrivileged" style="width:auto;margin-right:6px">Privileged
+            </label>
+        </div>
         <div class="settings-actions">
             <button onclick="closeSettings()">Cancel</button>
             <button class="primary" onclick="saveSettings()">Save</button>

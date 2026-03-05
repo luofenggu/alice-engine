@@ -129,6 +129,13 @@ impl Settings {
                 clone.api_key = Some(crate::api::http_protocol::mask_api_key(key));
             }
         }
+        if let Some(ref mut channels) = clone.extra_channels {
+            for ch in channels.iter_mut() {
+                if ch.api_key.len() > crate::api::http_protocol::API_KEY_MASK_MIN_LEN {
+                    ch.api_key = crate::api::http_protocol::mask_api_key(&ch.api_key);
+                }
+            }
+        }
         clone
     }
 
