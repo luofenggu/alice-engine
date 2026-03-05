@@ -16,7 +16,6 @@ from tree_sitter import Language, Parser
 
 GRAMMAR_SEARCH = [
     os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rust.so'),
-    '/data/tree-sitter-rust.so',
 ]
 
 def find_grammar():
