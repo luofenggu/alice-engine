@@ -518,6 +518,13 @@ impl AliceEngine {
             // Reset idle elapsed counter when entering a beat
             idle_elapsed.reset();
 
+            // Inference backoff check (centralized — beat() doesn't manage sleep)
+            if let Some(remaining) = alice.backoff_remaining() {
+                let sleep_time = remaining.min(Duration::from_secs(engine_policy.beat_interval_secs));
+                std::thread::sleep(sleep_time);
+                continue;
+            }
+
             // Run beat
             let unread = alice.count_unread_messages();
             if unread > 0 || !alice.last_was_idle {

@@ -546,6 +546,23 @@ impl Alice {
         self.instance.chat.lock().unwrap().count_unread_user_messages().unwrap_or(0)
     }
 
+    /// Check inference backoff status. Returns remaining duration if still backing off,
+    /// or None if no backoff / backoff expired (auto-clears on expiry).
+    pub fn backoff_remaining(&mut self) -> Option<std::time::Duration> {
+        if let Some(deadline) = self.inference_backoff_until {
+            if Instant::now() < deadline {
+                let remaining = deadline.duration_since(Instant::now());
+                info!("[BACKOFF-{}] Inference backoff active, {:.0}s remaining (failures={})",
+                    self.instance.id, remaining.as_secs_f64(), self.inference_failures.value());
+                return Some(remaining);
+            }
+            self.inference_backoff_until = None;
+            info!("[BACKOFF-{}] Backoff expired, retrying inference (failures={})",
+                self.instance.id, self.inference_failures.value());
+        }
+        None
+    }
+
     /// Set inference backoff after a failure.
     /// Returns (backoff_secs, rotation_info) where rotation_info is Some((from, to)) if channel rotated.
     fn set_inference_backoff(&mut self) -> (u64, Option<(String, String)>) {
@@ -635,24 +652,7 @@ impl Alice {
         }
 
 
-        // 1.7. Inference backoff
-        if let Some(deadline) = self.inference_backoff_until {
-            if Instant::now() < deadline {
-                let remaining = deadline.duration_since(Instant::now());
-                info!("[BACKOFF-{}] Inference backoff active, {:.0}s remaining (failures={})",
-                    self.instance.id, remaining.as_secs_f64(), self.inference_failures.value());
-                // Sleep briefly to avoid busy-looping during backoff
-                let backoff_sleep = std::time::Duration::from_secs(
-                    crate::policy::EngineConfig::get().engine.beat_interval_secs
-                );
-                let sleep_time = remaining.min(backoff_sleep);
-                std::thread::sleep(sleep_time);
-                return Ok(());
-            }
-            self.inference_backoff_until = None;
-            info!("[BACKOFF-{}] Backoff expired, retrying inference (failures={})",
-                self.instance.id, self.inference_failures.value());
-        }
+        // 1.7. Inference backoff (checked in instance_thread, not here)
 
         // 2. Create transaction
         let mut tx = Transaction::new(&self.instance.id);

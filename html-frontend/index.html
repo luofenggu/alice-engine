@@ -552,8 +552,9 @@ body {
     border-radius: 6px; color: var(--text-primary); font-size: 13px; box-sizing: border-box;
 }
 .settings-panel input:focus { border-color: var(--accent); outline: none; }
-.settings-extra-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
-.settings-extra-row input { flex: 1; }
+.settings-extra-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; flex-wrap: nowrap; }
+.settings-extra-row .settings-channel-label { flex-shrink: 0; margin: 0; min-width: 48px; }
+.settings-extra-row input { flex: 1; min-width: 0; }
 .settings-extra-row button { flex-shrink: 0; background: none; border: 1px solid var(--border); color: var(--text-secondary); border-radius: 4px; cursor: pointer; padding: 4px 8px; font-size: 12px; }
 .settings-extra-row button:hover { color: #e74c3c; border-color: #e74c3c; }
 .settings-actions { display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end; }
@@ -1774,8 +1775,7 @@ async function openGlobalSettings() {
 }
 
 function populateChannelFields(res) {
-    document.getElementById('setApiKey').value = '';
-    document.getElementById('setApiKey').placeholder = res.api_key ? 'Current: ' + res.api_key : 'Not set';
+    document.getElementById('setApiKey').value = res.api_key || '';
     document.getElementById('setModel').value = res.model || '';
     var list = document.getElementById('extraChannelsList');
     list.innerHTML = '';
@@ -1789,12 +1789,10 @@ function addExtraChannelRow(apiKey, model) {
     var idx = list.children.length + 1;
     var row = document.createElement('div');
     row.className = 'settings-extra-row';
-    row.innerHTML = '<div class="settings-channel-label" style="width:100%;margin:4px 0 2px">Extra ' + idx + '</div>'
-        + '<div style="display:flex;gap:6px;width:100%;align-items:center">'
-        + '<input placeholder="API Key" value="' + (apiKey||'').replace(/"/g,'&quot;') + '" style="flex:1">'
-        + '<input placeholder="Model" value="' + (model||'').replace(/"/g,'&quot;') + '" style="flex:1">'
-        + '<button onclick="this.closest(\'.settings-extra-row\').remove();renumberExtraChannels()">✕</button>'
-        + '</div>';
+    row.innerHTML = '<div class="settings-channel-label">Extra ' + idx + '</div>'
+        + '<input placeholder="API Key" value="' + (apiKey||'').replace(/"/g,'&quot;') + '">'
+        + '<input placeholder="Model" value="' + (model||'').replace(/"/g,'&quot;') + '">'
+        + '<button onclick="this.closest(\'.settings-extra-row\').remove();renumberExtraChannels()">✕</button>';
     list.appendChild(row);
 }
 
@@ -1842,8 +1840,16 @@ async function saveSettings() {
 
     if (res && res.success) {
         frontendLog('INFO', 'settings', 'Updated: ' + (res.updated||[]).join(', '));
-        closeSettings();
-        if (settingsMode === 'instance') refreshInstances();
+        var btn = document.querySelector('#settingsPanel .primary');
+        var orig = btn.textContent;
+        btn.textContent = '✓ Saved';
+        btn.style.background = 'var(--success)';
+        setTimeout(function() {
+            btn.textContent = orig;
+            btn.style.background = '';
+            closeSettings();
+            if (settingsMode === 'instance') refreshInstances();
+        }, 800);
     }
 }
 
