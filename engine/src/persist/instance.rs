@@ -13,11 +13,13 @@ use tracing::info;
 
 use crate::persist::Document;
 use super::chat::ChatHistory;
+use super::Settings;
 use super::memory::Memory;
 use crate::persist::TextFile;
 
 const SETTINGS_FILE: &str = "settings.json";
 const SKILL_FILE: &str = "skill.md";
+const KNOWLEDGE_FILE: &str = "knowledge.md";
 
 /// Preset colors for new instances.
 const PRESET_COLORS: &[&str] = &[
@@ -32,7 +34,7 @@ pub struct Instance {
     /// Instance root directory (e.g. /root/agents/instances/860021).
     pub instance_dir: PathBuf,
     /// Settings document (JSON file persistence via Document<T>).
-    pub settings: Document<InstanceSettings>,
+    pub settings: Document<Settings>,
     /// Memory subsystem (knowledge, history, current, sessions).
     pub memory: Memory,
     /// Chat history (SQLite connection, shared via Arc for reuse).
@@ -53,7 +55,7 @@ impl Instance {
         user_id: &str,
         display_name: Option<&str>,
         knowledge: Option<&str>,
-        initial_settings: Option<&SettingsUpdate>,
+        initial_settings: Option<&Settings>,
     ) -> Result<Self> {
         // Generate 6-char random hex ID
         let id: String = (0..6)
@@ -86,14 +88,16 @@ impl Instance {
         let color = PRESET_COLORS[rand::random::<usize>() % PRESET_COLORS.len()];
 
         // Write settings.json
-        let mut settings_obj = InstanceSettings {
-            user_id: user_id.to_string(),
+        let mut settings_obj = Settings {
+            user_id: Some(user_id.to_string()),
             color: Some(color.to_string()),
             name: display_name.map(|n| n.to_string()),
             ..Default::default()
         };
         if let Some(update) = initial_settings {
-            update.apply_to(&mut settings_obj);
+            let mut merged = update.clone();
+            merged.merge_fallback(&settings_obj);
+            settings_obj = merged;
         }
         let settings_path = instance_dir.join(SETTINGS_FILE);
         let settings_json = serde_json::to_string_pretty(&settings_obj)
@@ -104,7 +108,7 @@ impl Instance {
         // Write initial knowledge if provided
         if let Some(k) = knowledge {
             if !k.is_empty() {
-                let knowledge_file = memory_dir.join(crate::inference::beat::KNOWLEDGE_FILE);
+                let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
                 crate::util::atomic_write(&knowledge_file, k)?;
             }
         }
@@ -184,7 +188,7 @@ impl Instance {
             .with_context(|| format!("Failed to create data dir: {}", data_dir.display()))?;
 
         // One-time migration: keypoints.md + knowledge/*.md → knowledge.md
-        let knowledge_file = memory_dir.join(crate::inference::beat::KNOWLEDGE_FILE);
+        let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
         if !knowledge_file.exists() {
             Self::migrate_knowledge(&knowledge_dir, &knowledge_file, &id)?;
         }
@@ -242,7 +246,7 @@ impl Instance {
             .with_context(|| format!("Failed to create data dir: {}", data_dir.display()))?;
 
         // One-time migration: keypoints.md + knowledge/*.md → knowledge.md
-        let knowledge_file = memory_dir.join(crate::inference::beat::KNOWLEDGE_FILE);
+        let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
         if !knowledge_file.exists() {
             Self::migrate_knowledge(&knowledge_dir, &knowledge_file, &id)?;
         }
@@ -272,7 +276,7 @@ impl Instance {
 
     /// Get user_id from settings.
     pub fn user_id(&self) -> String {
-        self.settings.load().map(|s| s.user_id).unwrap_or_default()
+        self.settings.load().map(|s| s.user_id_or_default()).unwrap_or_default()
     }
 
 
@@ -396,7 +400,7 @@ impl InstanceStore {
         user_id: &str,
         display_name: Option<&str>,
         knowledge: Option<&str>,
-        initial_settings: Option<&SettingsUpdate>,
+        initial_settings: Option<&Settings>,
     ) -> Result<Instance> {
         let instance = Instance::create(&self.instances_dir, user_id, display_name, knowledge, initial_settings)?;
         // Cache the connection from the newly created instance
@@ -498,7 +502,7 @@ mod tests {
         assert_eq!(instance.user_id(), "user1");
 
         let settings = instance.settings.load().unwrap();
-        assert_eq!(settings.user_id, "user1");
+        assert_eq!(settings.user_id.as_deref(), Some("user1"));
         assert_eq!(settings.name, Some("TestBot".to_string()));
         assert!(settings.color.is_some());
     }
@@ -561,8 +565,8 @@ mod tests {
         std::fs::create_dir_all(&instance_dir).unwrap();
 
         // Write minimal settings.json
-        let settings = InstanceSettings {
-            user_id: "user1".to_string(),
+        let settings = Settings {
+            user_id: Some("user1".to_string()),
             ..Default::default()
         };
         let settings_json = serde_json::to_string_pretty(&settings).unwrap();
@@ -589,8 +593,8 @@ mod tests {
         std::fs::write(knowledge_dir.join("01_basics.md"), "# Basics\nBasic info").unwrap();
 
         // Write settings
-        let settings = InstanceSettings {
-            user_id: "user1".to_string(),
+        let settings = Settings {
+            user_id: Some("user1".to_string()),
             ..Default::default()
         };
         std::fs::write(
@@ -683,53 +687,3 @@ mod tests {
 
 }
 
-// ---------------------------------------------------------------------------
-// InstanceSettings — per-instance configuration (.proto for settings.json)
-// ---------------------------------------------------------------------------
-
-// InstanceSettings and SettingsUpdate are defined in api::types.
-pub use crate::api::types::{InstanceSettings, SettingsUpdate};
-
-/// Extension trait for InstanceSettings — engine-specific logic.
-pub trait InstanceSettingsExt {
-    fn apply_global_fallbacks(&mut self, global: &crate::api::types::SettingsUpdate);
-    fn validate(&self) -> anyhow::Result<()>;
-}
-
-impl InstanceSettingsExt for InstanceSettings {
-    /// Apply global settings fallbacks for empty fields.
-    /// Call this after loading from file to fill in missing values from global settings.
-    fn apply_global_fallbacks(&mut self, global: &crate::api::types::SettingsUpdate) {
-        if self.api_key.is_empty() {
-            if let Some(ref v) = global.api_key { self.api_key = v.clone(); }
-        }
-        if self.model.is_empty() {
-            if let Some(ref v) = global.model { self.model = v.clone(); }
-        }
-        if self.user_id.is_empty() {
-            if let Some(ref v) = global.user_id { self.user_id = v.clone(); }
-        }
-        if self.temperature.is_none() {
-            self.temperature = global.temperature;
-        }
-        if self.max_tokens.is_none() {
-            self.max_tokens = global.max_tokens;
-        }
-        if self.host.is_none() {
-            if let Some(ref v) = global.host { self.host = Some(v.clone()); }
-        }
-        if self.shell_env.is_none() {
-            if let Some(ref v) = global.shell_env { self.shell_env = Some(v.clone()); }
-        }
-    }
-
-    /// Check that required fields are present. Call after apply_env_fallbacks().
-    fn validate(&self) -> anyhow::Result<()> {
-        if self.api_key.is_empty() {
-            anyhow::bail!("Missing api_key: set in settings.json or ALICE_DEFAULT_API_KEY env var");
-        }
-        Ok(())
-    }
-
-
-}

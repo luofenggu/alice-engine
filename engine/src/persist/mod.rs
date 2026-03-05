@@ -14,9 +14,11 @@
 pub mod memory;
 pub mod instance;
 pub mod chat;
+pub mod settings;
 
-/// Global settings filename constant.
-pub const GLOBAL_SETTINGS_FILE: &str = "global_settings.json";
+/// Global settings filename — private, not exposed outside persist.
+const GLOBAL_SETTINGS_FILE: &str = "global_settings.json";
+
 
 use anyhow::{Result, Context};
 
@@ -28,6 +30,13 @@ use anyhow::{Result, Context};
 pub struct Document<T: serde::Serialize + serde::de::DeserializeOwned> {
     path: std::path::PathBuf,
     _phantom: std::marker::PhantomData<T>,
+}
+
+
+impl<T: serde::Serialize + serde::de::DeserializeOwned> Clone for Document<T> {
+    fn clone(&self) -> Self {
+        Self { path: self.path.clone(), _phantom: std::marker::PhantomData }
+    }
 }
 
 impl<T> Document<T>
@@ -219,5 +228,5 @@ mod tests {
         assert_eq!(tf.read().unwrap(), "pre-existing content");
     }
 }
-pub use instance::InstanceSettingsExt;
+pub use settings::{Settings, GlobalSettingsStore};
 pub use memory::SessionBlockEntry;

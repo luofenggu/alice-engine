@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use super::http_protocol;
 use super::state::EngineState;
-use super::types::*;
+use crate::persist::Settings;
 
 // ── Helper Functions ──
 
@@ -54,7 +54,7 @@ pub struct SendMessageBody {
 #[derive(Deserialize)]
 pub struct CreateInstanceBody {
     pub name: Option<String>,
-    pub settings: Option<SettingsUpdate>,
+    pub settings: Option<Settings>,
 }
 
 // ── Instance Handlers ──
@@ -144,7 +144,7 @@ async fn handle_get_global_settings(
 #[post("/api/settings")]
 async fn handle_update_global_settings(
     State(state): State<Arc<EngineState>>,
-    Json(update): Json<SettingsUpdate>,
+    Json(update): Json<Settings>,
 ) -> Response {
     json_ok(state.update_global_settings(update).await)
 }
@@ -173,7 +173,7 @@ async fn handle_get_settings(
 async fn handle_update_settings(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
-    Json(update): Json<SettingsUpdate>,
+    Json(update): Json<Settings>,
 ) -> Response {
     json_ok(state.update_settings(id, update).await)
 }

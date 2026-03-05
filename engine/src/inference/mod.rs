@@ -62,7 +62,7 @@ const BLOCK_END_MARKER: &str = ">>>END";
 
 use std::fmt;
 use anyhow::{Result, bail};
-use crate::api::types::SettingsUpdate;
+use crate::persist::Settings;
 
 // ---------------------------------------------------------------------------
 // Action enum
@@ -78,7 +78,7 @@ pub enum Action {
     WriteFile { path: String, content: String },
     ReplaceInFile { path: String, blocks: Vec<ReplaceBlock> },
     Summary { content: String, knowledge: Option<String> },
-    SetProfile { update: SettingsUpdate },
+    SetProfile { update: Settings },
     CreateInstance { name: String, knowledge: String },
     Forget { target_action_id: String, summary: String },
 }
@@ -348,7 +348,7 @@ fn parse_replace_blocks(text: &str, separator_token: &str) -> Result<Vec<Replace
 
 /// Parse set_profile action content.
 fn parse_set_profile(text: &str) -> Result<Action> {
-    let mut update = SettingsUpdate::default();
+    let mut update = Settings::default();
     let known_keys = ["name", "color", "avatar"];
     let mut count = 0;
 

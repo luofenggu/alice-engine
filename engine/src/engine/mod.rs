@@ -36,14 +36,13 @@ use tracing::{info, warn, error};
 
 use crate::util::Counter;
 use crate::core::Alice;
-use crate::persist::instance::{InstanceStore, InstanceSettingsExt};
+use crate::persist::instance::InstanceStore;
 use crate::core::signal::SignalHub;
 
 
 
 
 
-// InstanceSettingsExt imported above with InstanceStore
 
 // ─── Free function: sandbox user management ──────────────────────
 
@@ -95,14 +94,14 @@ pub struct AliceEngine {
     /// Environment configuration.
     env_config: Arc<crate::policy::EnvConfig>,
     /// Global settings (merged from env + engine.toml + persisted global settings).
-    global_settings: crate::api::types::SettingsUpdate,
+    global_settings: crate::persist::Settings,
     /// Temporary buffer for instances during restore (drained to threads in run()).
     instances: Vec<(String, Alice)>,
 }
 
 impl AliceEngine {
     /// Create a new engine.
-    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub, env_config: Arc<crate::policy::EnvConfig>, global_settings: crate::api::types::SettingsUpdate) -> Self {
+    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub, env_config: Arc<crate::policy::EnvConfig>, global_settings: crate::persist::Settings) -> Self {
         let pid_file = env_config.pid_file_path(&instances_base);
         let instance_store = InstanceStore::new(instances_base.clone());
         Self {
@@ -150,21 +149,21 @@ impl AliceEngine {
     fn create_instance(&mut self, name: &str, instance_dir: &Path) -> Result<()> {
         let instance = crate::persist::instance::Instance::open(instance_dir)?;
         let mut settings = instance.settings.load()?;
-        settings.apply_global_fallbacks(&self.global_settings);
+        settings.merge_fallback(&self.global_settings);
         settings.validate()?;
 
         let llm_config = crate::external::llm::LlmConfig {
-            model: settings.model.clone(),
-            api_key: settings.api_key.clone(),
+            model: settings.model_or_default(),
+            api_key: settings.api_key_or_default(),
             temperature: settings.temperature,
             max_tokens: settings.max_tokens,
         };
 
         let mut alice = Alice::new(instance, self.logs_dir.clone(), llm_config, self.env_config.clone())?;
 
-        alice.instance_name = settings.name;
+        alice.instance_name = settings.name.clone();
 
-        alice.privileged = settings.privileged;
+        alice.privileged = settings.privileged_or_default();
         if let Some(v) = settings.safety_max_consecutive_beats { alice.safety_max_consecutive_beats = v; }
         if let Some(v) = settings.safety_cooldown_secs { alice.safety_cooldown_secs = v; }
         alice.host = settings.host.clone();
@@ -172,7 +171,7 @@ impl AliceEngine {
 
 
         // Auto-create sandbox user (紧箍咒) for non-privileged instances
-        if !settings.privileged {
+        if !settings.privileged_or_default() {
             let engine_policy = &crate::policy::EngineConfig::get().engine;
             if let Err(e) = crate::external::shell::ensure_sandbox_user(&engine_policy.sandbox_user_prefix, name, &alice.instance.workspace) {
                 warn!("[SANDBOX] Skipping sandbox setup for {}: {} (sandbox commands not available)", name, e);
@@ -371,19 +370,19 @@ impl AliceEngine {
                     }
 
                     // Hot-reload privileged
-                    if s.privileged != alice.privileged {
-                        info!("[HOT-RELOAD-{}] Privileged changed: {} -> {}", instance_id, alice.privileged, s.privileged);
-                        alice.privileged = s.privileged;
+                    if s.privileged_or_default() != alice.privileged {
+                        info!("[HOT-RELOAD-{}] Privileged changed: {} -> {}", instance_id, alice.privileged, s.privileged_or_default());
+                        alice.privileged = s.privileged_or_default();
                     }
 
                     // Hot-reload model and api_key
-                    if !s.model.is_empty() && s.model != alice.llm_client.config.model {
-                        info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.llm_client.config.model, s.model);
-                        alice.llm_client.config.model = s.model.clone();
+                    if s.model.as_ref().is_some_and(|m| !m.is_empty() && *m != alice.llm_client.config.model) {
+                        info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.llm_client.config.model, s.model_or_default());
+                        alice.llm_client.config.model = s.model_or_default();
                     }
-                    if !s.api_key.is_empty() && s.api_key != alice.llm_client.config.api_key {
+                    if s.api_key.as_ref().is_some_and(|k| !k.is_empty() && *k != alice.llm_client.config.api_key) {
                         info!("[HOT-RELOAD-{}] API key changed", instance_id);
-                        alice.llm_client.config.api_key = s.api_key.clone();
+                        alice.llm_client.config.api_key = s.api_key_or_default();
                     }
 
                 }
@@ -592,7 +591,7 @@ impl AliceEngine {
 mod tests {
     use super::*;
     use crate::persist::Document;
-    use crate::persist::instance::InstanceSettings;
+    use crate::persist::Settings;
     use tempfile::TempDir;
 
 
@@ -605,10 +604,10 @@ mod tests {
             r#"{"api_key":"sk-test-key","model":"openrouter@anthropic/claude-sonnet-4"}"#
         ).unwrap();
 
-        let doc: Document<InstanceSettings> = Document::open(&settings_path).unwrap();
+        let doc: Document<Settings> = Document::open(&settings_path).unwrap();
         let settings = doc.load().unwrap();
-        assert_eq!(settings.api_key, "sk-test-key");
-        assert_eq!(settings.model, "openrouter@anthropic/claude-sonnet-4");
+        assert_eq!(settings.api_key, Some("sk-test-key".to_string()));
+        assert_eq!(settings.model, Some("openrouter@anthropic/claude-sonnet-4".to_string()));
     }
 
 
@@ -617,7 +616,7 @@ mod tests {
     fn test_engine_creation() {
         let tmp = TempDir::new().unwrap();
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let gs = crate::api::types::SettingsUpdate::from_env_and_defaults(&env);
+        let gs = crate::persist::Settings::from_env_and_defaults(&env);
         let engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
@@ -643,7 +642,7 @@ mod tests {
         ).unwrap();
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let gs = crate::api::types::SettingsUpdate::from_env_and_defaults(&env);
+        let gs = crate::persist::Settings::from_env_and_defaults(&env);
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
@@ -675,7 +674,7 @@ mod tests {
         ).unwrap();
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let gs = crate::api::types::SettingsUpdate::from_env_and_defaults(&env);
+        let gs = crate::persist::Settings::from_env_and_defaults(&env);
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
@@ -705,14 +704,14 @@ mod tests {
         std::fs::write(&path,
             r#"{"api_key":"sk-test","model":"test","max_beats":20}"#
         ).unwrap();
-        let doc: Document<InstanceSettings> = Document::open(&path).unwrap();
+        let doc: Document<Settings> = Document::open(&path).unwrap();
         assert_eq!(doc.load().unwrap().max_beats, Some(20));
 
         // Without max_beats
         std::fs::write(&path,
             r#"{"api_key":"sk-test","model":"test"}"#
         ).unwrap();
-        let doc: Document<InstanceSettings> = Document::open(&path).unwrap();
+        let doc: Document<Settings> = Document::open(&path).unwrap();
         assert_eq!(doc.load().unwrap().max_beats, None);
     }
 
@@ -739,7 +738,7 @@ mod tests {
         ).unwrap();
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let gs = crate::api::types::SettingsUpdate::from_env_and_defaults(&env);
+        let gs = crate::persist::Settings::from_env_and_defaults(&env);
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),

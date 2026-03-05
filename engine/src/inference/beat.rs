@@ -14,7 +14,7 @@ const APP_GUIDE_TEMPLATE: &str = include_str!("../../templates/app_guide.txt");
 
 pub const INITIAL_HISTORY: &str = include_str!("../../templates/initial_history.txt");
 
-pub const KNOWLEDGE_FILE: &str = "knowledge.md";
+
 const SOFT_LIMIT: usize = 180_000;
 
 

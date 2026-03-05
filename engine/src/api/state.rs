@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tracing::{info, error};
 
 use crate::persist::instance::InstanceStore;
+use crate::persist::{Settings, GlobalSettingsStore};
 use crate::core::signal::SignalHub;
 use crate::api::types::*;
 
@@ -30,8 +31,8 @@ pub struct EngineState {
     pub session_token: String,
     /// Session cookie name (includes port to avoid conflicts between engines on same host).
     pub session_cookie_name: String,
-    /// Path to global_settings.json.
-    pub global_settings_path: PathBuf,
+    /// Global settings store.
+    pub global_settings_store: GlobalSettingsStore,
 }
 
 impl EngineState {
@@ -42,7 +43,7 @@ impl EngineState {
         signal_hub: SignalHub,
         engine_config: crate::policy::EngineConfig,
         env_config: Arc<crate::policy::EnvConfig>,
-        global_settings_path: PathBuf,
+        global_settings_store: GlobalSettingsStore,
     ) -> Self {
         let session_token = if env_config.auth_secret.is_empty() {
             String::new()
@@ -61,7 +62,7 @@ impl EngineState {
             env_config,
             session_token,
             session_cookie_name,
-            global_settings_path,
+            global_settings_store,
         }
     }
 
@@ -86,7 +87,7 @@ impl EngineState {
     }
 
     /// Create a new instance.
-    pub async fn create_instance(&self, display_name: String, initial_settings: Option<SettingsUpdate>) -> ActionResult {
+    pub async fn create_instance(&self, display_name: String, initial_settings: Option<Settings>) -> ActionResult {
         let display_name = display_name.trim().to_string();
         let name_opt = if display_name.is_empty() { None } else { Some(display_name.as_str()) };
 
@@ -262,7 +263,7 @@ impl EngineState {
     }
 
     /// Get instance settings.
-    pub async fn get_settings(&self, instance_id: String) -> InstanceSettings {
+    pub async fn get_settings(&self, instance_id: String) -> Settings {
         let store = self.instance_store.clone();
         let id = instance_id.clone();
 
@@ -275,29 +276,31 @@ impl EngineState {
             Ok(Ok(settings)) => settings,
             Ok(Err(e)) => {
                 error!("[API] get_settings error for {}: {}", instance_id, e);
-                InstanceSettings::default()
+                Settings::default()
             }
             Err(e) => {
                 error!("[API] get_settings join error: {}", e);
-                InstanceSettings::default()
+                Settings::default()
             }
         }
     }
 
     /// Update instance settings (merge-update).
-    pub async fn update_settings(&self, instance_id: String, update: SettingsUpdate) -> ActionResult {
+    pub async fn update_settings(&self, instance_id: String, update: Settings) -> ActionResult {
         let store = self.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
-            let mut settings = instance.settings.load()?;
-            let old = settings.clone();
+            let current = instance.settings.load()?;
+            let old = current.clone();
 
-            update.apply_to(&mut settings);
+            // Merge: update's non-None fields overwrite current
+            let mut merged = update;
+            merged.merge_fallback(&current);
 
-            match crate::policy::messages::describe_settings_change(&old, &settings) {
+            match crate::policy::messages::describe_settings_change(&old, &merged) {
                 Some(desc) => {
-                    instance.settings.save(&settings)?;
+                    instance.settings.save(&merged)?;
                     info!("[API] Settings updated for {}: {}", instance_id, desc);
                     Ok::<_, anyhow::Error>(ActionResult::ok(desc))
                 }
@@ -313,49 +316,30 @@ impl EngineState {
     }
 
     /// Get global settings.
-    pub async fn get_global_settings(&self) -> SettingsUpdate {
-        let path = self.global_settings_path.clone();
+    pub async fn get_global_settings(&self) -> Settings {
+        let store = self.global_settings_store.clone();
         let result = tokio::task::spawn_blocking(move || {
-            if path.exists() {
-                let content = std::fs::read_to_string(&path)?;
-                serde_json::from_str(&content).map_err(anyhow::Error::from)
-            } else {
-                Ok(SettingsUpdate::default())
-            }
+            store.load()
         }).await;
 
         match result {
             Ok(Ok(settings)) => settings,
             Ok(Err(e)) => {
                 error!("[API] get_global_settings error: {}", e);
-                SettingsUpdate::default()
+                Settings::default()
             }
             Err(e) => {
                 error!("[API] get_global_settings join error: {}", e);
-                SettingsUpdate::default()
+                Settings::default()
             }
         }
     }
 
     /// Update global settings (merge-update).
-    pub async fn update_global_settings(&self, update: SettingsUpdate) -> ActionResult {
-        let path = self.global_settings_path.clone();
+    pub async fn update_global_settings(&self, update: Settings) -> ActionResult {
+        let store = self.global_settings_store.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let mut current: SettingsUpdate = if path.exists() {
-                let content = std::fs::read_to_string(&path)?;
-                serde_json::from_str(&content)?
-            } else {
-                SettingsUpdate::default()
-            };
-            current.merge_fallback(&update);
-            // For merge_fallback, update takes priority — but we want update fields to overwrite.
-            // Actually, we want: update's non-None fields overwrite current.
-            // merge_fallback fills None from fallback. So we need the opposite:
-            // start from update, fill None from current.
-            let mut merged = update;
-            merged.merge_fallback(&current);
-            let content = serde_json::to_string_pretty(&merged)?;
-            std::fs::write(&path, &content)?;
+            store.merge_update(update)?;
             Ok::<_, anyhow::Error>(ActionResult::ok(crate::policy::messages::global_settings_updated()))
         }).await;
 
@@ -526,14 +510,14 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
         let mut privileged = false;
 
         if let Ok(settings) = instance.settings.load() {
-            if let Some(n) = settings.name {
+            if let Some(n) = &settings.name {
                 if !n.is_empty() {
-                    display_name = n;
+                    display_name = n.clone();
                 }
             }
-            color = settings.color.unwrap_or_default();
-            avatar = settings.avatar.unwrap_or_default();
-            privileged = settings.privileged;
+            color = settings.color.clone().unwrap_or_default();
+            avatar = settings.avatar.clone().unwrap_or_default();
+            privileged = settings.privileged_or_default();
         }
 
         instances.push(InstanceInfo {

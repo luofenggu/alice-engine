@@ -21,8 +21,8 @@ pub fn no_valid_fields() -> &'static str {
 /// Compare old and new settings, return human-readable description of changes.
 /// Returns None if nothing changed.
 pub fn describe_settings_change(
-    old: &crate::api::InstanceSettings,
-    new: &crate::api::InstanceSettings,
+    old: &crate::persist::Settings,
+    new: &crate::persist::Settings,
 ) -> Option<String> {
     let mut changes = Vec::new();
 
@@ -36,14 +36,15 @@ pub fn describe_settings_change(
         changes.push(format!("color: {}", new.color.as_deref().unwrap_or("")));
     }
     if old.api_key != new.api_key {
-        let suffix_len = 4.min(new.api_key.len());
-        changes.push(format!("api_key: ...{}", &new.api_key[new.api_key.len() - suffix_len..]));
+        let key = new.api_key.as_deref().unwrap_or("");
+        let suffix_len = 4.min(key.len());
+        changes.push(format!("api_key: ...{}", &key[key.len() - suffix_len..]));
     }
     if old.model != new.model {
-        changes.push(format!("model: {}", new.model));
+        changes.push(format!("model: {}", new.model.as_deref().unwrap_or("")));
     }
     if old.privileged != new.privileged {
-        changes.push(format!("privileged: {}", new.privileged));
+        changes.push(format!("privileged: {:?}", new.privileged));
     }
     if old.max_beats != new.max_beats {
         changes.push(format!("max_beats: {:?}", new.max_beats));

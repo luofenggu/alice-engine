@@ -96,9 +96,9 @@ async fn main() -> anyhow::Result<()> {
     // ── Global Settings: three-layer merge ──
     // seed = env vars ∪ engine.toml defaults (env wins)
     // global = seed ∪ persisted global_settings.json (persisted wins)
-    let (global_settings, global_settings_path) =
-        alice_engine::api::types::SettingsUpdate::init_global(&base_dir, &env_config);
-    tracing::info!("Global settings merged and saved to {}", global_settings_path.display());
+    let (global_settings, global_settings_store) =
+        alice_engine::persist::GlobalSettingsStore::init(&base_dir, &env_config)?;
+    tracing::info!("Global settings initialized");
 
     // Create engine state (shared between HTTP server and engine)
     let engine_config = alice_engine::policy::EngineConfig::load();
@@ -109,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
         signal_hub.clone(),
         engine_config,
         env_config.clone(),
-        global_settings_path.clone(),
+        global_settings_store.clone(),
     ));
 
     // Build HTTP router (routes, auth, static files — all in api/)

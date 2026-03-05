@@ -312,11 +312,22 @@ fn sym_eval(expr: &Expr, env: &VarEnv, fn_returns: &FnReturnMap) -> SymValue {
             }
         }
 
-        // ── Binary operation: both operands are in value position ──
+        // ── Binary operation ──
         Expr::Binary(e) => {
-            let left = sym_eval(&e.left, env, fn_returns);
-            let right = sym_eval(&e.right, env, fn_returns);
-            SymValue::compound(vec![left, right])
+            use syn::BinOp;
+            match &e.op {
+                // Comparison and logical operators produce bool — operands are control position
+                BinOp::Eq(_) | BinOp::Ne(_) |
+                BinOp::Lt(_) | BinOp::Le(_) |
+                BinOp::Gt(_) | BinOp::Ge(_) |
+                BinOp::And(_) | BinOp::Or(_) => SymValue::Opaque,
+                // Arithmetic/bitwise operators — operands are value position
+                _ => {
+                    let left = sym_eval(&e.left, env, fn_returns);
+                    let right = sym_eval(&e.right, env, fn_returns);
+                    SymValue::compound(vec![left, right])
+                }
+            }
         }
 
         // ── Unary operation: operand is in value position ──

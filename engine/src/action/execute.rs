@@ -314,18 +314,19 @@ fn execute_forget(alice: &mut Alice, _tx: &mut Transaction, target_action_id: &s
     Ok(String::new())
 }
 
-fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, update: &crate::api::types::SettingsUpdate) -> Result<String> {
+fn execute_set_profile(alice: &mut Alice, tx: &mut Transaction, update: &crate::persist::Settings) -> Result<String> {
     info!("[ACTION-{}] set_profile", tx.instance_id);
 
-    let mut settings = alice.instance.settings.load()?;
-    update.apply_to(&mut settings);
-    alice.instance.settings.save(&settings)?;
+    let settings = alice.instance.settings.load()?;
+    let mut merged = update.clone();
+    merged.merge_fallback(&settings);
+    alice.instance.settings.save(&merged)?;
 
     // Apply runtime effects
-    alice.privileged = settings.privileged;
-    alice.instance_name = settings.name.clone();
+    alice.privileged = merged.privileged_or_default();
+    alice.instance_name = merged.name.clone();
 
-    Ok(out::profile_updated(&update))
+    Ok(out::profile_updated(update))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────
