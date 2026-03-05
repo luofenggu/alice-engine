@@ -820,6 +820,15 @@ body {
 .msg.agent .copy-btn { position: absolute; top: 6px; right: 6px; background: rgba(255,255,255,0.1); border: none; color: var(--text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; opacity: 0; transition: opacity 0.2s; }
 .msg.agent pre:hover .copy-btn { opacity: 1; }
 .msg.agent .copy-btn:hover { background: rgba(255,255,255,0.2); color: var(--text-primary); }
+.msg-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.msg-copy-btn { background: none; border: none; color: #808090; cursor: pointer; padding: 2px; font-size: 13px; opacity: 0.5; transition: opacity 0.2s; line-height: 1; }
+.msg-copy-btn:hover { opacity: 1; }
+.msg.user .msg-copy-btn { color: rgba(255,255,255,0.5); }
+.msg.user .msg-copy-btn:hover { color: rgba(255,255,255,0.9); }
+@media (max-width: 768px) { .msg-copy-btn { opacity: 0.7; } }
+.send-btn.sending { pointer-events: none; opacity: 0.7; }
+.send-btn.sending svg { animation: spin 0.8s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .msg.agent blockquote { border-left: 3px solid var(--accent-light); padding-left: 12px; margin: 8px 0; color: var(--text-secondary); }
 .msg.agent table { border-collapse: collapse; margin: 8px 0; width: 100%; font-size: 14px; }
 .msg.agent th, .msg.agent td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
@@ -1316,15 +1325,26 @@ function waitForBorn(name) {
 async function sendMessage() {
     if (!currentInstance) return;
     const input = document.getElementById('msgInput');
+    const btn = document.querySelector('.send-btn');
     const text = input.value.trim();
     if (!text) return;
     frontendLog('INFO', 'send_message', 'to=' + currentInstance + ' len=' + text.length);
     input.value = '';
     input.style.height = '46px';
-    if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
-    const sendResult = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
-    if (sendResult && sendResult.data) { const sentId = parseInt(sendResult.data); if (sentId > 0) { messages[currentInstance].lastMsgId = sentId; } }
-    refreshInstances();
+    input.disabled = true;
+    btn.classList.add('sending');
+    btn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>';
+    try {
+        if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
+        const sendResult = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
+        if (sendResult && sendResult.data) { const sentId = parseInt(sendResult.data); if (sentId > 0) { messages[currentInstance].lastMsgId = sentId; } }
+        refreshInstances();
+    } finally {
+        input.disabled = false;
+        btn.classList.remove('sending');
+        btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
+        input.focus();
+    }
 }
 
 function handleKeydown(event) {
@@ -1530,12 +1550,27 @@ function createMessageElement(m) {
     } else {
         div.appendChild(parseMessageContent(m.content));
     }
+    const footer = document.createElement('div');
+    footer.className = 'msg-footer';
     if (m.timestamp) {
         const timeEl = document.createElement('span');
         timeEl.className = 'msg-time';
         timeEl.textContent = formatTimestamp(m.timestamp);
-        div.appendChild(timeEl);
+        footer.appendChild(timeEl);
     }
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'msg-copy-btn';
+    copyBtn.textContent = '⧉';
+    copyBtn.title = 'Copy message';
+    copyBtn.onclick = function() {
+        const text = m.content || div.innerText;
+        navigator.clipboard.writeText(text).then(function() {
+            copyBtn.textContent = '✓';
+            setTimeout(function() { copyBtn.textContent = '⧉'; }, 1500);
+        });
+    };
+    footer.appendChild(copyBtn);
+    div.appendChild(footer);
     return div;
 }
 
