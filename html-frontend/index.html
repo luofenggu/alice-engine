@@ -1421,6 +1421,9 @@ function renderMarkdown(text) {
         var filename = path.split('/').pop();
         return '<a class="file-link" data-filepath="' + escHtml(path) + '">\u{1F4C4} ' + escHtml(filename) + '</a>';
     });
+    // Pre-process: convert bare URLs to markdown links to prevent marked from
+    // including trailing quotes/braces (e.g. from JSON error messages)
+    text = text.replace(/(https?:\/\/[^\s<>\[\]"'`，。、；：！？）】}]+)/g, '[$1]($1)');
     if (typeof marked === 'undefined') {
         return escHtml(text);
     }
