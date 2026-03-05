@@ -1336,24 +1336,17 @@ async function sendMessage() {
     input.disabled = true;
     btn.classList.add('sending');
     btn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>';
-    // Optimistic insert: show user message immediately
-    if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
-    const optimisticMsg = { role: 'user', content: text, timestamp: nowTimestamp() };
-    messages[currentInstance].msgs.push(optimisticMsg);
-    const el = document.getElementById('chatMessages');
-    el.appendChild(createMessageElement(optimisticMsg));
-    el.scrollTop = el.scrollHeight;
-    // Restore input immediately after optimistic insert
-    input.disabled = false;
-    btn.classList.remove('sending');
-    btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
-    input.focus();
     try {
         const sendResult = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
-        if (sendResult && sendResult.data) { const sentId = parseInt(sendResult.data); if (sentId > 0) { messages[currentInstance].lastMsgId = sentId; } }
+        if (sendResult && sendResult.data) { const sentId = parseInt(sendResult.data); if (sentId > 0) { if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 }; messages[currentInstance].lastMsgId = sentId; } }
+        await pollReplies();
         refreshInstances();
     } finally {
         isSending = false;
+        input.disabled = false;
+        btn.classList.remove('sending');
+        btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
+        input.focus();
     }
 }
 
@@ -1401,7 +1394,7 @@ function schedulePollReplies(gen) {
 }
 
 async function pollReplies() {
-    if (!currentInstance || isSending) return;
+    if (!currentInstance) return;
     if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
     const data = messages[currentInstance];
     const afterId = data.lastMsgId || 0;
