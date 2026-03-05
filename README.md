@@ -10,7 +10,13 @@ A self-evolving AI agent engine. Each agent gets its own workspace, memory, and 
 curl -fsSL http://8.149.243.230/release/latest/start.sh | bash
 ```
 
-This will download the binary to `~/.alice/`, start the engine, and open your browser. Run the same command again to launch — it won't re-download unless there's an update.
+This will:
+- Cache the binary in `~/.alice/` (auto-updates on re-run)
+- Store data in your **current directory** (instances, settings, logs)
+- Find an available port starting from 8081
+- Open your browser automatically
+
+**Important:** Run this command from the directory where you want your data to live. Your agents and settings are stored right there.
 
 On **macOS**, you can also save `start.sh` as `Alice.command` and double-click it.
 
@@ -31,7 +37,7 @@ chmod +x alice-engine-*
 ./alice-engine-*
 ```
 
-Open http://127.0.0.1:8081 — the setup wizard will guide you through configuration.
+The engine stores data in the binary's directory by default. Open http://127.0.0.1:8081 — the setup wizard will guide you through configuration.
 
 ### Build from Source
 
