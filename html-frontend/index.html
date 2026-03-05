@@ -931,7 +931,7 @@ async function doLogout() {
 
 /* @SEC: js-instances — refresh/create/delete/switch */
 async function refreshInstances() {
-    const list = await api('GET', '/api/instances');
+    const list = await api('GET', 'api/instances');
     if (!Array.isArray(list)) return;
     cachedInstanceList = list;
     // Sort by lastActive descending (most recent first)
@@ -996,7 +996,7 @@ async function refreshInstances() {
 async function createInstance() {
     frontendLog('INFO', 'create_instance', 'creating new instance');
     if(window.innerWidth <= 768) toggleSidebar();
-    const result = await api('POST', '/api/instances', {});
+    const result = await api('POST', 'api/instances', {});
     if (!result || !result.success) return;
     const instanceId = result.message;
     currentInstance = instanceId;
@@ -1010,7 +1010,7 @@ async function deleteInstance(name, displayLabel, event) {
     if (event) event.stopPropagation();
     if (!confirm('删除实例 "' + displayLabel + '" (' + name + ')?')) return;
     frontendLog('INFO', 'delete_instance', 'name=' + name);
-    await api('DELETE', '/api/instances/' + encodeURIComponent(name));
+    await api('DELETE', 'api/instances/' + encodeURIComponent(name));
     if (currentInstance === name) {
         currentInstance = null;
         document.getElementById('chatTitle').textContent = 'Select an instance';
@@ -1066,19 +1066,19 @@ async function switchInstance(name) {
 
 /* @SEC: js-history — loadHistory + loadMoreHistory */
 async function loadHistory(name) {
-    const res = await api('GET', '/api/instances/' + encodeURIComponent(name) + '/messages?limit=50');
+    const res = await api('GET', 'api/instances/' + encodeURIComponent(name) + '/messages?limit=50');
     if (res && Array.isArray(res.messages)) {
-        const agentMsgs = res.messages.filter(m => m.role === 'agent' && m.id);
-        const lastAgentId = agentMsgs.length > 0 ? Math.max(...agentMsgs.map(m => m.id)) : 0;
+        const allMsgsWithId = res.messages.filter(m => m.id);
+        const lastMsgId = allMsgsWithId.length > 0 ? Math.max(...allMsgsWithId.map(m => m.id)) : 0;
         messages[name] = {
             msgs: res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp })),
             total: res.messages.length,
             earliestId: res.messages.length > 0 ? res.messages[0].id : 0,
             fullyLoaded: !res.has_more,
-            lastReplyId: lastAgentId
+            lastMsgId: lastMsgId
         };
     } else {
-        if (!messages[name]) messages[name] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastReplyId: 0 };
+        if (!messages[name]) messages[name] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
     }
     // Setup scroll listener for loading more
     const el = document.getElementById('chatMessages');
@@ -1106,7 +1106,7 @@ async function loadMoreHistory() {
     el.prepend(loader);
 
     const prevHeight = el.scrollHeight;
-    const res = await api('GET', '/api/instances/' + encodeURIComponent(currentInstance) + '/messages?limit=50&before_id=' + data.earliestId);
+    const res = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages?limit=50&before_id=' + data.earliestId);
     const loaderEl = document.getElementById('historyLoader');
     if (loaderEl) loaderEl.remove();
 
@@ -1171,7 +1171,7 @@ async function sendWelcomeMessage() {
     const text = input.value.trim();
     input.value = '';
     // Create auto-named instance
-    const result = await api('POST', '/api/instances', {});
+    const result = await api('POST', 'api/instances', {});
     if (result && result.success) {
         const instanceId = result.message;
         currentInstance = instanceId;
@@ -1183,10 +1183,11 @@ async function sendWelcomeMessage() {
         await switchInstance(instanceId);
         // Send the pending message after instance switch
         if (text) {
-            if (!messages[instanceId]) messages[instanceId] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastReplyId: 0 };
+            if (!messages[instanceId]) messages[instanceId] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
             messages[instanceId].msgs.push({ role: 'user', content: text, timestamp: nowTimestamp() });
             renderMessages();
-            await api('POST', '/api/instances/' + encodeURIComponent(instanceId) + '/messages', {content: text});
+            const sendRes = await api('POST', 'api/instances/' + encodeURIComponent(instanceId) + '/messages', {content: text});
+            if (sendRes && sendRes.data) { const sid = parseInt(sendRes.data); if (sid > 0 && messages[instanceId]) { messages[instanceId].lastMsgId = sid; } }
             refreshInstances();
         }
     }
@@ -1234,7 +1235,7 @@ function waitForBorn(name) {
     frontendLog('INFO', 'born_wait_start', 'instance=' + name);
     return new Promise((resolve) => {
         const check = async () => {
-            const data = await api('GET', '/api/instances/' + encodeURIComponent(name) + '/observe');
+            const data = await api('GET', 'api/instances/' + encodeURIComponent(name) + '/observe');
             if (data && (data.born || data.inferring)) {
                 frontendLog('INFO', 'born_wait_end', 'instance=' + name + ' born=' + data.born + ' inferring=' + (data.inferring || false));
                 resolve();
@@ -1255,10 +1256,11 @@ async function sendMessage() {
     frontendLog('INFO', 'send_message', 'to=' + currentInstance + ' len=' + text.length);
     input.value = '';
     input.style.height = '46px';
-    if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastReplyId: 0 };
+    if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
     messages[currentInstance].msgs.push({ role: 'user', content: text, timestamp: nowTimestamp() });
     renderMessages();
-    await api('POST', '/api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
+    const sendResult = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
+    if (sendResult && sendResult.data) { const sentId = parseInt(sendResult.data); if (sentId > 0) { messages[currentInstance].lastMsgId = sentId; } }
     refreshInstances();
 }
 
@@ -1305,12 +1307,12 @@ function schedulePollReplies(gen) {
 
 async function pollReplies() {
     if (!currentInstance) return;
-    if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastReplyId: 0 };
+    if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
     const data = messages[currentInstance];
-    const afterId = data.lastReplyId || 0;
+    const afterId = data.lastMsgId || 0;
     let replies;
     try {
-        replies = await api('GET', '/api/instances/' + encodeURIComponent(currentInstance) + '/replies?after_id=' + afterId);
+        replies = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/replies?after_id=' + afterId);
     } catch(e) {
         frontendLog('ERROR', 'poll_replies', 'instance=' + currentInstance + ' error=' + e.message);
         return;
@@ -1321,8 +1323,8 @@ async function pollReplies() {
             const id = r.id || null;
             const content = r.content || r;
             const timestamp = r.timestamp || nowTimestamp();
-            data.msgs.push({ id: id, role: 'agent', content: content, timestamp: timestamp });
-            if (id && id > data.lastReplyId) data.lastReplyId = id;
+            data.msgs.push({ id: id, role: r.role || 'agent', content: content, timestamp: timestamp });
+            if (id && id > data.lastMsgId) data.lastMsgId = id;
             added++;
         });
         if (added > 0) {
@@ -1503,7 +1505,7 @@ function switchView(view) {
 /* @SEC: js-files — loadFileTree + renderBreadcrumb + renderFileTree + loadFileContent + helpers */
 async function loadFileTree(path) {
     if (!currentInstance) return;
-    const data = await api('GET', '/api/instances/' + encodeURIComponent(currentInstance) + '/files/list?path=' + encodeURIComponent(path));
+    const data = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/files/list?path=' + encodeURIComponent(path));
     if (!data || data.error) {
         document.getElementById('fileTreeItems').innerHTML = '<div style="padding:12px;color:var(--text-muted);">' + (data ? escHtml(data.error) : 'Failed to load') + '</div>';
         return;
@@ -1564,7 +1566,7 @@ async function loadFileContent(path) {
     const contentEl = document.getElementById('fileContent');
     contentEl.innerHTML = '<div class="file-content-empty"><div>Loading...</div></div>';
 
-    const data = await api('GET', '/api/instances/' + encodeURIComponent(currentInstance) + '/files/read?path=' + encodeURIComponent(path));
+    const data = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/files/read?path=' + encodeURIComponent(path));
     if (!data || data.error) {
         contentEl.innerHTML = '<div class="file-content-empty"><div>' + (data ? escHtml(data.error) : 'Failed to load') + '</div></div>';
         return;
@@ -1652,7 +1654,7 @@ async function pollInference() {
     if (!currentInstance) return;
     let data;
     try {
-        data = await api('GET', '/api/instances/' + encodeURIComponent(currentInstance) + '/observe');
+        data = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/observe');
     } catch(e) {
         frontendLog('ERROR', 'poll_inference', 'instance=' + currentInstance + ' error=' + e.message);
         return;
@@ -1742,7 +1744,7 @@ function toggleInference() {
 async function openSettings() {
     if (!currentInstance) return;
     document.getElementById('opsMenu').classList.remove('open');
-    const res = await api('GET', '/api/instances/' + encodeURIComponent(currentInstance) + '/settings');
+    const res = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/settings');
     if (!res) return;
     document.getElementById('settingsTitle').textContent = (res.name || currentInstance) + ' Settings';
     document.getElementById('setName').value = res.name || '';
@@ -1797,7 +1799,7 @@ async function saveSettings() {
         if (k || m) extras.push({api_key: k, model: m});
     });
     body.extra_models = extras;
-    const res = await api('POST', '/api/instances/' + encodeURIComponent(currentInstance) + '/settings', body);
+    const res = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/settings', body);
     if (res && res.success) {
         frontendLog('INFO', 'settings', 'Updated: ' + (res.updated||[]).join(', '));
         closeSettings();
@@ -1819,7 +1821,7 @@ document.addEventListener('click', function(e) {
 
 async function doInterrupt() {
     if (!currentInstance) return;
-    const res = await api("POST", "/api/instances/" + currentInstance + "/interrupt");
+    const res = await api("POST", "api/instances/" + currentInstance + "/interrupt");
     if (res && res.success) {
         frontendLog("INFO", "interrupt", "Interrupt requested for " + currentInstance);
     }
@@ -1841,7 +1843,7 @@ async function cycleModel() {
     const count = parseInt(btn?.dataset.modelCount || '1');
     const current = parseInt(btn?.dataset.activeModel || '0');
     const next = (current + 1) % count;
-    const res = await api('POST', '/api/instances/' + encodeURIComponent(currentInstance) + '/switch-model', { index: next });
+    const res = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/switch-model', { index: next });
     if (res && res.success) {
         btn.dataset.activeModel = next;
         btn.textContent = next === 0 ? '🤖 Primary' : '🤖 Extra ' + next;
@@ -1856,7 +1858,7 @@ async function togglePrivileged() {
     const inst = cachedInstanceList.find(i => i.id === currentInstance);
     const currentVal = inst && inst.privileged;
     const newVal = !currentVal;
-    const res = await api("POST", "/api/instances/" + currentInstance + "/settings", { privileged: newVal });
+    const res = await api("POST", "api/instances/" + currentInstance + "/settings", { privileged: newVal });
     if (res && res.success) {
         if (inst) inst.privileged = newVal;
         updatePrivilegedBtn();

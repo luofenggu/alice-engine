@@ -225,7 +225,7 @@ impl EngineState {
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
             let ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
-            ch.get_agent_replies_after(after_id)
+            ch.get_messages_after(after_id, 100)
         }).await;
 
         match result {
