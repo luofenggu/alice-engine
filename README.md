@@ -4,53 +4,72 @@ A self-evolving AI agent engine. Each agent gets its own workspace, memory, and 
 
 ## Quick Start
 
-### Option 1: Download & Run
-
-Download the latest binary from [Releases](https://github.com/anthropic/alice-engine/releases), then:
+### One-Line Install & Run
 
 ```bash
-chmod +x alice-engine
-./alice-engine
+curl -fsSL https://raw.githubusercontent.com/luofenggu/alice-engine/main/start.sh | bash
 ```
 
-Open http://localhost:8081 in your browser. The setup page will guide you through configuration.
+This will download the binary to `~/.alice/`, start the engine, and open your browser. Run the same command again to launch — it won't re-download unless there's an update.
 
-### Option 2: Build from Source
+On **macOS**, you can also save `start.sh` as `Alice.command` and double-click it.
+
+### Manual Download
+
+Download the binary for your platform:
+
+| Platform | Download |
+|----------|----------|
+| Linux x86_64 | [alice-engine-linux-x86_64](https://github.com/luofenggu/alice-engine/releases/latest/download/alice-engine-linux-x86_64) |
+| macOS Apple Silicon | [alice-engine-macos-arm64](https://github.com/luofenggu/alice-engine/releases/latest/download/alice-engine-macos-arm64) |
+| macOS Intel | [alice-engine-macos-x86_64](https://github.com/luofenggu/alice-engine/releases/latest/download/alice-engine-macos-x86_64) |
+
+Then:
 
 ```bash
-git clone https://github.com/anthropic/alice-engine.git
+chmod +x alice-engine-*
+./alice-engine-*
+```
+
+Open http://127.0.0.1:8081 — the setup page will guide you through configuration.
+
+### Build from Source
+
+```bash
+git clone https://github.com/luofenggu/alice-engine.git
 cd alice-engine
 cargo build --release
 ./target/release/alice-engine
 ```
 
-Open http://localhost:8081 — the setup page will ask for your API key and model.
+## Cloud Deployment
 
-## Configuration
+For running on a server, set a password to protect access:
 
-On first launch, Alice shows a setup page where you set:
+```bash
+AUTH_SECRET=your-password ./alice-engine
+```
 
-- **API Key** — your LLM provider API key
-- **Model** — choose a provider and model (e.g. `anthropic/claude-sonnet-4`)
+Then visit `http://your-server-ip:8081` and log in with your password.
 
-That's it. You're ready to create your first agent.
-
-### Environment Variables (Optional)
-
-For production deployments, configure via environment variables:
+### All Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ALICE_AUTH_SECRET` | Login password (skip if unset) | No password |
-| `ALICE_DEFAULT_API_KEY` | Default API key for new instances | — |
-| `ALICE_DEFAULT_MODEL` | Default model (e.g. `openrouter@anthropic/claude-sonnet-4`) | `openrouter@anthropic/claude-opus-4.6` |
-| `ALICE_PORT` | HTTP port | `8081` |
+| `AUTH_SECRET` | Login password | No password (open access) |
+| `ALICE_DEFAULT_API_KEY` | Default LLM API key | — |
+| `ALICE_DEFAULT_MODEL` | Default model | `openrouter@anthropic/claude-sonnet-4` |
+| `ALICE_HTTP_PORT` | HTTP port | `8081` |
 | `ALICE_BASE_DIR` | Data directory | `.` (current dir) |
 | `ALICE_USER_ID` | Owner user ID | `default` |
-| `ALICE_HOST` | Hostname for display | — |
-| `ALICE_SKIP_AUTH` | Skip authentication (`true`/`false`) | `false` |
+| `ALICE_HOST` | Public hostname (for display) | — |
 
-Model format: `provider@model_id`. Built-in providers: `openrouter`, `openai`, `zenmux`. Use a full URL as provider for custom endpoints.
+**Model format:** `provider@model_id`
+
+Built-in providers: `openrouter`, `openai`. Use a full URL for custom endpoints:
+```
+https://your-api-server.com/v1/chat/completions@model-name
+```
 
 ## How It Works
 
@@ -64,7 +83,7 @@ The engine runs a beat loop: check messages → invoke LLM → execute actions �
 
 ## API Reference
 
-All endpoints under `/api/`. Authentication via session cookie (set `ALICE_AUTH_SECRET` to enable).
+All endpoints under `/api/`. Set `AUTH_SECRET` to enable authentication via session cookie.
 
 ### Instances
 
@@ -79,9 +98,9 @@ All endpoints under `/api/`. Authentication via session cookie (set `ALICE_AUTH_
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/instances/{id}/messages` | Get messages (paginated) |
-| POST | `/api/instances/{id}/messages` | Send message to instance |
-| GET | `/api/instances/{id}/replies` | Poll for new replies |
+| GET | `/api/instances/{id}/messages` | Get messages (query: `before_id`, `limit`) |
+| POST | `/api/instances/{id}/messages` | Send message |
+| GET | `/api/instances/{id}/replies` | Poll new messages (query: `after_id`) |
 
 ### Instance Management
 
@@ -90,10 +109,10 @@ All endpoints under `/api/`. Authentication via session cookie (set `ALICE_AUTH_
 | GET | `/api/instances/{id}/observe` | Observe instance state |
 | POST | `/api/instances/{id}/interrupt` | Interrupt current inference |
 | GET | `/api/instances/{id}/files/list` | List workspace files |
-| GET | `/api/instances/{id}/files/read` | Read a workspace file |
+| GET | `/api/instances/{id}/files/read` | Read workspace file (query: `path`) |
 | GET | `/api/instances/{id}/knowledge` | Get instance knowledge |
-| GET | `/api/instances/{id}/skill` | Get instance skill |
-| PUT | `/api/instances/{id}/skill` | Update instance skill |
+| GET | `/api/instances/{id}/skill` | Get skill |
+| PUT | `/api/instances/{id}/skill` | Update skill |
 
 ### Settings
 
@@ -104,30 +123,32 @@ All endpoints under `/api/`. Authentication via session cookie (set `ALICE_AUTH_
 | GET | `/api/instances/{id}/settings` | Get instance settings |
 | POST | `/api/instances/{id}/settings` | Update instance settings |
 
-### Static Files
+### Static Files & Proxy
 
 | Path | Description |
 |------|-------------|
-| `/serve/{id}/{path}` | Serve files from instance workspace |
-| `/public/{id}/{path}` | Public files (no auth required) |
+| `/serve/{id}/{path}` | Serve workspace files (auth required) |
+| `/public/{id}/apps/{path}` | Public files (no auth) |
+| `/proxy/{port}/{path}` | Reverse proxy to localhost port |
 
 ## Development
 
 ### Project Structure
 
 ```
-engine/          — Core engine (Rust, axum HTTP server)
-html-frontend/   — Web UI (static HTML/JS)
-engine/route-macro/ — Proc-macro for route annotations
-integration/     — End-to-end tests (Playwright + mock LLM)
-defense/         — Code quality tools (guardian, leak-detector)
-scripts/         — Build & deploy scripts
-```
-
-### Building
-
-```bash
-cargo build --release
+engine/              Core engine (Rust, axum HTTP server)
+  src/api/           HTTP API layer
+  src/core/          Agent lifecycle (beat/roll)
+  src/persist/       Data persistence (SQLite)
+  src/inference/     LLM integration
+  src/action/        Action execution
+  src/policy/        Configuration & defaults
+  src/external/      External system adapters
+  route-macro/       Proc-macro for route annotations
+  templates/         Prompt templates
+html-frontend/       Web UI (static HTML/JS)
+integration/         E2E tests (Playwright + mock LLM)
+defense/guardian/     Static analysis (literal placement rules)
 ```
 
 ### Testing
@@ -136,18 +157,14 @@ cargo build --release
 # Unit tests
 cargo test
 
-# End-to-end tests (requires Node.js + Playwright)
-cd integration && npm test
-```
-
-### Guardian (Code Quality)
-
-Static analysis tool that enforces literal placement rules:
-
-```bash
+# Guardian (static analysis)
 python3 defense/guardian/guardian.py engine/src
+
+# E2E tests (requires Node.js + Playwright)
+cd integration && npm test
 ```
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
