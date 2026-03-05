@@ -23,6 +23,13 @@ pub const INFER_LOG_TIME_FORMAT: &str = "%Y%m%d%H%M%S%3f";
 
 pub const DEFAULT_LOG_LEVEL: &str = "info";
 
+// ─── Thread naming ─────────────────────────────────────────────
+
+/// Format for instance worker thread names (visible in logs and system tools).
+pub fn thread_name(instance: &str) -> String {
+    format!("thread-instance-{}", instance)
+}
+
 // ─── Numeric constants ─────────────────────────────────────────
 
 pub const SECS_PER_DAY: u64 = 86400;

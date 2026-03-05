@@ -257,7 +257,7 @@ impl AliceEngine {
         for (name, alice) in instances {
             let shutdown_clone = Arc::clone(&shutdown);
             let handle = std::thread::Builder::new()
-                .name(format!("thread-instance-{}", name))
+                .name(crate::policy::log_formats::thread_name(&name))
                 .spawn(move || {
                     Self::instance_thread(alice, shutdown_clone);
                 })
@@ -306,7 +306,7 @@ impl AliceEngine {
                             if let Some((inst_name, alice)) = self.instances.pop() {
                                 let shutdown_clone = Arc::clone(&shutdown);
                                 let handle = std::thread::Builder::new()
-                                    .name(format!("thread-instance-{}", inst_name))
+                                    .name(crate::policy::log_formats::thread_name(&inst_name))
                                     .spawn(move || {
                                         Self::instance_thread(alice, shutdown_clone);
                                     });

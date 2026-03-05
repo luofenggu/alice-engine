@@ -104,33 +104,18 @@ body::before {
 <div class="login-card">
     <div class="logo">ALICE</div>
     <div class="subtitle">Enter the secret to continue</div>
-    <input type="password" id="secretInput" placeholder="Secret key" autofocus
-           onkeydown="if(event.key==='Enter')doLogin()">
-    <button id="loginBtn" onclick="doLogin()">Enter</button>
+    <form method="POST" action="login">
+        <input type="password" name="password" id="secretInput" placeholder="Secret key" autofocus>
+        <button type="submit" id="loginBtn">Enter</button>
+    </form>
     <div class="error-msg" id="errorMsg"></div>
 </div>
 <script>
-async function doLogin() {
-    const input = document.getElementById('secretInput');
-    const btn = document.getElementById('loginBtn');
-    const err = document.getElementById('errorMsg');
-    const secret = input.value.trim();
-    if (!secret) { err.textContent = 'Please enter the secret'; return; }
-    btn.disabled = true;
-    err.textContent = '';
-    try {
-        const res = await fetch('/api/auth', { method: 'POST', body: secret });
-        if (res.ok) {
-            window.location.href = '/';
-        } else {
-            err.textContent = 'Invalid secret';
-            input.value = '';
-            input.focus();
-        }
-    } catch(e) {
-        err.textContent = 'Connection error';
-    }
-    btn.disabled = false;
+// Show error if redirected back with ?error=1
+if (new URLSearchParams(window.location.search).has('error')) {
+    document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('errorMsg').textContent = 'Invalid secret';
+    });
 }
 </script>
 </body>
