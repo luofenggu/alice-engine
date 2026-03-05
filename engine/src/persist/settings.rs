@@ -105,6 +105,17 @@ impl Settings {
         Ok(())
     }
 
+    /// Return a clone with api_key masked for safe display.
+    pub fn masked(&self) -> Self {
+        let mut clone = self.clone();
+        if let Some(ref key) = clone.api_key {
+            if key.len() > crate::api::http_protocol::API_KEY_MASK_MIN_LEN {
+                clone.api_key = Some(crate::api::http_protocol::mask_api_key(key));
+            }
+        }
+        clone
+    }
+
     /// Get api_key or empty string.
     pub fn api_key_or_default(&self) -> String {
         self.api_key.clone().unwrap_or_default()

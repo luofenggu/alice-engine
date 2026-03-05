@@ -86,6 +86,25 @@ impl EngineState {
         }
     }
 
+    /// Get a single instance by ID.
+    pub async fn get_instance(&self, instance_id: String) -> Option<InstanceInfo> {
+        let store = self.instance_store.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            match store.open(&instance_id) {
+                Ok(instance) => Some(build_instance_info(instance_id, &instance)),
+                Err(_) => None,
+            }
+        }).await;
+
+        match result {
+            Ok(info) => info,
+            Err(e) => {
+                error!("[API] get_instance join error: {}", e);
+                None
+            }
+        }
+    }
+
     /// Create a new instance.
     pub async fn create_instance(&self, display_name: String, initial_settings: Option<Settings>) -> ActionResult {
         let display_name = display_name.trim().to_string();
@@ -493,6 +512,33 @@ impl EngineState {
     }
 }
 
+/// Build InstanceInfo from an opened Instance.
+fn build_instance_info(id: String, instance: &crate::persist::instance::Instance) -> InstanceInfo {
+    let mut display_name = id.clone();
+    let mut color = String::new();
+    let mut avatar = String::new();
+    let mut privileged = false;
+
+    if let Ok(settings) = instance.settings.load() {
+        if let Some(n) = &settings.name {
+            if !n.is_empty() {
+                display_name = n.clone();
+            }
+        }
+        color = settings.color.clone().unwrap_or_default();
+        avatar = settings.avatar.clone().unwrap_or_default();
+        privileged = settings.privileged_or_default();
+    }
+
+    InstanceInfo {
+        id,
+        name: display_name,
+        avatar,
+        color,
+        privileged,
+    }
+}
+
 /// Collect all instance info from the store.
 fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>> {
     let mut instances = Vec::new();
@@ -503,30 +549,7 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
             Ok(i) => i,
             Err(_) => continue,
         };
-
-        let mut display_name = name.clone();
-        let mut color = String::new();
-        let mut avatar = String::new();
-        let mut privileged = false;
-
-        if let Ok(settings) = instance.settings.load() {
-            if let Some(n) = &settings.name {
-                if !n.is_empty() {
-                    display_name = n.clone();
-                }
-            }
-            color = settings.color.clone().unwrap_or_default();
-            avatar = settings.avatar.clone().unwrap_or_default();
-            privileged = settings.privileged_or_default();
-        }
-
-        instances.push(InstanceInfo {
-            id: name,
-            name: display_name,
-            avatar,
-            color,
-            privileged,
-        });
+        instances.push(build_instance_info(name, &instance));
     }
 
     Ok(instances)

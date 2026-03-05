@@ -42,7 +42,6 @@ pub async fn check_auth(
 
     // Whitelist: login page, route-annotated public endpoints, static files, public prefix
     if path == http_protocol::LOGIN_PATH
-        || path == ROUTE_HANDLE_LEGACY_LOGIN
         || path == ROUTE_HANDLE_FRONTEND_ERROR
         || http_protocol::AUTH_WHITELIST_STATIC.contains(&path.as_str())
         || http_protocol::AUTH_WHITELIST_PREFIXES.iter().any(|p| path.starts_with(p))
@@ -118,22 +117,4 @@ pub async fn handle_frontend_error(
     axum::http::StatusCode::OK
 }
 
-/// Legacy login endpoint — accepts password as plain text body, sets cookie.
-/// Compatible with old HTML frontend's `/api/auth` POST.
-#[post("/api/auth")]
-pub async fn handle_legacy_login(
-    State(state): State<Arc<EngineState>>,
-    body: String,
-) -> Response {
-    use axum::http::{header, HeaderMap, StatusCode};
 
-    let auth_secret = &state.env_config.auth_secret;
-    if body.trim() == auth_secret {
-        let cookie = http_protocol::build_session_cookie(&state.session_cookie_name, &state.session_token);
-        let mut headers = HeaderMap::new();
-        headers.insert(header::SET_COOKIE, cookie.parse().unwrap());
-        (headers, StatusCode::OK).into_response()
-    } else {
-        StatusCode::UNAUTHORIZED.into_response()
-    }
-}

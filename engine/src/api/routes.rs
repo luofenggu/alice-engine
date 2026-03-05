@@ -6,7 +6,7 @@ use axum::{
     extract::{Path as AxumPath, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{any, delete, get, post},
+    routing::{any, get, post},
     Json, Router,
 };
 use route_macro::*;
@@ -71,6 +71,17 @@ async fn handle_create_instance(
 ) -> Response {
     let name = body.name.unwrap_or_default();
     json_ok(state.create_instance(name, body.settings).await)
+}
+
+#[get("/api/instances/{id}")]
+async fn handle_get_instance(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    match state.get_instance(id).await {
+        Some(info) => json_ok(info),
+        None => json_error(StatusCode::NOT_FOUND, "Instance not found"),
+    }
 }
 
 #[delete("/api/instances/{id}")]
@@ -155,18 +166,7 @@ async fn handle_get_settings(
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     let settings = state.get_settings(id).await;
-    // Mask API keys for security
-    let mut val = serde_json::to_value(&settings).unwrap_or_default();
-    if let Some(obj) = val.as_object_mut() {
-        if let Some(key_val) = obj.get_mut(http_protocol::API_KEY_FIELD_NAME) {
-            if let Some(s) = key_val.as_str() {
-                if s.len() > http_protocol::API_KEY_MASK_MIN_LEN {
-                    *key_val = serde_json::Value::String(http_protocol::mask_api_key(s));
-                }
-            }
-        }
-    }
-    json_ok(val)
+    json_ok(settings.masked())
 }
 
 #[post("/api/instances/{id}/settings")]
@@ -223,8 +223,8 @@ async fn handle_update_skill(
     body: String,
 ) -> Response {
     match state.update_skill(id, body).await {
-        Ok(()) => json_ok(serde_json::json!({"status": "ok"})),
-        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Ok(()) => json_ok(crate::api::types::ActionResult::ok_empty()),
+        Err(e) => json_ok(crate::api::types::ActionResult::err(e.to_string())),
     }
 }
 
@@ -355,7 +355,7 @@ async fn handle_auth_check() -> axum::Json<serde_json::Value> {
 pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
     Router::new()
         .route(ROUTE_HANDLE_GET_INSTANCES, get(handle_get_instances).post(handle_create_instance))
-        .route(ROUTE_HANDLE_DELETE_INSTANCE, delete(handle_delete_instance))
+        .route(ROUTE_HANDLE_GET_INSTANCE, get(handle_get_instance).delete(handle_delete_instance))
         .route(ROUTE_HANDLE_GET_MESSAGES, get(handle_get_messages).post(handle_send_message))
         .route(ROUTE_HANDLE_GET_REPLIES, get(handle_get_replies))
         .route(ROUTE_HANDLE_OBSERVE, get(handle_observe))
@@ -394,7 +394,6 @@ pub fn build_router(
         .route(auth::ROUTE_HANDLE_LOGIN_PAGE, get(auth::handle_login_page).post(auth::handle_login_post))
         .route(auth::ROUTE_HANDLE_LOGOUT, get(auth::handle_logout))
         .route(auth::ROUTE_HANDLE_FRONTEND_ERROR, post(auth::handle_frontend_error))
-        .route(auth::ROUTE_HANDLE_LEGACY_LOGIN, post(auth::handle_legacy_login))
         // Authenticated API routes
         .merge(authenticated_api_routes())
         // Public API routes (auth middleware whitelist covers /public/)
