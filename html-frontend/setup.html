@@ -131,6 +131,7 @@ button.submit-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none;
     <div class="form-group">
         <label>Provider</label>
         <select id="providerSelect" onchange="onProviderChange()">
+            <option value="zenmux">ZenMux</option>
             <option value="openrouter">OpenRouter</option>
             <option value="openai">OpenAI</option>
             <option value="custom">Custom URL</option>
@@ -145,7 +146,7 @@ button.submit-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none;
 
     <div class="form-group">
         <label>Model</label>
-        <input type="text" id="modelInput" value="anthropic/claude-sonnet-4-20250514">
+        <input type="text" id="modelInput" value="anthropic/claude-opus-4.6">
         <div class="hint">e.g. anthropic/claude-sonnet-4-20250514, gpt-4o, deepseek/deepseek-chat</div>
     </div>
 
