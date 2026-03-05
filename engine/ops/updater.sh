@@ -3,12 +3,12 @@
 # 由 systemd timer 定期触发
 
 LOG="/opt/alice/logs/updater.log"
-RELEASE_BASE="${ALICE_UPDATE_URL:-http://8.149.243.230/release}"
+RELEASE_BASE="${ALICE_UPDATE_URL:-http://YOUR_SERVER_IP/release}"
 ENGINE_PATH="/opt/alice/engine/alice-engine"
 WEB_PATH="/opt/alice/web"
 TMP_DIR="/tmp/alice-update"
 HOSTNAME=$(hostname)
-REPORT_HOST="${ALICE_REPORT_HOST:-8.149.243.230}"
+REPORT_HOST="${ALICE_REPORT_HOST:-YOUR_SERVER_IP}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG"
@@ -58,7 +58,7 @@ sys: $sys_line
 ========================================"
     
     # SSH到打包机追加日志（静默失败不影响主流程）
-    sshpass -p "${ALICE_REPORT_PASS:-Alice2xiaobai}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+    sshpass -p "${ALICE_REPORT_PASS:-YOUR_PASSWORD}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
         root@$REPORT_HOST "cat >> /opt/alice/logs/updater-reports.log << 'REPORT_EOF'
 $report_block
 REPORT_EOF" 2>/dev/null

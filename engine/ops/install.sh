@@ -1,6 +1,6 @@
 #!/bin/bash
 # Alice Engine - One-line Installer
-# Usage: curl -fsSL http://8.149.243.230:8080/download/install.sh | bash
+# Usage: curl -fsSL http://YOUR_SERVER_IP:8080/download/install.sh | bash
 #
 # Detects OS/architecture, downloads the right package, and starts Alice.
 
@@ -33,7 +33,7 @@ fi
 echo "  Platform: $PLATFORM"
 echo ""
 
-BASE_URL="http://8.149.243.230:8080/download"
+BASE_URL="http://YOUR_SERVER_IP:8080/download"
 INSTALL_DIR="$HOME/alice"
 
 # Download

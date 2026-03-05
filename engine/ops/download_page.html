@@ -46,7 +46,7 @@ h3 code { background: #0d1117; padding: 2px 6px; border-radius: 4px; font-size: 
     <div class="install-section">
         <h2>Quick Start</h2>
         <div class="install-cmd" onclick="copyInstall(this)">
-            curl -fsSL http://8.149.243.230:8080/download/install.sh | bash
+            curl -fsSL http://YOUR_SERVER_IP:8080/download/install.sh | bash
             <span class="copy-hint">click to copy</span>
         </div>
         <p class="note">Supports macOS (Apple Silicon & Intel) and Linux (x86_64). Downloads ~4MB, starts instantly.</p>
@@ -136,7 +136,7 @@ h3 code { background: #0d1117; padding: 2px 6px; border-radius: 4px; font-size: 
         <h3 style="font-size:0.95em;color:#e6edf3;margin:16px 0 8px;">Authentication</h3>
         <table class="config-table">
             <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
-            <tr><td>POST</td><td><code>/api/auth</code></td><td>Login — body: <code>{"secret":"..."}</code>, sets HttpOnly cookie</td></tr>
+            <tr><td>POST</td><td><code>/login</code></td><td>Login — form field: <code>password</code>, sets HttpOnly cookie</td></tr>
             <tr><td>GET</td><td><code>/api/auth/check</code></td><td>Check if authenticated</td></tr>
             <tr><td>POST</td><td><code>/api/logout</code></td><td>Clear session cookie</td></tr>
         </table>
@@ -206,7 +206,7 @@ h3 code { background: #0d1117; padding: 2px 6px; border-radius: 4px; font-size: 
 
 <script>
 function copyInstall(el) {
-    const text = 'curl -fsSL http://8.149.243.230:8080/download/install.sh | bash';
+    const text = 'curl -fsSL http://YOUR_SERVER_IP:8080/download/install.sh | bash';
     navigator.clipboard.writeText(text).then(() => {
         el.classList.add('copied');
         el.querySelector('.copy-hint').textContent = 'copied!';

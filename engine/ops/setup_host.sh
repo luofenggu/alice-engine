@@ -4,8 +4,8 @@
 # 从打包机执行，SSH到目标机完成全部初始化
 #
 # 示例:
-#   bash setup_host.sh chenma 47.93.141.0 Alice2xiaobai ouxiaoliang sk-ai-v1-xxx
-#   bash setup_host.sh dayao 120.55.1.72 dayao-2026 dayao-2026 sk-ai-v1-xxx
+#   bash setup_host.sh user1 203.0.113.10 your-root-password your-auth-secret sk-your-api-key
+#   bash setup_host.sh user2 203.0.113.20 your-secret your-secret sk-your-api-key
 
 set -e
 
@@ -17,12 +17,12 @@ API_KEY="$5"
 
 if [ -z "$USER_ID" ] || [ -z "$HOST_IP" ] || [ -z "$ROOT_PASS" ] || [ -z "$AUTH_SECRET" ] || [ -z "$API_KEY" ]; then
     echo "Usage: bash setup_host.sh <user_id> <host_ip> <root_password> <auth_secret> <api_key>"
-    echo "Example: bash setup_host.sh chenma 47.93.141.0 Alice2xiaobai ouxiaoliang sk-ai-v1-xxx"
+    echo "Example: bash setup_host.sh user1 203.0.113.10 your-root-password your-auth-secret sk-your-api-key"
     exit 1
 fi
 
-DOMAIN="${USER_ID}.profuse.top"
-PACKAGER_IP="8.149.243.230"
+DOMAIN="${USER_ID}.example.com"
+PACKAGER_IP="YOUR_SERVER_IP"
 PACKAGER_PRIVATE_IP="172.31.122.174"
 
 # 检测是否私网专机（同VPC）
