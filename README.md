@@ -31,7 +31,7 @@ chmod +x alice-engine-*
 ./alice-engine-*
 ```
 
-Open http://127.0.0.1:8081 — the setup page will guide you through configuration.
+Open http://127.0.0.1:8081 — the setup wizard will guide you through configuration.
 
 ### Build from Source
 
@@ -41,6 +41,37 @@ cd alice-engine
 cargo build --release
 ./target/release/alice-engine
 ```
+
+## First Launch
+
+On first launch, the setup wizard asks for:
+- **API Key** — from any OpenAI-compatible provider
+- **Model** — in `provider@model_id` format (e.g. `openrouter@anthropic/claude-sonnet-4`)
+
+Built-in providers: `openrouter`, `openai`. For custom endpoints, use a full URL:
+```
+https://your-api-server.com/v1/chat/completions@model-name
+```
+
+After setup, create your first agent instance and start chatting.
+
+## Settings
+
+Settings can be configured at two levels:
+
+- **Global Settings** — click ⚙️ in the sidebar. Applies to all instances as defaults.
+- **Instance Settings** — click ⚙️ on an instance. Overrides global settings for that instance.
+
+Settings follow a three-layer inheritance: **Environment Variables → Global Settings → Instance Settings**. Each layer only overrides what it explicitly sets.
+
+### Channel Rotation
+
+Configure multiple LLM channels for automatic failover:
+
+- **Primary Channel** — your main API key + model
+- **Extra Channels** — backup channels (Extra 1, Extra 2, ...)
+
+When a channel fails (e.g. rate limit, quota exceeded), the engine automatically rotates to the next channel with exponential backoff. This keeps your agents running even when individual API keys hit limits.
 
 ## Cloud Deployment
 
@@ -52,7 +83,7 @@ AUTH_SECRET=your-password ./alice-engine
 
 Then visit `http://your-server-ip:8081` and log in with your password.
 
-### All Environment Variables
+### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -64,13 +95,6 @@ Then visit `http://your-server-ip:8081` and log in with your password.
 | `ALICE_USER_ID` | Owner user ID | `default` |
 | `ALICE_HOST` | Public hostname (for display) | — |
 
-**Model format:** `provider@model_id`
-
-Built-in providers: `openrouter`, `openai`. Use a full URL for custom endpoints:
-```
-https://your-api-server.com/v1/chat/completions@model-name
-```
-
 ## How It Works
 
 Each agent instance has:
@@ -80,6 +104,14 @@ Each agent instance has:
 - **Skills** — injectable prompt knowledge
 
 The engine runs a beat loop: check messages → invoke LLM → execute actions → repeat.
+
+Agents can:
+- Read and write files in their workspace
+- Execute shell scripts
+- Send messages to users and other agents
+- Create new agent instances (fission)
+- Serve static files and run local services
+- Manage their own knowledge and memory
 
 ## API Reference
 
