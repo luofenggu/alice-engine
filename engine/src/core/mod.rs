@@ -49,6 +49,7 @@ use crate::inference::Action;
 use crate::util::Counter;
 use crate::action::execute::execute_action;
 use crate::persist::instance;
+use crate::persist::settings::GlobalSettingsStore;
 use crate::policy::action_output;
 use crate::external::llm::{LlmClient, LlmConfig, InferenceStream, StreamItem, RecvResult};
 use crate::prompt::build_beat_request;
@@ -344,13 +345,15 @@ pub struct Alice {
     pub safety_cooldown_secs: u64,
     /// Stream poll interval in milliseconds.
     pub stream_poll_interval_ms: u64,
+    /// Global settings store for hot-reloading channels each beat.
+    pub global_settings_store: Option<GlobalSettingsStore>,
 }
 
 impl Alice {
     /// Create a new Alice instance from an instance directory.
     ///
     /// @TRACE: INSTANCE
-    pub fn new(instance: instance::Instance, log_dir: PathBuf, llm_configs: Vec<LlmConfig>, env_config: Arc<crate::policy::EnvConfig>) -> Result<Self> {
+    pub fn new(instance: instance::Instance, log_dir: PathBuf, llm_configs: Vec<LlmConfig>, env_config: Arc<crate::policy::EnvConfig>, global_settings_store: Option<GlobalSettingsStore>) -> Result<Self> {
         let user_id = instance.user_id().to_string();
 
         let llm_client = LlmClient::new(llm_configs);
@@ -392,6 +395,7 @@ impl Alice {
             safety_cooldown_secs,
             stream_poll_interval_ms: crate::policy::EngineConfig::get().streaming.poll_interval_ms,
             env_config,
+            global_settings_store,
         })
     }
 
@@ -637,6 +641,12 @@ impl Alice {
                 let remaining = deadline.duration_since(Instant::now());
                 info!("[BACKOFF-{}] Inference backoff active, {:.0}s remaining (failures={})",
                     self.instance.id, remaining.as_secs_f64(), self.inference_failures.value());
+                // Sleep briefly to avoid busy-looping during backoff
+                let backoff_sleep = std::time::Duration::from_secs(
+                    crate::policy::EngineConfig::get().engine.beat_interval_secs
+                );
+                let sleep_time = remaining.min(backoff_sleep);
+                std::thread::sleep(sleep_time);
                 return Ok(());
             }
             self.inference_backoff_until = None;
@@ -868,7 +878,7 @@ mod tests {
         let log_dir = tmp.path().join("logs");
         let llm_config = LlmConfig { model: String::new(), api_key: String::new(), temperature: None, max_tokens: None };
         let env_config = Arc::new(crate::policy::EnvConfig::from_env());
-        let alice = Alice::new(instance, log_dir, vec![llm_config], env_config).unwrap();
+        let alice = Alice::new(instance, log_dir, vec![llm_config], env_config, None).unwrap();
         (alice, tmp)
     }
 

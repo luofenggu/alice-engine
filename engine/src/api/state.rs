@@ -348,7 +348,7 @@ impl EngineState {
         }).await;
 
         match result {
-            Ok(Ok(settings)) => settings.masked(),
+            Ok(Ok(settings)) => settings,
             Ok(Err(e)) => {
                 error!("[API] get_global_settings error: {}", e);
                 Settings::default()

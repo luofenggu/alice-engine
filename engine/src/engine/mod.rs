@@ -161,8 +161,6 @@ impl AliceEngine {
         };
 
         let mut llm_configs = vec![primary_config];
-        info!("[INSTANCE-{}] extra_channels: {:?}, global_settings extra: {:?}",
-            name, settings.extra_channels, global_settings.extra_channels);
         if let Some(extra) = &settings.extra_channels {
             for ch in extra {
                 llm_configs.push(crate::external::llm::LlmConfig {
@@ -174,7 +172,7 @@ impl AliceEngine {
             }
         }
 
-        let mut alice = Alice::new(instance, self.logs_dir.clone(), llm_configs, self.env_config.clone())?;
+        let mut alice = Alice::new(instance, self.logs_dir.clone(), llm_configs, self.env_config.clone(), Some(self.global_settings_store.clone()))?;
 
         alice.instance_name = settings.name.clone();
 
@@ -390,14 +388,31 @@ impl AliceEngine {
                         alice.privileged = s.privileged_or_default();
                     }
 
-                    // Hot-reload model and api_key (primary channel)
-                    if s.model.as_ref().is_some_and(|m| !m.is_empty() && *m != alice.llm_client.primary_model()) {
-                        info!("[HOT-RELOAD-{}] Model changed: {} -> {}", instance_id, alice.llm_client.primary_model(), s.model_or_default());
-                        alice.llm_client.set_primary_model(s.model_or_default());
-                    }
-                    if s.api_key.as_ref().is_some_and(|k| !k.is_empty() && *k != alice.llm_client.primary_api_key()) {
-                        info!("[HOT-RELOAD-{}] API key changed", instance_id);
-                        alice.llm_client.set_primary_api_key(s.api_key_or_default());
+                    // Hot-reload all channels (primary + extra) from instance + global settings
+                    if let Some(ref store) = alice.global_settings_store {
+                        if let Ok(global_s) = store.load() {
+                            let mut merged = s.clone();
+                            merged.merge_fallback(&global_s);
+
+                            let primary_config = crate::external::llm::LlmConfig {
+                                model: merged.model_or_default(),
+                                api_key: merged.api_key_or_default(),
+                                temperature: merged.temperature,
+                                max_tokens: merged.max_tokens,
+                            };
+                            let mut configs = vec![primary_config];
+                            if let Some(ref extra) = merged.extra_channels {
+                                for ch in extra {
+                                    configs.push(crate::external::llm::LlmConfig {
+                                        model: ch.model.clone(),
+                                        api_key: ch.api_key.clone(),
+                                        temperature: merged.temperature,
+                                        max_tokens: merged.max_tokens,
+                                    });
+                                }
+                            }
+                            alice.llm_client.update_configs(configs);
+                        }
                     }
 
                 }

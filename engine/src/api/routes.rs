@@ -166,7 +166,7 @@ async fn handle_get_settings(
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     let settings = state.get_settings(id).await;
-    json_ok(settings.masked())
+    json_ok(settings)
 }
 
 #[post("/api/instances/{id}/settings")]

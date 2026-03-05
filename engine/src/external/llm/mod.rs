@@ -163,16 +163,11 @@ impl LlmClient {
     }
 
     /// Access primary channel's model (for hot-reload comparison).
-    pub fn primary_model(&self) -> &str { &self.configs[0].model }
-
-    /// Access primary channel's api_key (for hot-reload comparison).
-    pub fn primary_api_key(&self) -> &str { &self.configs[0].api_key }
-
-    /// Update primary channel's model (hot-reload).
-    pub fn set_primary_model(&mut self, model: String) { self.configs[0].model = model; }
-
-    /// Update primary channel's api_key (hot-reload).
-    pub fn set_primary_api_key(&mut self, api_key: String) { self.configs[0].api_key = api_key; }
+    /// Replace all configs (hot-reload channels). Keeps channel_index unchanged.
+    pub fn update_configs(&mut self, configs: Vec<LlmConfig>) {
+        assert!(!configs.is_empty(), "LlmClient requires at least one config");
+        self.configs = configs;
+    }
 
     /// Clone all configs (for passing to background tasks like RollTask).
     pub fn all_configs(&self) -> Vec<LlmConfig> { self.configs.clone() }
