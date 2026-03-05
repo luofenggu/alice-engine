@@ -4,7 +4,7 @@
 Three-tier exemption:
   1. Full exemption: policy/, http_protocol.rs — skipped entirely
   2. Escape-guarded: persist/, external/, inference/, util/ — only leak_detector checks
-  3. Normal dirs: all literals caught, with minimal line-level exemptions (test/binary/log/error/attribute)
+  3. Normal dirs: all literals caught, with minimal line-level exemptions (test/binary/log/error)
 """
 
 import argparse
@@ -230,17 +230,7 @@ def scan_file(filepath, source_bytes, parser):
                 exempt = True
                 exempt_reason = 'test'
 
-            # 4. Attribute literals (#[serde(...)], #[get(...)], route macros, etc.)
-            if not exempt:
-                p = node.parent
-                while p:
-                    if p.type == 'attribute_item':
-                        exempt = True
-                        exempt_reason = 'attribute'
-                        break
-                    p = p.parent
-
-            # 5. Log macros (info!, warn!, error!, debug!, trace!)
+            # 4. Log macros (info!, warn!, error!, debug!, trace!)
             if not exempt:
                 macro = get_macro_name(node)
                 if macro:
