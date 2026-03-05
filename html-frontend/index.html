@@ -807,7 +807,7 @@ body {
                 <button onclick="openSettings()">⚙ Settings</button>
             </div>
         </div>
-        <a href="/knowledge.html" class="knowledge-btn" title="Knowledge">🧬</a>
+        <a href="knowledge.html" class="knowledge-btn" title="Knowledge">🧬</a>
     </div>
     <div class="chat-messages" id="chatMessages">
         <div class="no-instance" id="noInstance">
@@ -878,7 +878,7 @@ const clientId = (function() {
 
 function frontendLog(level, type, message) {
     try {
-        fetch('/api/frontend-error', {
+        fetch('api/frontend-error', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ client_id: clientId, level, type, message })
@@ -892,7 +892,7 @@ function frontendLog(level, type, message) {
     if (typeof marked !== 'undefined') {
         marked.setOptions({ breaks: true, gfm: true, headerIds: false, mangle: false });
     }
-    const res = await fetch('/api/auth/check');
+    const res = await fetch('api/auth/check');
         const data = await res.json();
         if (!data.authenticated) { window.location.href = '/login'; return; }
         if (data.startTime) { systemStartTime = data.startTime; }
@@ -925,7 +925,7 @@ async function api(method, path, body) {
 
 async function doLogout() {
     frontendLog('INFO', 'logout', 'client=' + clientId);
-    await fetch('/api/logout');
+    await fetch('api/logout');
     window.location.href = '/login';
 }
 

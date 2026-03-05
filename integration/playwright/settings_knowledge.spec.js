@@ -117,7 +117,7 @@ test('Settings, Privilege, and Knowledge — end-to-end', async ({ page, context
   console.log(`✅ Knowledge file written to ${knowledgePath}`);
 
   // === Step 7: Test Knowledge Page (same-tab navigation) ===
-  await page.click('a[href="/knowledge.html"]');
+  await page.click('a[href="knowledge.html"]');
   await page.waitForSelector('#instanceList', { timeout: 10000 });
   console.log('✅ Knowledge page loaded');
 

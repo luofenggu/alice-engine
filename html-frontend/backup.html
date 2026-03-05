@@ -687,7 +687,7 @@ let inferenceUserScrolling = false;
 
 (async function() {
     try {
-        const res = await fetch('/api/auth/check');
+        const res = await fetch('api/auth/check');
         const data = await res.json();
         if (!data.authenticated) { window.location.href = '/login'; return; }
         if (data.startTime) { systemStartTime = data.startTime; }
@@ -713,7 +713,7 @@ async function api(method, path, body) {
 }
 
 async function doLogout() {
-    await fetch('/api/logout', { method: 'POST' });
+    await fetch('api/logout', { method: 'POST' });
     window.location.href = '/login';
 }
 
@@ -1202,7 +1202,7 @@ async function attemptReconnect() {
     const tryConnect = async () => {
         attempts++;
         try {
-            const res = await fetch('/api/auth/check', { signal: AbortSignal.timeout(3000) });
+            const res = await fetch('api/auth/check', { signal: AbortSignal.timeout(3000) });
             const data = await res.json();
             if (data.authenticated) {
                 btn.classList.remove('deploying');
