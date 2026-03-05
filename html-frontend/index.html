@@ -1337,10 +1337,12 @@ async function sendMessage() {
     btn.classList.add('sending');
     btn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>';
     try {
-        const sendResult = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
-        if (sendResult && sendResult.data) { const sentId = parseInt(sendResult.data); if (sentId > 0) { if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 }; messages[currentInstance].lastMsgId = sentId; } }
+        await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
+        isSending = false;
         await pollReplies();
         refreshInstances();
+    } catch(e) {
+        frontendLog('ERROR', 'send_message', 'error=' + (e.message || e));
     } finally {
         isSending = false;
         input.disabled = false;
@@ -1394,7 +1396,7 @@ function schedulePollReplies(gen) {
 }
 
 async function pollReplies() {
-    if (!currentInstance) return;
+    if (!currentInstance || isSending) return;
     if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
     const data = messages[currentInstance];
     const afterId = data.lastMsgId || 0;
