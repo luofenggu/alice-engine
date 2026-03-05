@@ -1523,6 +1523,26 @@ function renderMarkdown(text) {
     }
 }
 
+function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).catch(function() {
+            return fallbackCopy(text);
+        });
+    }
+    return fallbackCopy(text);
+}
+function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    return Promise.resolve();
+}
+
 function addCopyButtons(container) {
     container.querySelectorAll('pre').forEach(function(pre) {
         if (pre.querySelector('.copy-btn')) return;
@@ -1532,7 +1552,7 @@ function addCopyButtons(container) {
         btn.onclick = function() {
             var code = pre.querySelector('code');
             var text = code ? code.textContent : pre.textContent;
-            navigator.clipboard.writeText(text).then(function() {
+            copyToClipboard(text).then(function() {
                 btn.textContent = 'Copied!';
                 setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
             });
@@ -1569,7 +1589,7 @@ function createMessageElement(m) {
     copyBtn.title = 'Copy message';
     copyBtn.onclick = function() {
         const text = m.content || div.innerText;
-        navigator.clipboard.writeText(text).then(function() {
+        copyToClipboard(text).then(function() {
             copyBtn.textContent = '✓';
             setTimeout(function() { copyBtn.textContent = '⧉'; }, 1500);
         });
