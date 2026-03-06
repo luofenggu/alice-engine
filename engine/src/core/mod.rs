@@ -45,7 +45,7 @@ use std::time::Instant;
 use tracing::{error, info, warn};
 
 use crate::action::execute::execute_action;
-use crate::external::llm::{InferenceStream, LlmClient, LlmConfig, RecvResult, StreamItem};
+use crate::external::llm::{InferenceStream, LlmClient, RecvResult, StreamItem};
 use crate::inference::Action;
 use crate::persist::instance;
 use crate::persist::settings::GlobalSettingsStore;
@@ -307,7 +307,7 @@ pub struct Alice {
     /// @TRACE: INFER
     pub current_infer_log_path: Option<PathBuf>,
     /// LLM client
-    pub(crate) llm_client: LlmClient,
+    pub(crate) llm_client: Arc<LlmClient>,
     /// Whether last beat resulted in idle
     pub last_was_idle: bool,
     /// Idle timeout in seconds (Some = timed idle, None = wait indefinitely)
@@ -363,13 +363,11 @@ impl Alice {
     pub fn new(
         instance: instance::Instance,
         log_dir: PathBuf,
-        llm_configs: Vec<LlmConfig>,
+        llm_client: Arc<LlmClient>,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: Option<GlobalSettingsStore>,
     ) -> Result<Self> {
         let user_id = instance.user_id().to_string();
-
-        let llm_client = LlmClient::new(llm_configs);
 
         // Read settings overrides before instance is moved into struct
         let mem_cfg = &crate::policy::EngineConfig::get().memory;
@@ -490,14 +488,12 @@ impl Alice {
         };
 
         // Clone LLM configs for background thread
-        let llm_configs = self.llm_client.all_configs();
-
         Ok(Some(RollTask {
             memory: self.instance.memory.clone(),
             oldest_block: oldest_block.clone(),
             request,
             instance_id: self.instance.id.clone(),
-            llm_configs,
+            llm_client: self.llm_client.clone(),
         }))
     }
 
@@ -940,19 +936,19 @@ pub struct RollTask {
     pub oldest_block: String,
     pub request: crate::inference::compress::CompressRequest,
     pub instance_id: String,
-    pub llm_configs: Vec<crate::external::llm::LlmConfig>,
+    pub llm_client: Arc<LlmClient>,
 }
 
 pub struct CaptureTask {
     pub memory: crate::persist::memory::Memory,
     pub request: crate::inference::capture::CaptureRequest,
     pub instance_id: String,
-    pub llm_configs: Vec<crate::external::llm::LlmConfig>,
+    pub llm_client: Arc<LlmClient>,
     pub log_path: PathBuf,
 }
 
 pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
-    let llm_client = crate::external::llm::LlmClient::new(task.llm_configs);
+    let llm_client = &task.llm_client;
     let messages = task.request.render();
 
     info!(
@@ -986,7 +982,7 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
 /// Does LLM call + commit history via Memory (atomic write + delete block).
 pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     // Create a temporary LLM client for this task
-    let llm_client = crate::external::llm::LlmClient::new(task.llm_configs);
+    let llm_client = &task.llm_client;
 
     info!(
         "[ROLL-{}] Background: calling LLM for history compression",
@@ -1020,7 +1016,7 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
         memory: alice.instance.memory.clone(),
         request,
         instance_id: alice.instance.id.clone(),
-        llm_configs: alice.llm_client.all_configs().to_vec(),
+        llm_client: alice.llm_client.clone(),
         log_path,
     };
 
@@ -1049,14 +1045,9 @@ mod tests {
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let log_dir = tmp.path().join("logs");
-        let llm_config = LlmConfig {
-            model: String::new(),
-            api_key: String::new(),
-            temperature: None,
-            max_tokens: None,
-        };
+        let llm_client = Arc::new(LlmClient::new(vec![Default::default()]));
         let env_config = Arc::new(crate::policy::EnvConfig::from_env());
-        let alice = Alice::new(instance, log_dir, vec![llm_config], env_config, None).unwrap();
+        let alice = Alice::new(instance, log_dir, llm_client, env_config, None).unwrap();
         (alice, tmp)
     }
 

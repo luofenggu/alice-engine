@@ -40,6 +40,8 @@ pub struct EngineState {
     pub setup_completed: AtomicBool,
     /// Shared HTTP client for outbound requests (vision API, etc.)
     pub http_client: reqwest::Client,
+    /// Shared LLM client for channel rotation (used by vision, etc.)
+    pub llm_client: Arc<crate::external::llm::LlmClient>,
 }
 
 impl EngineState {
@@ -52,6 +54,7 @@ impl EngineState {
         engine_config: crate::policy::EngineConfig,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: GlobalSettingsStore,
+        llm_client: Arc<crate::external::llm::LlmClient>,
     ) -> Self {
         let session_token = if env_config.auth_secret.is_empty() {
             String::new()
@@ -79,6 +82,7 @@ impl EngineState {
             global_settings_store,
             setup_completed: AtomicBool::new(setup_done),
             http_client: reqwest::Client::new(),
+            llm_client,
         }
     }
 
@@ -623,37 +627,15 @@ impl EngineState {
     }
 
     /// Run vision inference: send an image to the LLM for understanding.
-    /// Uses the instance's primary channel (global + instance settings merged).
+    /// Uses the shared LLM client's current channel (participates in rotation).
     pub async fn vision(
         &self,
         instance_id: String,
         prompt: String,
         image_url: String,
     ) -> Result<String, String> {
-        // Build LlmConfig from merged settings
-        let store = self.instance_store.clone();
-        let gs_store = self.global_settings_store.clone();
-
-        let id_for_closure = instance_id.clone();
-        let config = tokio::task::spawn_blocking(
-            move || -> anyhow::Result<crate::external::llm::LlmConfig> {
-                let global = gs_store.load().unwrap_or_default();
-                let instance = store.open(&id_for_closure)?;
-                let mut settings = instance.settings.load().unwrap_or_default();
-                settings.merge_fallback(&global);
-                settings.validate()?;
-
-                Ok(crate::external::llm::LlmConfig {
-                    model: settings.model_or_default(),
-                    api_key: settings.api_key_or_default(),
-                    temperature: settings.temperature,
-                    max_tokens: settings.max_tokens,
-                })
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        // Use shared LlmClient's current config (participates in channel rotation)
+        let config = self.llm_client.current_config();
 
         let http_client = self.http_client.clone();
         match crate::external::llm::run_vision_inference(

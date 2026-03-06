@@ -187,10 +187,11 @@ mod tests {
         std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
+        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let alice = Alice::new(
             instance,
             tmp.path().join("logs"),
-            vec![Default::default()],
+            llm_client,
             env_config,
             None,
         )

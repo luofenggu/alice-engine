@@ -30,6 +30,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 use std::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -150,7 +151,7 @@ impl ChatMessage {
 ///
 /// @TRACE: INFER — `[INFER-{id}] Starting inference`
 pub struct LlmClient {
-    configs: Vec<LlmConfig>,
+    configs: RwLock<Vec<LlmConfig>>,
     channel_index: AtomicU64,
     http_client: reqwest::Client,
 }
@@ -166,7 +167,7 @@ impl LlmClient {
             .build()
             .expect("Failed to build HTTP client");
         Self {
-            configs,
+            configs: RwLock::new(configs),
             channel_index: AtomicU64::new(0),
             http_client,
         }
@@ -174,23 +175,25 @@ impl LlmClient {
 
     /// Get the current channel's config (round-robin by channel_index).
     pub fn current_config(&self) -> LlmConfig {
-        let idx = self.channel_index.load(Ordering::Relaxed) as usize % self.configs.len();
-        self.configs[idx].clone()
+        let configs = self.configs.read().unwrap();
+        let idx = self.channel_index.load(Ordering::Relaxed) as usize % configs.len();
+        configs[idx].clone()
     }
 
     /// Access primary channel's model (for hot-reload comparison).
     /// Replace all configs (hot-reload channels). Keeps channel_index unchanged.
-    pub fn update_configs(&mut self, configs: Vec<LlmConfig>) {
+    pub fn update_configs(&self, new_configs: Vec<LlmConfig>) {
         assert!(
-            !configs.is_empty(),
+            !new_configs.is_empty(),
             "LlmClient requires at least one config"
         );
-        self.configs = configs;
+        let mut configs = self.configs.write().unwrap();
+        *configs = new_configs;
     }
 
     /// Clone all configs (for passing to background tasks like RollTask).
     pub fn all_configs(&self) -> Vec<LlmConfig> {
-        self.configs.clone()
+        self.configs.read().unwrap().clone()
     }
 
     /// Get display name for a channel index: 0 → "primary", N → "extraN".
@@ -206,7 +209,8 @@ impl LlmClient {
     /// Returns (old_name, new_name) if rotation happened (multi-channel), None if single channel.
     pub fn advance_channel(&self) -> Option<(String, String)> {
         let old = self.channel_index.fetch_add(1, Ordering::Relaxed);
-        let len = self.configs.len();
+        let configs = self.configs.read().unwrap();
+        let len = configs.len();
         if len > 1 {
             let old_idx = old as usize % len;
             let new_idx = (old + 1) as usize % len;
@@ -214,7 +218,7 @@ impl LlmClient {
             let new_name = Self::channel_display_name(new_idx);
             info!(
                 "[CHANNEL] Rotated from {} to {} (model={})",
-                old_name, new_name, self.configs[new_idx].model
+                old_name, new_name, configs[new_idx].model
             );
             Some((old_name, new_name))
         } else {

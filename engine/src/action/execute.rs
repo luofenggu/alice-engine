@@ -446,16 +446,11 @@ mod tests {
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let llm_config = crate::external::llm::LlmConfig {
-            model: String::new(),
-            api_key: String::new(),
-            temperature: None,
-            max_tokens: None,
-        };
+        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let mut alice = Alice::new(
             instance,
             tmp.path().join("logs"),
-            vec![llm_config],
+            llm_client,
             env_config,
             None,
         )

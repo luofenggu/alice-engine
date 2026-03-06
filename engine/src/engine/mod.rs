@@ -88,6 +88,8 @@ pub struct AliceEngine {
     env_config: Arc<crate::policy::EnvConfig>,
     /// Global settings store — reads latest from disk on each use.
     global_settings_store: crate::persist::GlobalSettingsStore,
+    /// Shared LLM client — all instances share the same channel rotation pool.
+    llm_client: Arc<crate::external::llm::LlmClient>,
     /// Temporary buffer for instances during restore (drained to threads in run()).
     instances: Vec<(String, Alice)>,
 }
@@ -100,6 +102,7 @@ impl AliceEngine {
         signal_hub: SignalHub,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: crate::persist::GlobalSettingsStore,
+        llm_client: Arc<crate::external::llm::LlmClient>,
     ) -> Self {
         let pid_file = env_config.pid_file_path(&instances_base);
         let instance_store = InstanceStore::new(instances_base.clone());
@@ -111,6 +114,7 @@ impl AliceEngine {
             signal_hub,
             env_config,
             global_settings_store,
+            llm_client,
             instances: Vec::new(),
         }
     }
@@ -153,29 +157,10 @@ impl AliceEngine {
         settings.merge_fallback(&global_settings);
         settings.validate()?;
 
-        let primary_config = crate::external::llm::LlmConfig {
-            model: settings.model_or_default(),
-            api_key: settings.api_key_or_default(),
-            temperature: settings.temperature,
-            max_tokens: settings.max_tokens,
-        };
-
-        let mut llm_configs = vec![primary_config];
-        if let Some(extra) = &settings.extra_channels {
-            for ch in extra {
-                llm_configs.push(crate::external::llm::LlmConfig {
-                    model: ch.model.clone(),
-                    api_key: ch.api_key.clone(),
-                    temperature: settings.temperature,
-                    max_tokens: settings.max_tokens,
-                });
-            }
-        }
-
         let mut alice = Alice::new(
             instance,
             self.logs_dir.clone(),
-            llm_configs,
+            self.llm_client.clone(),
             self.env_config.clone(),
             Some(self.global_settings_store.clone()),
         )?;
@@ -432,11 +417,12 @@ impl AliceEngine {
                         alice.privileged = s.privileged_or_default();
                     }
 
-                    // Hot-reload all channels (primary + extra) from instance + global settings
+                    // Hot-reload all channels from global settings (shared LlmClient)
                     if let Some(ref store) = alice.global_settings_store {
                         if let Ok(global_s) = store.load() {
-                            let mut merged = s.clone();
-                            merged.merge_fallback(&global_s);
+                            // Merge instance settings into global for channel config
+                            let mut merged = global_s.clone();
+                            merged.merge_fallback(&s);
 
                             let primary_config = crate::external::llm::LlmConfig {
                                 model: merged.model_or_default(),
@@ -742,12 +728,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
+        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
             env,
             gs_store,
+            llm_client,
         );
         assert!(engine.instances.is_empty());
     }
@@ -769,12 +757,14 @@ mod tests {
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
+        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
             env,
             gs_store,
+            llm_client,
         );
         engine.restore_instances().unwrap();
 
@@ -802,12 +792,14 @@ mod tests {
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
+        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
             env,
             gs_store,
+            llm_client,
         );
         engine.restore_instances().unwrap();
 
@@ -870,12 +862,14 @@ mod tests {
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
+        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
             env,
             gs_store,
+            llm_client,
         );
         engine.restore_instances().unwrap();
 

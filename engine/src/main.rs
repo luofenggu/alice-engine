@@ -110,6 +110,28 @@ async fn main() -> anyhow::Result<()> {
         alice_engine::persist::GlobalSettingsStore::init(&base_dir, &env_config)?;
     tracing::info!("Global settings initialized");
 
+    // ── Create shared LLM client (global channel pool) ──
+    let global_settings = global_settings_store.load().unwrap_or_default();
+    let primary_config = alice_engine::external::llm::LlmConfig {
+        model: global_settings.model_or_default(),
+        api_key: global_settings.api_key_or_default(),
+        temperature: global_settings.temperature,
+        max_tokens: global_settings.max_tokens,
+    };
+    let mut llm_configs = vec![primary_config];
+    if let Some(ref extra) = global_settings.extra_channels {
+        for ch in extra {
+            llm_configs.push(alice_engine::external::llm::LlmConfig {
+                model: ch.model.clone(),
+                api_key: ch.api_key.clone(),
+                temperature: global_settings.temperature,
+                max_tokens: global_settings.max_tokens,
+            });
+        }
+    }
+    let llm_client = Arc::new(alice_engine::external::llm::LlmClient::new(llm_configs));
+    tracing::info!("Shared LLM client created with {} channel(s)", llm_client.all_configs().len());
+
     // Create engine state (shared between HTTP server and engine)
     let engine_config = alice_engine::policy::EngineConfig::load();
     let engine_state = Arc::new(EngineState::new(
@@ -121,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
         engine_config,
         env_config.clone(),
         global_settings_store.clone(),
+        llm_client.clone(),
     ));
 
     // Build HTTP router (routes, auth, embedded HTML — all in api/)
@@ -147,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
     let engine_logs_dir = logs_dir.clone();
     let engine_env_config = env_config.clone();
     let engine_gs_store = global_settings_store.clone();
+    let engine_llm_client = llm_client.clone();
     let engine_handle = std::thread::spawn(move || {
         let mut engine = AliceEngine::new(
             engine_instances_dir,
@@ -154,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
             signal_hub,
             engine_env_config,
             engine_gs_store,
+            engine_llm_client,
         );
         if let Err(e) = engine.run() {
             tracing::error!("Engine error: {}", e);
