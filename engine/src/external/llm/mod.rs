@@ -434,11 +434,40 @@ pub(crate) async fn run_vision_inference(
     instance_id: &str,
 ) -> Result<(String, Option<UsageInfo>)> {
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+    use base64::Engine as _;
 
     let llm_policy = &crate::policy::EngineConfig::get().llm;
     let (api_url, model_id) = llm_policy.resolve_model(&config.model);
 
     info!("[VISION-{}] Starting vision inference, model={}", instance_id, model_id);
+
+    // Ensure image is a data URI (base64-encoded).
+    // If it's a regular URL, download and convert to base64.
+    let data_uri = if image_url.starts_with("data:") {
+        image_url.to_string()
+    } else {
+        info!("[VISION-{}] Downloading image from URL", instance_id);
+        let img_response = http_client
+            .get(image_url)
+            .send()
+            .await
+            .context("Failed to download image")?;
+
+        let content_type = img_response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/png")
+            .to_string();
+
+        let img_bytes = img_response
+            .bytes()
+            .await
+            .context("Failed to read image bytes")?;
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
+        format!("data:{};base64,{}", content_type, b64)
+    };
 
     let body = serde_json::json!({
         "model": model_id,
@@ -446,7 +475,7 @@ pub(crate) async fn run_vision_inference(
             "role": "user",
             "content": [
                 {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": image_url}}
+                {"type": "image_url", "image_url": {"url": data_uri}}
             ]
         }],
         "max_tokens": config.max_tokens.unwrap_or(llm_policy.max_tokens),
