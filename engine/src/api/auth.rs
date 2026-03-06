@@ -2,9 +2,11 @@
 //!
 //! Uses EngineState for auth configuration (session_token, auth_secret, skip_auth).
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use axum::extract::{Request, State};
+use axum::extract::connect_info::ConnectInfo;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use route_macro::*;
@@ -68,6 +70,13 @@ pub async fn check_auth(
     // Default auth secret — skip auth (local play mode, no password needed)
     if state.env_config.auth_secret == crate::policy::EnvConfig::DEFAULT_AUTH_SECRET {
         return next.run(req).await;
+    }
+
+    // Localhost — skip auth (same-machine access, e.g. agent script calling API)
+    if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
+        if addr.ip().is_loopback() {
+            return next.run(req).await;
+        }
     }
 
     // Check cookie

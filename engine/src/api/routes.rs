@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path as AxumPath, Query, State},
+    extract::{Multipart, Path as AxumPath, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -55,6 +55,12 @@ pub struct SendMessageBody {
 pub struct CreateInstanceBody {
     pub name: Option<String>,
     pub settings: Option<Settings>,
+}
+
+#[derive(Deserialize)]
+pub struct VisionBody {
+    pub prompt: String,
+    pub image_url: String,
 }
 
 // ── Instance Handlers ──
@@ -343,6 +349,77 @@ pub async fn handle_proxy(
     }
 }
 
+// ── Vision ──
+
+/// Vision inference: analyze an image using the instance's LLM channel.
+#[post("/api/instances/{id}/vision")]
+async fn handle_vision(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<VisionBody>,
+) -> Response {
+    match state.vision(id, body.prompt, body.image_url).await {
+        Ok(text) => json_ok(serde_json::json!({ "text": text })),
+        Err(e) => json_error(StatusCode::BAD_GATEWAY, &e),
+    }
+}
+
+// ── File Upload ──
+
+/// Upload files to the shared uploads directory.
+#[post("/api/upload")]
+async fn handle_upload(
+    State(state): State<Arc<EngineState>>,
+    mut multipart: Multipart,
+) -> Response {
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let day_dir = state.uploads_dir.join(&today);
+    if let Err(e) = std::fs::create_dir_all(&day_dir) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create upload directory: {}", e)).into_response();
+    }
+
+    let mut uploaded: Vec<serde_json::Value> = Vec::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let file_name = match field.file_name() {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        let data = match field.bytes().await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, format!("Failed to read field: {}", e)).into_response();
+            }
+        };
+
+        // Handle name conflicts: file.txt -> file_1.txt -> file_2.txt
+        let (stem, ext) = match file_name.rfind('.') {
+            Some(pos) => (&file_name[..pos], &file_name[pos..]),
+            None => (file_name.as_str(), ""),
+        };
+        let mut target = day_dir.join(&file_name);
+        let mut counter = 1u32;
+        while target.exists() {
+            target = day_dir.join(format!("{stem}_{counter}{ext}"));
+            counter += 1;
+        }
+        let actual_name = target.file_name().unwrap().to_string_lossy().to_string();
+
+        if let Err(e) = std::fs::write(&target, &data) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write file: {}", e)).into_response();
+        }
+
+        let relative_path = format!("uploads/{today}/{actual_name}");
+        uploaded.push(serde_json::json!({
+            "name": actual_name,
+            "path": relative_path,
+            "size": data.len()
+        }));
+    }
+
+    Json(serde_json::json!({ "files": uploaded })).into_response()
+}
+
 // ── Router Builders ──
 
 /// Auth check — returns authenticated status (already passed auth middleware).
@@ -368,6 +445,8 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_GET_SKILL, get(handle_get_skill).put(handle_update_skill))
         .route(ROUTE_HANDLE_SERVE_STATIC, get(handle_serve_static))
         .route(ROUTE_HANDLE_PROXY, any(handle_proxy))
+        .route(ROUTE_HANDLE_UPLOAD, post(handle_upload))
+        .route(ROUTE_HANDLE_VISION, post(handle_vision))
         .route(ROUTE_HANDLE_AUTH_CHECK, get(handle_auth_check))
 }
 

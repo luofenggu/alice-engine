@@ -422,6 +422,71 @@ struct SyncResponse {
     usage: Option<SseUsage>,
 }
 
+/// Run a vision (multimodal) inference call. Returns (text, usage).
+///
+/// Builds an OpenAI-compatible multimodal request with image_url content.
+/// The image_url can be a regular URL or a data: URI (base64-encoded).
+pub(crate) async fn run_vision_inference(
+    config: &LlmConfig,
+    http_client: &reqwest::Client,
+    prompt: &str,
+    image_url: &str,
+    instance_id: &str,
+) -> Result<(String, Option<UsageInfo>)> {
+    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+
+    let llm_policy = &crate::policy::EngineConfig::get().llm;
+    let (api_url, model_id) = llm_policy.resolve_model(&config.model);
+
+    info!("[VISION-{}] Starting vision inference, model={}", instance_id, model_id);
+
+    let body = serde_json::json!({
+        "model": model_id,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}}
+            ]
+        }],
+        "max_tokens": config.max_tokens.unwrap_or(llm_policy.max_tokens),
+        "temperature": config.temperature.unwrap_or(llm_policy.temperature),
+        "stream": false,
+    });
+
+    let response = http_client
+        .post(&api_url)
+        .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
+        .header(CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to send vision inference request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Vision API error {}: {}", status, body);
+    }
+
+    let resp: SyncResponse = response.json().await
+        .context("Failed to parse vision inference response")?;
+
+    let text = resp.choices.first()
+        .and_then(|c| c.message.content.clone())
+        .unwrap_or_default();
+
+    let usage = resp.usage.map(|u| UsageInfo {
+        input_tokens: u.prompt_tokens.unwrap_or(0),
+        output_tokens: u.completion_tokens.unwrap_or(0),
+        total_cost: None,
+    });
+
+    info!("[VISION-{}] Complete, {} chars output", instance_id, text.len());
+
+    Ok((text, usage))
+}
+
 /// Run a non-streaming inference call. Returns (text, usage).
 pub(crate) async fn run_sync_inference(
     config: &LlmConfig,

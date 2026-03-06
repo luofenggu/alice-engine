@@ -77,8 +77,10 @@ async fn main() -> anyhow::Result<()> {
     let http_port = env_config.http_port;
 
     // Ensure directories exist
+    let uploads_dir = alice_engine::persist::instance::InstanceStore::resolve_uploads_dir(&base_dir);
     std::fs::create_dir_all(&instances_dir).ok();
     std::fs::create_dir_all(&logs_dir).ok();
+    std::fs::create_dir_all(&uploads_dir).ok();
 
     // Set up crash log hook
     alice_engine::logging::setup_crash_hook(&logs_dir);
@@ -122,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("HTTP server listening on {}", addr);
 
     let http_handle = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
             tracing::error!("HTTP server error: {}", e);
         }
     });

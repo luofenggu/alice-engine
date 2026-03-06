@@ -35,7 +35,7 @@ chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 futures-util = "0.3"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["compression-gzip", "fs"] }
 sha2 = "0.10"

@@ -10,7 +10,7 @@ use crate::policy::messages;
 // Compile-time embedded templates
 const TEMPLATE_SYSTEM: &str = include_str!("../../templates/react_system.txt");
 const TEMPLATE_USER: &str = include_str!("../../templates/react_user.txt");
-const APP_GUIDE_TEMPLATE: &str = include_str!("../../templates/app_guide.txt");
+const RESERVED_SKILL_TEMPLATE: &str = include_str!("../../templates/reserved_skill.txt");
 
 pub const INITIAL_HISTORY: &str = include_str!("../../templates/initial_history.txt");
 
@@ -182,7 +182,7 @@ impl BeatRequest {
 
     /// Build skill section: default skill (app guide) + instance custom skill.
     fn build_skill_section(&self) -> String {
-        let default_skill = make_app_guide_knowledge(self.host.as_deref(), &self.instance_id);
+        let default_skill = make_reserved_skill(self.host.as_deref(), &self.instance_id);
 
         let combined = match (default_skill.is_empty(), self.skill_content.trim().is_empty()) {
             (true, true) => return String::new(),
@@ -368,14 +368,15 @@ fn make_host_line(host: Option<&str>) -> String {
     }
 }
 
-/// Build app development guide as a forced-loaded knowledge section.
+/// Build reserved skill section (app guide + vision API + uploads).
 /// Returns empty string if no host is configured.
-fn make_app_guide_knowledge(host: Option<&str>, instance_id: &str) -> String {
+fn make_reserved_skill(host: Option<&str>, instance_id: &str) -> String {
     match host {
         Some(h) if !h.is_empty() => {
             let host_display = h.split(':').next().unwrap_or(h);
-            APP_GUIDE_TEMPLATE
+            RESERVED_SKILL_TEMPLATE
                 .replace("{host}", host_display)
+                .replace("{host_port}", h)
                 .replace("{instance}", instance_id)
         }
         _ => String::new(),
@@ -464,9 +465,9 @@ mod tests {
     }
 
     #[test]
-    fn test_make_app_guide_no_host() {
-        assert_eq!(make_app_guide_knowledge(None, "test"), "");
-        assert_eq!(make_app_guide_knowledge(Some(""), "test"), "");
+    fn test_make_reserved_skill_no_host() {
+        assert_eq!(make_reserved_skill(None, "test"), "");
+        assert_eq!(make_reserved_skill(Some(""), "test"), "");
     }
 
     #[test]

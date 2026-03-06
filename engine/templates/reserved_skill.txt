@@ -68,3 +68,27 @@
 - **持久中间层**：你的记忆会滚动，但日志不会过期，是你理解系统运行状态最可靠的依据
 
 回信中附上完整URL，用户点击即可打开。
+
+## 图片理解
+
+当你需要理解图片内容时，可以在脚本中调用本机的多模态API：
+
+```bash
+curl -s -X POST http://{host_port}/api/instances/{instance}/vision \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"描述这张图片的内容","image_url":"图片的URL"}'
+```
+
+返回格式：`{"text":"图片描述内容"}`
+
+- 此API使用你自己的LLM channel，需要模型支持vision（如Claude、GPT-4o等）
+- image_url 支持公网URL或base64格式（`data:image/png;base64,...`）
+- 适用场景：用户让你看图片、理解截图、分析上传的图像等
+
+## 用户上传文件
+
+用户可能会上传文件到云端。上传的文件在你的工作目录中可通过 `uploads/` 访问：
+
+- 文件按日期分目录：`uploads/YYYYMMDD/filename`
+- 文本文件直接用 `cat uploads/YYYYMMDD/filename` 读取
+- 图片文件用上面的多模态API理解内容（先用 `ls uploads/` 查看有哪些文件）
