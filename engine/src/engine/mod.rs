@@ -25,28 +25,21 @@
 //!   └── ...
 //! ```
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
-use anyhow::{Result, Context};
-use tracing::{info, warn, error};
+use std::time::Duration;
+use tracing::{error, info, warn};
 
-use crate::util::Counter;
+use crate::core::signal::SignalHub;
 use crate::core::Alice;
 use crate::persist::instance::InstanceStore;
-use crate::core::signal::SignalHub;
-
-
-
-
-
+use crate::util::Counter;
 
 // ─── Free function: sandbox user management ──────────────────────
-
-
 
 // ─── Free function: shutdown signal check ────────────────────────
 
@@ -101,7 +94,13 @@ pub struct AliceEngine {
 
 impl AliceEngine {
     /// Create a new engine.
-    pub fn new(instances_base: PathBuf, logs_dir: PathBuf, signal_hub: SignalHub, env_config: Arc<crate::policy::EnvConfig>, global_settings_store: crate::persist::GlobalSettingsStore) -> Self {
+    pub fn new(
+        instances_base: PathBuf,
+        logs_dir: PathBuf,
+        signal_hub: SignalHub,
+        env_config: Arc<crate::policy::EnvConfig>,
+        global_settings_store: crate::persist::GlobalSettingsStore,
+    ) -> Self {
         let pid_file = env_config.pid_file_path(&instances_base);
         let instance_store = InstanceStore::new(instances_base.clone());
         Self {
@@ -116,15 +115,16 @@ impl AliceEngine {
         }
     }
 
-
-
     /// Discover and restore instances from the instances directory.
     ///
     /// @TRACE: INSTANCE
     fn restore_instances(&mut self) -> Result<()> {
-        let ids = self.instance_store.list_ids()
-            .with_context(|| format!("Failed to list instances in: {}",
-                self.instances_base.display()))?;
+        let ids = self.instance_store.list_ids().with_context(|| {
+            format!(
+                "Failed to list instances in: {}",
+                self.instances_base.display()
+            )
+        })?;
 
         for id in ids {
             let instance_dir = self.instances_base.join(&id);
@@ -172,22 +172,38 @@ impl AliceEngine {
             }
         }
 
-        let mut alice = Alice::new(instance, self.logs_dir.clone(), llm_configs, self.env_config.clone(), Some(self.global_settings_store.clone()))?;
+        let mut alice = Alice::new(
+            instance,
+            self.logs_dir.clone(),
+            llm_configs,
+            self.env_config.clone(),
+            Some(self.global_settings_store.clone()),
+        )?;
 
         alice.instance_name = settings.name.clone();
 
         alice.privileged = settings.privileged_or_default();
-        if let Some(v) = settings.safety_max_consecutive_beats { alice.safety_max_consecutive_beats = v; }
-        if let Some(v) = settings.safety_cooldown_secs { alice.safety_cooldown_secs = v; }
+        if let Some(v) = settings.safety_max_consecutive_beats {
+            alice.safety_max_consecutive_beats = v;
+        }
+        if let Some(v) = settings.safety_cooldown_secs {
+            alice.safety_cooldown_secs = v;
+        }
         alice.host = settings.host.clone();
         alice.shell_env = settings.shell_env.clone();
-
 
         // Auto-create sandbox user (紧箍咒) for non-privileged instances
         if !settings.privileged_or_default() {
             let engine_policy = &crate::policy::EngineConfig::get().engine;
-            if let Err(e) = crate::external::shell::ensure_sandbox_user(&engine_policy.sandbox_user_prefix, name, &alice.instance.workspace) {
-                warn!("[SANDBOX] Skipping sandbox setup for {}: {} (sandbox commands not available)", name, e);
+            if let Err(e) = crate::external::shell::ensure_sandbox_user(
+                &engine_policy.sandbox_user_prefix,
+                name,
+                &alice.instance.workspace,
+            ) {
+                warn!(
+                    "[SANDBOX] Skipping sandbox setup for {}: {} (sandbox commands not available)",
+                    name, e
+                );
             }
         }
 
@@ -217,7 +233,12 @@ impl AliceEngine {
 
         // Write initial memory (imprint learning) on first creation
         if alice.instance.memory.history.read()?.is_empty() {
-            alice.instance.memory.history.write(crate::inference::beat::INITIAL_HISTORY).ok();
+            alice
+                .instance
+                .memory
+                .history
+                .write(crate::inference::beat::INITIAL_HISTORY)
+                .ok();
             info!("[INSTANCE] Initial history written for {}", name);
         }
 
@@ -248,11 +269,17 @@ impl AliceEngine {
         // 1. Clean up old logs
         let retention_days = self.env_config.infer_log_retention_days;
         crate::logging::cleanup_old_infer_logs(&self.logs_dir, retention_days);
-        crate::logging::rotate_engine_log(&self.logs_dir, crate::policy::EngineConfig::get().engine.log_rotate_max_mb);
+        crate::logging::rotate_engine_log(
+            &self.logs_dir,
+            crate::policy::EngineConfig::get().engine.log_rotate_max_mb,
+        );
 
         // 2. Restore instances
         self.restore_instances()?;
-        info!("Alice Engine started. {} instance(s) restored.", self.instances.len());
+        info!(
+            "Alice Engine started. {} instance(s) restored.",
+            self.instances.len()
+        );
 
         if self.instances.is_empty() {
             warn!("No instances found. Engine will wait for hot-scan.");
@@ -307,7 +334,8 @@ impl AliceEngine {
 
             // Hot-scan: discover new instances
             if let Ok(ids) = self.instance_store.list_ids() {
-                let new_ids: Vec<_> = ids.into_iter()
+                let new_ids: Vec<_> = ids
+                    .into_iter()
                     .filter(|id| !threads.contains_key(id))
                     .collect();
 
@@ -329,7 +357,10 @@ impl AliceEngine {
                                         threads.insert(inst_name, h);
                                     }
                                     Err(e) => {
-                                        error!("[HOT-SCAN] Failed to spawn thread for {}: {}", inst_name, e);
+                                        error!(
+                                            "[HOT-SCAN] Failed to spawn thread for {}: {}",
+                                            inst_name, e
+                                        );
                                     }
                                 }
                             }
@@ -342,8 +373,6 @@ impl AliceEngine {
             }
         }
     }
-
-
 
     /// Independent heartbeat loop for a single instance.
     /// Runs in its own thread. Exits when:
@@ -371,11 +400,21 @@ impl AliceEngine {
             // Hot-reload settings via Document (also detects instance deletion)
             match alice.instance.settings.load() {
                 Ok(s) => {
-                    if let Some(v) = s.safety_max_consecutive_beats { alice.safety_max_consecutive_beats = v; }
-                    if let Some(v) = s.safety_cooldown_secs { alice.safety_cooldown_secs = v; }
-                    if let Some(v) = s.session_blocks_limit { alice.session_blocks_limit = v; }
-                    if let Some(v) = s.session_block_kb { alice.session_block_kb = v; }
-                    if let Some(v) = s.history_kb { alice.history_kb = v; }
+                    if let Some(v) = s.safety_max_consecutive_beats {
+                        alice.safety_max_consecutive_beats = v;
+                    }
+                    if let Some(v) = s.safety_cooldown_secs {
+                        alice.safety_cooldown_secs = v;
+                    }
+                    if let Some(v) = s.session_blocks_limit {
+                        alice.session_blocks_limit = v;
+                    }
+                    if let Some(v) = s.session_block_kb {
+                        alice.session_block_kb = v;
+                    }
+                    if let Some(v) = s.history_kb {
+                        alice.history_kb = v;
+                    }
 
                     // Hot-reload instance name
                     if s.name != alice.instance_name {
@@ -384,7 +423,12 @@ impl AliceEngine {
 
                     // Hot-reload privileged
                     if s.privileged_or_default() != alice.privileged {
-                        info!("[HOT-RELOAD-{}] Privileged changed: {} -> {}", instance_id, alice.privileged, s.privileged_or_default());
+                        info!(
+                            "[HOT-RELOAD-{}] Privileged changed: {} -> {}",
+                            instance_id,
+                            alice.privileged,
+                            s.privileged_or_default()
+                        );
                         alice.privileged = s.privileged_or_default();
                     }
 
@@ -414,11 +458,13 @@ impl AliceEngine {
                             alice.llm_client.update_configs(configs);
                         }
                     }
-
                 }
                 Err(_) => {
                     // reload failed = file missing or corrupted, instance likely deleted
-                    info!("[THREAD-{}] Settings reload failed, instance likely deleted. Exiting.", instance_id);
+                    info!(
+                        "[THREAD-{}] Settings reload failed, instance likely deleted. Exiting.",
+                        instance_id
+                    );
                     break;
                 }
             }
@@ -449,8 +495,15 @@ impl AliceEngine {
                 }
 
                 // Check interrupt signal during idle (cancel timeout → infinite idle)
-                if alice.signals.as_ref().map_or(false, |s| s.check_interrupt()) {
-                    info!("[INTERRUPT-{}] Interrupt during idle, cancelling timeout", instance_id);
+                if alice
+                    .signals
+                    .as_ref()
+                    .map_or(false, |s| s.check_interrupt())
+                {
+                    info!(
+                        "[INTERRUPT-{}] Interrupt during idle, cancelling timeout",
+                        instance_id
+                    );
                     alice.idle_timeout_secs = None;
                     alice.idle_since = None;
                     idle_elapsed.reset();
@@ -471,11 +524,15 @@ impl AliceEngine {
                 if let Some(timeout) = alice.idle_timeout_secs {
                     idle_elapsed.add(engine_policy.beat_interval_secs);
                     if idle_elapsed.value() >= timeout {
-                        info!("[IDLE-TIMEOUT-{}] Idle timeout {}s reached (elapsed {}s), waking up",
-                            instance_id, timeout, idle_elapsed.value());
+                        info!(
+                            "[IDLE-TIMEOUT-{}] Idle timeout {}s reached (elapsed {}s), waking up",
+                            instance_id,
+                            timeout,
+                            idle_elapsed.value()
+                        );
                         alice.idle_timeout_secs = None;
                         alice.idle_since = None;
-                        alice.last_was_idle = false;  // So beat() won't skip
+                        alice.last_was_idle = false; // So beat() won't skip
                         idle_elapsed.reset();
                         // Fall through to beat (don't continue)
                     } else if alice.count_unread_messages() == 0 {
@@ -489,10 +546,15 @@ impl AliceEngine {
 
             // Safety valve check
             if consecutive_beats.value() >= alice.safety_max_consecutive_beats {
-                warn!("[SAFETY-{}] {} consecutive beats without idle — forcing cooldown ({}s)",
-                    instance_id, consecutive_beats.value(), alice.safety_cooldown_secs);
+                warn!(
+                    "[SAFETY-{}] {} consecutive beats without idle — forcing cooldown ({}s)",
+                    instance_id,
+                    consecutive_beats.value(),
+                    alice.safety_cooldown_secs
+                );
                 alice.notify_anomaly(&crate::policy::messages::safety_valve_triggered(
-                    consecutive_beats.value(), alice.safety_cooldown_secs
+                    consecutive_beats.value(),
+                    alice.safety_cooldown_secs,
                 ));
                 alice.last_was_idle = true;
                 consecutive_beats.reset();
@@ -504,9 +566,16 @@ impl AliceEngine {
             if let Some(max) = alice.max_beats {
                 if alice.beat_count.value() >= max {
                     if !alice.last_was_idle {
-                        info!("[LIMIT-{}] Beat limit reached ({}/{}), forcing idle",
-                            instance_id, alice.beat_count.value(), max);
-                        alice.notify_anomaly(&crate::policy::messages::beat_limit_reached(alice.beat_count.value(), max));
+                        info!(
+                            "[LIMIT-{}] Beat limit reached ({}/{}), forcing idle",
+                            instance_id,
+                            alice.beat_count.value(),
+                            max
+                        );
+                        alice.notify_anomaly(&crate::policy::messages::beat_limit_reached(
+                            alice.beat_count.value(),
+                            max,
+                        ));
                         alice.last_was_idle = true;
                     }
                     // Sleep and check shutdown, but don't beat
@@ -520,7 +589,8 @@ impl AliceEngine {
 
             // Inference backoff check (centralized — beat() doesn't manage sleep)
             if let Some(remaining) = alice.backoff_remaining() {
-                let sleep_time = remaining.min(Duration::from_secs(engine_policy.beat_interval_secs));
+                let sleep_time =
+                    remaining.min(Duration::from_secs(engine_policy.beat_interval_secs));
                 std::thread::sleep(sleep_time);
                 continue;
             }
@@ -528,8 +598,13 @@ impl AliceEngine {
             // Run beat
             let unread = alice.count_unread_messages();
             if unread > 0 || !alice.last_was_idle {
-                info!("[BEAT-{}] wakeup unread={} idle={} consecutive={}",
-                    instance_id, unread, alice.last_was_idle, consecutive_beats.value());
+                info!(
+                    "[BEAT-{}] wakeup unread={} idle={} consecutive={}",
+                    instance_id,
+                    unread,
+                    alice.last_was_idle,
+                    consecutive_beats.value()
+                );
             }
 
             // Disk space check (periodic to avoid overhead)
@@ -553,7 +628,10 @@ impl AliceEngine {
 
                     // Check shutdown after beat (respond quickly to graceful shutdown)
                     if shutdown.load(Ordering::Relaxed) {
-                        info!("[THREAD-{}] Shutdown signal after beat, exiting", instance_id);
+                        info!(
+                            "[THREAD-{}] Shutdown signal after beat, exiting",
+                            instance_id
+                        );
                         break;
                     }
 
@@ -566,8 +644,13 @@ impl AliceEngine {
                                 let iid = instance_id.clone();
                                 std::thread::spawn(move || {
                                     match crate::core::execute_roll_task(task) {
-                                        Ok(result) => info!("[HISTORY-ROLL-{}] Background: {}", iid, result),
-                                        Err(e) => error!("[HISTORY-ROLL-{}] Background failed: {}", iid, e),
+                                        Ok(result) => {
+                                            info!("[HISTORY-ROLL-{}] Background: {}", iid, result)
+                                        }
+                                        Err(e) => error!(
+                                            "[HISTORY-ROLL-{}] Background failed: {}",
+                                            iid, e
+                                        ),
                                     }
                                     rolling.store(false, Ordering::Relaxed);
                                 });
@@ -580,8 +663,10 @@ impl AliceEngine {
                     }
                 }
                 Err(e) => {
-                    error!("[BEAT-{}] Error: {} — backing off {}s",
-                        instance_id, e, error_backoff_secs);
+                    error!(
+                        "[BEAT-{}] Error: {} — backing off {}s",
+                        instance_id, e, error_backoff_secs
+                    );
                     alice.current_infer_log_path = None;
                     if let Some(ref signals) = alice.signals {
                         signals.update_status(|s| {
@@ -604,18 +689,20 @@ impl AliceEngine {
         info!("[THREAD-{}] Instance thread exited", instance_id);
     }
 
-
     /// Write PID file.
     fn write_pid_file(&self) {
         let pid = std::process::id();
         if let Err(e) = std::fs::write(&self.pid_file, pid.to_string()) {
             warn!("Failed to write PID file: {}", e);
         } else {
-            info!("PID file written: {} (PID {})", self.pid_file.display(), pid);
+            info!(
+                "PID file written: {} (PID {})",
+                self.pid_file.display(),
+                pid
+            );
         }
     }
 }
-
 
 // ─── Shared Instance Creation ────────────────────────────────────
 
@@ -631,23 +718,24 @@ mod tests {
     use crate::persist::Settings;
     use tempfile::TempDir;
 
-
-
     #[test]
     fn test_instance_settings_load() {
         let tmp = TempDir::new().unwrap();
         let settings_path = tmp.path().join("settings.json");
-        std::fs::write(&settings_path,
-            r#"{"api_key":"sk-test-key","model":"openrouter@anthropic/claude-sonnet-4"}"#
-        ).unwrap();
+        std::fs::write(
+            &settings_path,
+            r#"{"api_key":"sk-test-key","model":"openrouter@anthropic/claude-sonnet-4"}"#,
+        )
+        .unwrap();
 
         let doc: Document<Settings> = Document::open(&settings_path).unwrap();
         let settings = doc.load().unwrap();
         assert_eq!(settings.api_key, Some("sk-test-key".to_string()));
-        assert_eq!(settings.model, Some("openrouter@anthropic/claude-sonnet-4".to_string()));
+        assert_eq!(
+            settings.model,
+            Some("openrouter@anthropic/claude-sonnet-4".to_string())
+        );
     }
-
-
 
     #[test]
     fn test_engine_creation() {
@@ -676,7 +764,8 @@ mod tests {
         std::fs::write(
             instance_dir.join("settings.json"),
             r#"{"api_key":"sk-test","model":"openrouter@test-model"}"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
@@ -708,7 +797,8 @@ mod tests {
         std::fs::write(
             valid_dir.join("settings.json"),
             r#"{"api_key":"sk-test","model":"test"}"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
@@ -738,16 +828,16 @@ mod tests {
         let path = tmp.path().join("settings.json");
 
         // With max_beats
-        std::fs::write(&path,
-            r#"{"api_key":"sk-test","model":"test","max_beats":20}"#
-        ).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"api_key":"sk-test","model":"test","max_beats":20}"#,
+        )
+        .unwrap();
         let doc: Document<Settings> = Document::open(&path).unwrap();
         assert_eq!(doc.load().unwrap().max_beats, Some(20));
 
         // Without max_beats
-        std::fs::write(&path,
-            r#"{"api_key":"sk-test","model":"test"}"#
-        ).unwrap();
+        std::fs::write(&path, r#"{"api_key":"sk-test","model":"test"}"#).unwrap();
         let doc: Document<Settings> = Document::open(&path).unwrap();
         assert_eq!(doc.load().unwrap().max_beats, None);
     }
@@ -761,18 +851,22 @@ mod tests {
         let memory_dir = instance_dir.join("memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         std::fs::create_dir_all(instance_dir.join("workspace")).unwrap();
-        std::fs::write(instance_dir.join("settings.json"),
-            r#"{"api_key":"sk-test","model":"test"}"#
-        ).unwrap();
+        std::fs::write(
+            instance_dir.join("settings.json"),
+            r#"{"api_key":"sk-test","model":"test"}"#,
+        )
+        .unwrap();
 
         // Create normal instance
         let instance_dir2 = tmp.path().join("normal");
         let memory_dir2 = instance_dir2.join("memory");
         std::fs::create_dir_all(&memory_dir2).unwrap();
         std::fs::create_dir_all(instance_dir2.join("workspace")).unwrap();
-        std::fs::write(instance_dir2.join("settings.json"),
-            r#"{"api_key":"sk-test","model":"test"}"#
-        ).unwrap();
+        std::fs::write(
+            instance_dir2.join("settings.json"),
+            r#"{"api_key":"sk-test","model":"test"}"#,
+        )
+        .unwrap();
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();

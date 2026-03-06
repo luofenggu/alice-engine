@@ -8,15 +8,15 @@
 //!
 //! Multiple commit methods control flush order for crash safety:
 //! - append_current() — normal beat, write current to disk
-//! - commit_summary() — summary transaction: write session → knowledge → clear current
+//! - commit_summary() — summary transaction: write session → clear current
 //! - commit_history() — roll transaction: write history → delete old session block
 
-use std::path::{Path, PathBuf};
-use anyhow::{Context, Result};
-use chrono::Local;
-use serde::{Serialize, Deserialize};
 use crate::persist::TextFile;
 use crate::policy::action_output as out;
+use anyhow::{Context, Result};
+use chrono::Local;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 /// A single entry in a session block JSONL file.
 /// This struct is the single source of truth for session block format.
@@ -50,7 +50,7 @@ impl Memory {
     ///
     /// Initializes TextFile handles for knowledge, history, and current.
     /// Creates directories if they don't exist.
-    /// 
+    ///
     /// Note: One-time migrations (e.g. keypoints.md → knowledge.md) should be
     /// performed BEFORE calling this, so TextFile::open reads the migrated content.
     pub fn open(memory_dir: impl Into<PathBuf>) -> Result<Self> {
@@ -60,8 +60,9 @@ impl Memory {
         // Ensure directories exist
         std::fs::create_dir_all(&memory_dir)
             .with_context(|| format!("Failed to create memory dir: {}", memory_dir.display()))?;
-        std::fs::create_dir_all(&sessions_dir)
-            .with_context(|| format!("Failed to create sessions dir: {}", sessions_dir.display()))?;
+        std::fs::create_dir_all(&sessions_dir).with_context(|| {
+            format!("Failed to create sessions dir: {}", sessions_dir.display())
+        })?;
 
         // Clean up .tmp residuals from atomic_write after crash (self-contained cleanup)
         Self::cleanup_tmp_residuals(&memory_dir);
@@ -85,7 +86,10 @@ impl Memory {
         let mut cleaned = 0u32;
         Self::cleanup_tmp_in_dir(dir, &mut cleaned);
         if cleaned > 0 {
-            tracing::info!("[MEMORY] Cleaned {} .tmp residual files from previous crash", cleaned);
+            tracing::info!(
+                "[MEMORY] Cleaned {} .tmp residual files from previous crash",
+                cleaned
+            );
         }
     }
 
@@ -120,7 +124,9 @@ impl Memory {
     pub fn get_last_rolled(&self) -> Option<String> {
         let path = self.last_rolled_path();
         if path.exists() {
-            std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string())
+            std::fs::read_to_string(&path)
+                .ok()
+                .map(|s| s.trim().to_string())
         } else {
             None
         }
@@ -173,10 +179,12 @@ impl Memory {
         let start_marker = out::action_block_start(action_id);
         let end_marker = out::action_block_end(action_id);
 
-        let start_pos = current.find(&start_marker)
+        let start_pos = current
+            .find(&start_marker)
             .ok_or_else(|| anyhow::anyhow!("action block [{}] not found in current", action_id))?;
-        let relative_end = current[start_pos..].find(&end_marker)
-            .ok_or_else(|| anyhow::anyhow!("end marker for [{}] not found in current", action_id))?;
+        let relative_end = current[start_pos..].find(&end_marker).ok_or_else(|| {
+            anyhow::anyhow!("end marker for [{}] not found in current", action_id)
+        })?;
         let mut end_pos = start_pos + relative_end + end_marker.len();
 
         // Include trailing newline if present
@@ -185,7 +193,12 @@ impl Memory {
         }
 
         let replacement = out::forgotten_block(action_id, summary.trim());
-        let new_current = format!("{}{}{}", &current[..start_pos], replacement, &current[end_pos..]);
+        let new_current = format!(
+            "{}{}{}",
+            &current[..start_pos],
+            replacement,
+            &current[end_pos..]
+        );
         self.current.write(&new_current)?;
 
         Ok((end_pos - start_pos, replacement.len()))
@@ -212,7 +225,12 @@ impl Memory {
             .create(true)
             .append(true)
             .open(&path)
-            .with_context(|| format!("Failed to open session block for append: {}", path.display()))?;
+            .with_context(|| {
+                format!(
+                    "Failed to open session block for append: {}",
+                    path.display()
+                )
+            })?;
         file.write_all(lines.as_bytes())
             .with_context(|| format!("Failed to append to session block: {}", path.display()))?;
         file.sync_all()
@@ -274,7 +292,9 @@ impl Memory {
         let mut entries = Vec::new();
         for line in content.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             if let Ok(entry) = serde_json::from_str::<SessionBlockEntry>(line) {
                 entries.push(entry);
             }
@@ -285,8 +305,7 @@ impl Memory {
     /// Summary transaction:
     /// 1. Resolve target session block (append to existing if under size limit, else create new)
     /// 2. Serialize entry and append to session block
-    /// 3. Write knowledge (updated cognitive framework)
-    /// 4. Clear current
+    /// 3. Clear current
     ///
     /// Returns the block name used (for logging).
     ///
@@ -296,7 +315,6 @@ impl Memory {
         &self,
         entry: &SessionBlockEntry,
         session_block_kb: u32,
-        knowledge: Option<&str>,
     ) -> Result<String> {
         // Step 1: Resolve target block
         let blocks = self.list_session_blocks()?;
@@ -326,17 +344,11 @@ impl Memory {
         };
 
         // Step 2: Serialize and append
-        let jsonl_line = serde_json::to_string(entry)
-            .context("Failed to serialize session block entry")?
-            + "\n";
+        let jsonl_line =
+            serde_json::to_string(entry).context("Failed to serialize session block entry")? + "\n";
         self.append_session_block(&block_name, &jsonl_line)?;
 
-        // Step 3: Write knowledge (if provided)
-        if let Some(k) = knowledge {
-            self.knowledge.write(k)?;
-        }
-
-        // Step 4: Clear current
+        // Step 3: Clear current
         self.current.clear()?;
 
         Ok(block_name)
@@ -350,11 +362,7 @@ impl Memory {
     ///
     /// Crash safety: marker written first, cleared last.
     /// Worst case on crash: marker exists → next roll detects idempotency and cleans up.
-    pub fn commit_history(
-        &self,
-        new_history: &str,
-        oldest_block_name: &str,
-    ) -> Result<()> {
+    pub fn commit_history(&self, new_history: &str, oldest_block_name: &str) -> Result<()> {
         // Step 1: Write idempotency marker before any mutation
         self.set_last_rolled(oldest_block_name);
 
@@ -448,15 +456,22 @@ mod tests {
         assert_eq!(memory.list_session_blocks().unwrap(), Vec::<String>::new());
 
         // Write a block
-        memory.write_session_block("20260301120000", "line1\nline2\n").unwrap();
-        assert_eq!(memory.list_session_blocks().unwrap(), vec!["20260301120000"]);
+        memory
+            .write_session_block("20260301120000", "line1\nline2\n")
+            .unwrap();
+        assert_eq!(
+            memory.list_session_blocks().unwrap(),
+            vec!["20260301120000"]
+        );
 
         // Read it back
         let content = memory.read_session_block("20260301120000").unwrap();
         assert_eq!(content, "line1\nline2\n");
 
         // Append to it
-        memory.append_session_block("20260301120000", "line3\n").unwrap();
+        memory
+            .append_session_block("20260301120000", "line3\n")
+            .unwrap();
         let content = memory.read_session_block("20260301120000").unwrap();
         assert_eq!(content, "line1\nline2\nline3\n");
 
@@ -480,7 +495,10 @@ mod tests {
         memory.write_session_block("20260301180000", "c").unwrap();
 
         let blocks = memory.list_session_blocks().unwrap();
-        assert_eq!(blocks, vec!["20260301120000", "20260301150000", "20260301180000"]);
+        assert_eq!(
+            blocks,
+            vec!["20260301120000", "20260301150000", "20260301180000"]
+        );
     }
 
     #[test]
@@ -496,7 +514,7 @@ mod tests {
             last_msg: "MSG002".to_string(),
             summary: "session data".to_string(),
         };
-        let block_name = memory.commit_summary(&entry, 100, Some("# Updated Knowledge\nnew insights")).unwrap();
+        let block_name = memory.commit_summary(&entry, 100).unwrap();
 
         // Verify: session block written with serialized entry
         let entries = memory.read_session_entries(&block_name).unwrap();
@@ -505,7 +523,7 @@ mod tests {
         assert_eq!(entries[0].first_msg, "MSG001");
 
         // Verify: knowledge updated
-        assert_eq!(memory.knowledge.read().unwrap(), "# Updated Knowledge\nnew insights");
+        assert_eq!(memory.knowledge.read().unwrap(), "");
 
         // Verify: current cleared
         assert_eq!(memory.current.read().unwrap(), "");
@@ -516,20 +534,24 @@ mod tests {
         let (_tmp, mut memory) = setup();
 
         // Setup: write a session block and initial history
-        memory.write_session_block("20260301120000", "old session data\n").unwrap();
+        memory
+            .write_session_block("20260301120000", "old session data\n")
+            .unwrap();
         memory.history.write("old history").unwrap();
 
         // Commit history (roll)
-        memory.commit_history(
-            "compressed new history",
-            "20260301120000",
-        ).unwrap();
+        memory
+            .commit_history("compressed new history", "20260301120000")
+            .unwrap();
 
         // Verify: history updated
         assert_eq!(memory.history.read().unwrap(), "compressed new history");
 
         // Verify: old session block deleted
-        assert!(memory.read_session_block("20260301120000").unwrap().is_empty());
+        assert!(memory
+            .read_session_block("20260301120000")
+            .unwrap()
+            .is_empty());
 
         // Verify: .last_rolled marker is cleared after successful commit
         assert!(memory.get_last_rolled().is_none());
@@ -567,7 +589,7 @@ mod tests {
             last_msg: "MSG002".to_string(),
             summary: "first summary".to_string(),
         };
-        let block1 = memory.commit_summary(&entry1, 100, Some("knowledge v1")).unwrap();
+        let block1 = memory.commit_summary(&entry1, 100).unwrap();
 
         // Second summary appends to same block (under size limit)
         memory.append_current("more thinking\n").unwrap();
@@ -576,7 +598,7 @@ mod tests {
             last_msg: "MSG004".to_string(),
             summary: "second summary".to_string(),
         };
-        let block2 = memory.commit_summary(&entry2, 100, Some("knowledge v2")).unwrap();
+        let block2 = memory.commit_summary(&entry2, 100).unwrap();
 
         // Both went to same block
         assert_eq!(block1, block2);
@@ -586,7 +608,7 @@ mod tests {
         assert_eq!(entries[1].summary, "second summary");
 
         // Knowledge is latest version
-        assert_eq!(memory.knowledge.read().unwrap(), "knowledge v2");
+        assert_eq!(memory.knowledge.read().unwrap(), "");
     }
 
     #[test]
@@ -596,4 +618,3 @@ mod tests {
         assert_eq!(memory.sessions_dir(), tmp.path().join("memory/sessions"));
     }
 }
-

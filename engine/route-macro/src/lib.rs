@@ -60,4 +60,3 @@ pub fn patch(attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn any_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     route_impl("ANY", attr, item)
 }
-

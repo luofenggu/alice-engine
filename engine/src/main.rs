@@ -21,11 +21,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use alice_engine::engine::AliceEngine;
-use alice_engine::core::signal::SignalHub;
-use alice_engine::policy::EnvConfig;
-use alice_engine::api::state::EngineState;
 use alice_engine::api::routes;
+use alice_engine::api::state::EngineState;
+use alice_engine::core::signal::SignalHub;
+use alice_engine::engine::AliceEngine;
+use alice_engine::policy::EnvConfig;
 
 /// Resolve a path: env value > CLI arg > None.
 fn env_or_arg(env_val: Option<&str>, arg: Option<&String>) -> Option<String> {
@@ -43,7 +43,9 @@ async fn main() -> anyhow::Result<()> {
     let env_config = Arc::new(EnvConfig::from_env());
 
     // Base directory: all relative paths resolve from here
-    let base_dir = env_config.base_dir.as_deref()
+    let base_dir = env_config
+        .base_dir
+        .as_deref()
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             if args.len() > EnvConfig::CLI_ARG_INSTANCES {
@@ -60,16 +62,24 @@ async fn main() -> anyhow::Result<()> {
         });
 
     // Derive paths: env > CLI arg > base_dir default
-    let instances_dir = env_or_arg(env_config.instances_dir.as_deref(), args.get(EnvConfig::CLI_ARG_INSTANCES))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| base_dir.join(EnvConfig::DEFAULT_INSTANCES_DIR));
+    let instances_dir = env_or_arg(
+        env_config.instances_dir.as_deref(),
+        args.get(EnvConfig::CLI_ARG_INSTANCES),
+    )
+    .map(PathBuf::from)
+    .unwrap_or_else(|| base_dir.join(EnvConfig::DEFAULT_INSTANCES_DIR));
 
-    let logs_dir = env_or_arg(env_config.logs_dir.as_deref(), args.get(EnvConfig::CLI_ARG_LOGS))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| base_dir.join(EnvConfig::DEFAULT_LOGS_DIR));
+    let logs_dir = env_or_arg(
+        env_config.logs_dir.as_deref(),
+        args.get(EnvConfig::CLI_ARG_LOGS),
+    )
+    .map(PathBuf::from)
+    .unwrap_or_else(|| base_dir.join(EnvConfig::DEFAULT_LOGS_DIR));
 
     // HTML directory for static file serving
-    let html_dir = env_config.html_dir.as_deref()
+    let html_dir = env_config
+        .html_dir
+        .as_deref()
         .map(PathBuf::from)
         .unwrap_or_else(|| base_dir.join(EnvConfig::DEFAULT_HTML_DIR));
 
@@ -122,7 +132,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("HTTP server listening on {}", addr);
 
     let http_handle = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
             tracing::error!("HTTP server error: {}", e);
         }
     });
@@ -133,7 +148,13 @@ async fn main() -> anyhow::Result<()> {
     let engine_env_config = env_config.clone();
     let engine_gs_store = global_settings_store.clone();
     let engine_handle = std::thread::spawn(move || {
-        let mut engine = AliceEngine::new(engine_instances_dir, engine_logs_dir, signal_hub, engine_env_config, engine_gs_store);
+        let mut engine = AliceEngine::new(
+            engine_instances_dir,
+            engine_logs_dir,
+            signal_hub,
+            engine_env_config,
+            engine_gs_store,
+        );
         if let Err(e) = engine.run() {
             tracing::error!("Engine error: {}", e);
         }

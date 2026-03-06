@@ -5,25 +5,43 @@
 pub struct Counter<T>(T);
 
 impl Counter<u32> {
-    pub fn new() -> Self { Self(0) }
-    pub fn increment(&mut self) { self.0 += 1; }
-    pub fn reset(&mut self) { self.0 = 0; }
-    pub fn value(&self) -> u32 { self.0 }
+    pub fn new() -> Self {
+        Self(0)
+    }
+    pub fn increment(&mut self) {
+        self.0 += 1;
+    }
+    pub fn reset(&mut self) {
+        self.0 = 0;
+    }
+    pub fn value(&self) -> u32 {
+        self.0
+    }
 
     /// Exponential backoff: min(base * 2^(min(count-1, max_exp)), cap).
     /// Returns 0 if counter is at zero.
     pub fn exponential_backoff(&self, base: u64, max_exponent: u32, cap: u64) -> u64 {
-        if self.0 == 0 { return 0; }
+        if self.0 == 0 {
+            return 0;
+        }
         let exp = (self.0 - 1).min(max_exponent);
         std::cmp::min(base * (1u64 << exp), cap)
     }
 }
 
 impl Counter<u64> {
-    pub fn new() -> Self { Self(0) }
-    pub fn add(&mut self, n: u64) { self.0 += n; }
-    pub fn reset(&mut self) { self.0 = 0; }
-    pub fn value(&self) -> u64 { self.0 }
+    pub fn new() -> Self {
+        Self(0)
+    }
+    pub fn add(&mut self, n: u64) {
+        self.0 += n;
+    }
+    pub fn reset(&mut self) {
+        self.0 = 0;
+    }
+    pub fn value(&self) -> u64 {
+        self.0
+    }
 }
 
 /// Replace `search` with `replace` in `content` exactly once.
@@ -147,7 +165,13 @@ pub fn atomic_write(path: &std::path::Path, content: &str) -> anyhow::Result<()>
         .map_err(|e| anyhow::anyhow!("Failed to write tmp file {}: {}", tmp.display(), e))?;
     file.sync_all()
         .map_err(|e| anyhow::anyhow!("Failed to fsync tmp file {}: {}", tmp.display(), e))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| anyhow::anyhow!("Failed to rename {} -> {}: {}", tmp.display(), path.display(), e))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to rename {} -> {}: {}",
+            tmp.display(),
+            path.display(),
+            e
+        )
+    })?;
     Ok(())
 }

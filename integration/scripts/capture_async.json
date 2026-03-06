@@ -1,0 +1,10 @@
+[
+  {
+    "response": "{ACTION_TOKEN}-summary\n## 对话小结\n- 用户要求验证知识捕获端到端。"
+  },
+  {
+    "response": "CAPTURE_KNOWLEDGE_OK",
+    "match_non_action": true,
+    "expected_user_contains": "## 本次小结"
+  }
+]

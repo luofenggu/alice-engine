@@ -50,7 +50,10 @@ pub fn describe_settings_change(
         changes.push(format!("max_beats: {:?}", new.max_beats));
     }
     if old.session_blocks_limit != new.session_blocks_limit {
-        changes.push(format!("session_blocks_limit: {:?}", new.session_blocks_limit));
+        changes.push(format!(
+            "session_blocks_limit: {:?}",
+            new.session_blocks_limit
+        ));
     }
     if old.session_block_kb != new.session_block_kb {
         changes.push(format!("session_block_kb: {:?}", new.session_block_kb));
@@ -59,10 +62,16 @@ pub fn describe_settings_change(
         changes.push(format!("history_kb: {:?}", new.history_kb));
     }
     if old.safety_max_consecutive_beats != new.safety_max_consecutive_beats {
-        changes.push(format!("safety_max_consecutive_beats: {:?}", new.safety_max_consecutive_beats));
+        changes.push(format!(
+            "safety_max_consecutive_beats: {:?}",
+            new.safety_max_consecutive_beats
+        ));
     }
     if old.safety_cooldown_secs != new.safety_cooldown_secs {
-        changes.push(format!("safety_cooldown_secs: {:?}", new.safety_cooldown_secs));
+        changes.push(format!(
+            "safety_cooldown_secs: {:?}",
+            new.safety_cooldown_secs
+        ));
     }
     if old.temperature != new.temperature {
         changes.push(format!("temperature: {:?}", new.temperature));
@@ -74,7 +83,10 @@ pub fn describe_settings_change(
         changes.push(format!("host: {}", new.host.as_deref().unwrap_or("")));
     }
     if old.shell_env != new.shell_env {
-        changes.push(format!("shell_env: {}", new.shell_env.as_deref().unwrap_or("")));
+        changes.push(format!(
+            "shell_env: {}",
+            new.shell_env.as_deref().unwrap_or("")
+        ));
     }
 
     if changes.is_empty() {
@@ -115,7 +127,10 @@ pub fn knowledge_capacity_warning(size: usize) -> String {
 }
 
 pub fn knowledge_capacity_critical(size: usize) -> String {
-    format!("知识: {}/51200字符 🔴 知识超出推荐容量，建议与用户商量裂变", size)
+    format!(
+        "知识: {}/51200字符 🔴 知识超出推荐容量，建议与用户商量裂变",
+        size
+    )
 }
 
 pub fn binary_file_description(name: &str, size: u64) -> String {
@@ -128,7 +143,11 @@ pub fn beat_error(e: &anyhow::Error) -> String {
 }
 
 /// Format inference error with optional channel rotation info.
-pub fn inference_error(error: &str, backoff_secs: u64, rotation: Option<&(String, String)>) -> String {
+pub fn inference_error(
+    error: &str,
+    backoff_secs: u64,
+    rotation: Option<&(String, String)>,
+) -> String {
     match rotation {
         Some((from, to)) => format!(
             "{} 推理出错: {}，已轮换到 {}，将在{}秒后重试。",
@@ -220,5 +239,8 @@ pub fn roll_result(block: &str, usage: Option<(u64, u64)>) -> String {
     } else {
         String::new()
     };
-    format!("history rolled: block {} compressed into history.txt{}", block, usage_info)
+    format!(
+        "history rolled: block {} compressed into history.txt{}",
+        block, usage_info
+    )
 }

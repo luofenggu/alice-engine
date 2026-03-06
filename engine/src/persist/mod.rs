@@ -10,17 +10,15 @@
 //! ## Config
 //!
 
-
-pub mod memory;
-pub mod instance;
 pub mod chat;
+pub mod instance;
+pub mod memory;
 pub mod settings;
 
 /// Global settings filename — private, not exposed outside persist.
 const GLOBAL_SETTINGS_FILE: &str = "global_settings.json";
 
-
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 
 // ─── Document ────────────────────────────────────────────────────
 
@@ -32,10 +30,12 @@ pub struct Document<T: serde::Serialize + serde::de::DeserializeOwned> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-
 impl<T: serde::Serialize + serde::de::DeserializeOwned> Clone for Document<T> {
     fn clone(&self) -> Self {
-        Self { path: self.path.clone(), _phantom: std::marker::PhantomData }
+        Self {
+            path: self.path.clone(),
+            _phantom: std::marker::PhantomData,
+        }
     }
 }
 
@@ -54,7 +54,10 @@ where
             std::fs::write(&path, content)
                 .with_context(|| format!("failed to write document: {}", path.display()))?;
         }
-        Ok(Self { path, _phantom: std::marker::PhantomData })
+        Ok(Self {
+            path,
+            _phantom: std::marker::PhantomData,
+        })
     }
 
     /// Load the document from disk (read + deserialize).
@@ -67,8 +70,7 @@ where
 
     /// Save data to disk (serialize + write).
     pub fn save(&self, data: &T) -> Result<()> {
-        let content = serde_json::to_string_pretty(data)
-            .context("failed to serialize document")?;
+        let content = serde_json::to_string_pretty(data).context("failed to serialize document")?;
         std::fs::write(&self.path, content)
             .with_context(|| format!("failed to write document: {}", self.path.display()))?;
         Ok(())
@@ -190,7 +192,10 @@ mod tests {
         tf.write("line1\n").unwrap();
         tf.append("line2\n").unwrap();
         tf.append("line3\n").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "line1\nline2\nline3\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "line1\nline2\nline3\n"
+        );
     }
 
     #[test]
@@ -205,8 +210,14 @@ mod tests {
     #[test]
     fn test_textfile_persistence() {
         let path = temp_text_path("persist.txt");
-        { let tf = TextFile::open(&path).unwrap(); tf.write("persisted data").unwrap(); }
-        { let tf = TextFile::open(&path).unwrap(); assert_eq!(tf.read().unwrap(), "persisted data"); }
+        {
+            let tf = TextFile::open(&path).unwrap();
+            tf.write("persisted data").unwrap();
+        }
+        {
+            let tf = TextFile::open(&path).unwrap();
+            assert_eq!(tf.read().unwrap(), "persisted data");
+        }
     }
 
     #[test]
@@ -228,5 +239,5 @@ mod tests {
         assert_eq!(tf.read().unwrap(), "pre-existing content");
     }
 }
-pub use settings::{Settings, GlobalSettingsStore};
 pub use memory::SessionBlockEntry;
+pub use settings::{GlobalSettingsStore, Settings};

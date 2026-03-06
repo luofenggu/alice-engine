@@ -37,22 +37,21 @@
 //!   └── ...
 //! ```
 
-
-use std::sync::Arc;
-use std::path::PathBuf;
-use std::time::Instant;
 use anyhow::Result;
-use tracing::{info, warn};
 use chrono::Local;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
+use tracing::{error, info, warn};
 
-use crate::inference::Action;
-use crate::util::Counter;
 use crate::action::execute::execute_action;
+use crate::external::llm::{InferenceStream, LlmClient, LlmConfig, RecvResult, StreamItem};
+use crate::inference::Action;
 use crate::persist::instance;
 use crate::persist::settings::GlobalSettingsStore;
 use crate::policy::action_output;
-use crate::external::llm::{LlmClient, LlmConfig, InferenceStream, StreamItem, RecvResult};
 use crate::prompt::build_beat_request;
+use crate::util::Counter;
 
 // ─── Sequence Guard ──────────────────────────────────────────────
 
@@ -124,9 +123,12 @@ impl SequenceGuard {
                 } else if matches!(action, Action::SendMsg { .. }) {
                     SequenceVerdict::Allow
                 } else {
-                    SequenceVerdict::Reject(crate::policy::messages::sequence_reject_after_blocking(
-                        &self.instance_id, &action.to_string()
-                    ))
+                    SequenceVerdict::Reject(
+                        crate::policy::messages::sequence_reject_after_blocking(
+                            &self.instance_id,
+                            &action.to_string(),
+                        ),
+                    )
                 }
             }
             SequenceState::AfterIdle => {
@@ -134,7 +136,8 @@ impl SequenceGuard {
                     SequenceVerdict::Ignore
                 } else {
                     SequenceVerdict::Reject(crate::policy::messages::sequence_reject_after_idle(
-                        &self.instance_id, &action.to_string()
+                        &self.instance_id,
+                        &action.to_string(),
                     ))
                 }
             }
@@ -145,10 +148,7 @@ impl SequenceGuard {
 impl Action {
     /// Whether this action is "blocking" (requires result feedback).
     pub fn is_blocking(&self) -> bool {
-        matches!(self,
-            Action::Script { .. } |
-            Action::ReadMsg
-        )
+        matches!(self, Action::Script { .. } | Action::ReadMsg)
     }
 }
 
@@ -158,8 +158,6 @@ impl Action {
 /// Knowledge subdirectory under memory_dir
 
 // ─── Configuration ───────────────────────────────────────────────
-
-
 
 // ─── Action Record ───────────────────────────────────────────────
 
@@ -222,7 +220,10 @@ impl Transaction {
     /// @TRACE: ACTION
     pub fn record_doing(&mut self, action: Action, doing_text: String) -> String {
         let action_id = action_output::generate_action_id();
-        info!("[ACTION-{}] START {} ({})", self.instance_id, action_id, action);
+        info!(
+            "[ACTION-{}] START {} ({})",
+            self.instance_id, action_id, action
+        );
         self.action_records.push(ActionRecord {
             action_id: action_id.clone(),
             action,
@@ -238,17 +239,24 @@ impl Transaction {
     ///
     /// @TRACE: ACTION
     pub fn record_done(&mut self, action_id: &str, done_text: String) {
-        if let Some(record) = self.action_records.iter_mut()
+        if let Some(record) = self
+            .action_records
+            .iter_mut()
             .find(|r| r.action_id == action_id)
         {
             record.done_text = Some(done_text);
             record.duration = Some(record.started_at.elapsed());
-            info!("[ACTION-{}] END {} ({:.1}s)",
-                self.instance_id, action_id,
-                record.duration.unwrap_or_default().as_secs_f64());
+            info!(
+                "[ACTION-{}] END {} ({:.1}s)",
+                self.instance_id,
+                action_id,
+                record.duration.unwrap_or_default().as_secs_f64()
+            );
         } else {
-            warn!("[ACTION-{}] record_done called for unknown action_id: {}",
-                self.instance_id, action_id);
+            warn!(
+                "[ACTION-{}] record_done called for unknown action_id: {}",
+                self.instance_id, action_id
+            );
         }
     }
 
@@ -332,7 +340,6 @@ pub struct Alice {
     /// Signal handles for interrupt and switch-model (None in test mode).
     pub signals: Option<signal::InstanceSignals>,
 
-
     /// Maximum number of session blocks before history rolling is triggered.
     pub session_blocks_limit: u32,
     /// Maximum size of a single session block file in KB.
@@ -353,7 +360,13 @@ impl Alice {
     /// Create a new Alice instance from an instance directory.
     ///
     /// @TRACE: INSTANCE
-    pub fn new(instance: instance::Instance, log_dir: PathBuf, llm_configs: Vec<LlmConfig>, env_config: Arc<crate::policy::EnvConfig>, global_settings_store: Option<GlobalSettingsStore>) -> Result<Self> {
+    pub fn new(
+        instance: instance::Instance,
+        log_dir: PathBuf,
+        llm_configs: Vec<LlmConfig>,
+        env_config: Arc<crate::policy::EnvConfig>,
+        global_settings_store: Option<GlobalSettingsStore>,
+    ) -> Result<Self> {
         let user_id = instance.user_id().to_string();
 
         let llm_client = LlmClient::new(llm_configs);
@@ -361,13 +374,33 @@ impl Alice {
         // Read settings overrides before instance is moved into struct
         let mem_cfg = &crate::policy::EngineConfig::get().memory;
         let settings = instance.settings.load().ok();
-        let session_blocks_limit = settings.as_ref().and_then(|s| s.session_blocks_limit).unwrap_or(mem_cfg.session_blocks_limit);
-        let session_block_kb = settings.as_ref().and_then(|s| s.session_block_kb).unwrap_or(mem_cfg.session_block_kb);
-        let history_kb = settings.as_ref().and_then(|s| s.history_kb).unwrap_or(mem_cfg.history_kb);
-        let safety_max_consecutive_beats = settings.as_ref().and_then(|s| s.safety_max_consecutive_beats).unwrap_or(mem_cfg.safety_max_consecutive_beats);
-        let safety_cooldown_secs = settings.as_ref().and_then(|s| s.safety_cooldown_secs).unwrap_or(mem_cfg.safety_cooldown_secs);
+        let session_blocks_limit = settings
+            .as_ref()
+            .and_then(|s| s.session_blocks_limit)
+            .unwrap_or(mem_cfg.session_blocks_limit);
+        let session_block_kb = settings
+            .as_ref()
+            .and_then(|s| s.session_block_kb)
+            .unwrap_or(mem_cfg.session_block_kb);
+        let history_kb = settings
+            .as_ref()
+            .and_then(|s| s.history_kb)
+            .unwrap_or(mem_cfg.history_kb);
+        let safety_max_consecutive_beats = settings
+            .as_ref()
+            .and_then(|s| s.safety_max_consecutive_beats)
+            .unwrap_or(mem_cfg.safety_max_consecutive_beats);
+        let safety_cooldown_secs = settings
+            .as_ref()
+            .and_then(|s| s.safety_cooldown_secs)
+            .unwrap_or(mem_cfg.safety_cooldown_secs);
 
-        info!("[INSTANCE-{}] Alice created for user {} at {}", instance.id, user_id, instance.instance_dir.display());
+        info!(
+            "[INSTANCE-{}] Alice created for user {} at {}",
+            instance.id,
+            user_id,
+            instance.instance_dir.display()
+        );
         Ok(Self {
             instance,
             user_id,
@@ -393,7 +426,9 @@ impl Alice {
             history_kb,
             safety_max_consecutive_beats,
             safety_cooldown_secs,
-            stream_poll_interval_ms: crate::policy::EngineConfig::get().streaming.poll_interval_ms,
+            stream_poll_interval_ms: crate::policy::EngineConfig::get()
+                .streaming
+                .poll_interval_ms,
             env_config,
             global_settings_store,
         })
@@ -401,12 +436,7 @@ impl Alice {
 
     // ─── Sessions access ────────────────────────────────────────
 
-
-
     // ─── History Rolling ────────────────────────────────────────
-
-
-
 
     pub fn prepare_roll(&mut self) -> anyhow::Result<Option<RollTask>> {
         let blocks = self.instance.memory.list_session_blocks()?;
@@ -419,8 +449,10 @@ impl Alice {
         // Idempotency check
         if let Some(last_rolled) = self.instance.memory.get_last_rolled() {
             if last_rolled == oldest_block.as_str() {
-                info!("[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
-                    self.instance.id, oldest_block);
+                info!(
+                    "[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
+                    self.instance.id, oldest_block
+                );
                 self.instance.memory.delete_session_block(oldest_block)?;
                 self.instance.memory.clear_last_rolled();
                 return Ok(None);
@@ -429,8 +461,13 @@ impl Alice {
             self.instance.memory.clear_last_rolled();
         }
 
-        info!("[ROLL-{}] History rolling triggered: {} blocks >= limit {}, preparing {}",
-            self.instance.id, blocks.len(), self.session_blocks_limit, oldest_block);
+        info!(
+            "[ROLL-{}] History rolling triggered: {} blocks >= limit {}, preparing {}",
+            self.instance.id,
+            blocks.len(),
+            self.session_blocks_limit,
+            oldest_block
+        );
 
         // Read and render the oldest block
         let block_entries = self.instance.memory.read_session_entries(oldest_block)?;
@@ -484,28 +521,40 @@ impl Alice {
         // just delete it and skip re-compression.
         if let Some(last_rolled) = self.instance.memory.get_last_rolled() {
             if last_rolled == oldest_block.as_str() {
-                info!("[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
-                    self.instance.id, oldest_block);
+                info!(
+                    "[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
+                    self.instance.id, oldest_block
+                );
                 self.instance.memory.delete_session_block(oldest_block)?;
                 self.instance.memory.clear_last_rolled();
-                return Ok(Some(crate::policy::messages::roll_deleted_residual(oldest_block)));
+                return Ok(Some(crate::policy::messages::roll_deleted_residual(
+                    oldest_block,
+                )));
             }
             // Stale marker, clean up
             self.instance.memory.clear_last_rolled();
         }
 
-        info!("[ROLL-{}] History rolling triggered: {} blocks >= limit {}, rolling {}",
-            self.instance.id, blocks.len(), self.session_blocks_limit, oldest_block);
+        info!(
+            "[ROLL-{}] History rolling triggered: {} blocks >= limit {}, rolling {}",
+            self.instance.id,
+            blocks.len(),
+            self.session_blocks_limit,
+            oldest_block
+        );
 
         // 1. Read and render the oldest block
         let entries = self.instance.memory.read_session_entries(oldest_block)?;
         if entries.is_empty() {
             // Empty block, just delete it
             self.instance.memory.delete_session_block(oldest_block)?;
-            return Ok(Some(crate::policy::messages::roll_deleted_empty(oldest_block)));
+            return Ok(Some(crate::policy::messages::roll_deleted_empty(
+                oldest_block,
+            )));
         }
 
-        let session_entries: Vec<crate::inference::beat::SessionEntryData> = entries.iter().map(Into::into).collect();
+        let session_entries: Vec<crate::inference::beat::SessionEntryData> =
+            entries.iter().map(Into::into).collect();
         let rendered_block = crate::inference::beat::format_session_entries(&session_entries);
 
         // 2. Read current history (from memory handle)
@@ -519,16 +568,24 @@ impl Alice {
         };
 
         // 4. Call LLM (synchronous, blocking)
-        info!("[ROLL-{}] Calling LLM for history compression", self.instance.id);
+        info!(
+            "[ROLL-{}] Calling LLM for history compression",
+            self.instance.id
+        );
         let (new_history, usage) = self.llm_client.infer_compress(request, &self.instance.id)?;
 
         if new_history.trim().is_empty() {
-            warn!("[ROLL-{}] LLM returned empty history, aborting roll", self.instance.id);
+            warn!(
+                "[ROLL-{}] LLM returned empty history, aborting roll",
+                self.instance.id
+            );
             return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
         }
 
         // 5. Commit history (marker lifecycle managed inside commit_history)
-        self.instance.memory.commit_history(new_history.trim(), oldest_block)?;
+        self.instance
+            .memory
+            .commit_history(new_history.trim(), oldest_block)?;
 
         let result = crate::policy::messages::roll_result(
             oldest_block,
@@ -543,7 +600,12 @@ impl Alice {
 
     /// Count unread user messages (delegates to ChatHistory).
     pub fn count_unread_messages(&self) -> i64 {
-        self.instance.chat.lock().unwrap().count_unread_user_messages().unwrap_or(0)
+        self.instance
+            .chat
+            .lock()
+            .unwrap()
+            .count_unread_user_messages()
+            .unwrap_or(0)
     }
 
     /// Check inference backoff status. Returns remaining duration if still backing off,
@@ -552,13 +614,20 @@ impl Alice {
         if let Some(deadline) = self.inference_backoff_until {
             if Instant::now() < deadline {
                 let remaining = deadline.duration_since(Instant::now());
-                info!("[BACKOFF-{}] Inference backoff active, {:.0}s remaining (failures={})",
-                    self.instance.id, remaining.as_secs_f64(), self.inference_failures.value());
+                info!(
+                    "[BACKOFF-{}] Inference backoff active, {:.0}s remaining (failures={})",
+                    self.instance.id,
+                    remaining.as_secs_f64(),
+                    self.inference_failures.value()
+                );
                 return Some(remaining);
             }
             self.inference_backoff_until = None;
-            info!("[BACKOFF-{}] Backoff expired, retrying inference (failures={})",
-                self.instance.id, self.inference_failures.value());
+            info!(
+                "[BACKOFF-{}] Backoff expired, retrying inference (failures={})",
+                self.instance.id,
+                self.inference_failures.value()
+            );
         }
         None
     }
@@ -573,10 +642,15 @@ impl Alice {
             policy.inference_backoff_max_exponent,
             policy.inference_backoff_cap_secs,
         );
-        self.inference_backoff_until = Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
+        self.inference_backoff_until =
+            Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
         let rotation = self.llm_client.advance_channel();
-        warn!("[BACKOFF-{}] Inference failed ({} consecutive), backing off {}s",
-            self.instance.id, self.inference_failures.value(), backoff_secs);
+        warn!(
+            "[BACKOFF-{}] Inference failed ({} consecutive), backing off {}s",
+            self.instance.id,
+            self.inference_failures.value(),
+            backoff_secs
+        );
         (backoff_secs, rotation)
     }
 
@@ -589,11 +663,12 @@ impl Alice {
         self.instance.memory.append_current(&marker).ok();
 
         let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
-        self.instance.chat.lock().unwrap().write_agent_reply(
-            &self.instance.id,
-            message,
-            &timestamp,
-        ).ok();
+        self.instance
+            .chat
+            .lock()
+            .unwrap()
+            .write_agent_reply(&self.instance.id, message, &timestamp)
+            .ok();
 
         warn!("[ANOMALY-{}] {}", self.instance.id, message);
     }
@@ -611,17 +686,26 @@ impl Alice {
 
         // 1. Check for unread messages
         let unread_count = self.count_unread_messages();
-        info!("[BEAT-{}] Unread messages: {}", self.instance.id, unread_count);
+        info!(
+            "[BEAT-{}] Unread messages: {}",
+            self.instance.id, unread_count
+        );
 
         // If no unread and last was idle, skip this beat
         if unread_count == 0 && self.last_was_idle {
-            info!("[BEAT-{}] No unread + last idle, skipping", self.instance.id);
+            info!(
+                "[BEAT-{}] No unread + last idle, skipping",
+                self.instance.id
+            );
             return Ok(());
         }
 
         // 1.5. Hard-control auto-read: unread → skip LLM, execute ReadMsg directly
         if unread_count > 0 {
-            info!("[BEAT-{}] Hard-control: {} unread, auto-reading", self.instance.id, unread_count);
+            info!(
+                "[BEAT-{}] Hard-control: {} unread, auto-reading",
+                self.instance.id, unread_count
+            );
 
             let mut tx = Transaction::new(&self.instance.id);
 
@@ -646,11 +730,13 @@ impl Alice {
             }
 
             self.last_was_idle = false;
-            info!("[BEAT-{}] Hard-control auto-read complete ({:.1}s)",
-                self.instance.id, beat_start.elapsed().as_secs_f64());
+            info!(
+                "[BEAT-{}] Hard-control auto-read complete ({:.1}s)",
+                self.instance.id,
+                beat_start.elapsed().as_secs_f64()
+            );
             return Ok(());
         }
-
 
         // 1.7. Inference backoff (checked in instance_thread, not here)
 
@@ -661,15 +747,17 @@ impl Alice {
         let request = build_beat_request(self, self.host.as_deref());
 
         // 5. Set up inference log
-        let (log_path, log_timestamp) = crate::logging::create_infer_log_path(
-            &self.log_dir, &self.instance.id,
-        );
+        let (log_path, log_timestamp) =
+            crate::logging::create_infer_log_path(&self.log_dir, &self.instance.id);
         self.current_infer_log_path = Some(log_path.clone());
 
         // Mark born on first inference start (not just first idle)
         if !self.born {
             self.born = true;
-            info!("[BORN-{}] Instance born (first inference)", self.instance.id);
+            info!(
+                "[BORN-{}] Instance born (first inference)",
+                self.instance.id
+            );
         }
 
         // Update engine status: inferring
@@ -701,17 +789,25 @@ impl Alice {
         loop {
             // Check for interrupt signal before consuming next stream item
             if self.signals.as_ref().map_or(false, |s| s.check_interrupt()) {
-                warn!("[INTERRUPT-{}] Interrupt signal detected, aborting inference", self.instance.id);
+                warn!(
+                    "[INTERRUPT-{}] Interrupt signal detected, aborting inference",
+                    self.instance.id
+                );
                 let interrupt_text = action_output::inference_interrupted().to_string();
                 self.instance.memory.append_current(&interrupt_text).ok();
                 break;
             }
 
-            match stream.next_or_timeout(std::time::Duration::from_millis(self.stream_poll_interval_ms)) {
+            match stream.next_or_timeout(std::time::Duration::from_millis(
+                self.stream_poll_interval_ms,
+            )) {
                 RecvResult::Timeout => continue,
                 RecvResult::Disconnected => {
                     let (backoff, rotation) = self.set_inference_backoff();
-                    anyhow::bail!("{}", crate::policy::messages::inference_disconnected(backoff, rotation.as_ref()));
+                    anyhow::bail!(
+                        "{}",
+                        crate::policy::messages::inference_disconnected(backoff, rotation.as_ref())
+                    );
                 }
                 RecvResult::Item(item) => match item {
                     StreamItem::Action(action) => {
@@ -719,12 +815,16 @@ impl Alice {
                         match guard.check(&action) {
                             SequenceVerdict::Allow => {}
                             SequenceVerdict::Ignore => {
-                                info!("[SEQUENCE-{}] Ignoring action: {}", self.instance.id, action);
+                                info!(
+                                    "[SEQUENCE-{}] Ignoring action: {}",
+                                    self.instance.id, action
+                                );
                                 continue;
                             }
                             SequenceVerdict::Reject(reason) => {
                                 warn!("{}", reason);
-                                let reject_text = action_output::hallucination_defense_interrupted(&reason);
+                                let reject_text =
+                                    action_output::hallucination_defense_interrupted(&reason);
                                 self.instance.memory.append_current(&reject_text).ok();
                                 break;
                             }
@@ -742,10 +842,12 @@ impl Alice {
                         if let Action::Idle { timeout_secs } = &action {
                             self.last_was_idle = true;
                             self.idle_timeout_secs = *timeout_secs;
-                            self.idle_since = Some(std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs());
+                            self.idle_since = Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs(),
+                            );
                             if !self.born {
                                 self.born = true;
                                 info!("[BORN-{}] Instance born (first idle)", self.instance.id);
@@ -772,7 +874,10 @@ impl Alice {
 
                         // Blocking action: end inference after execution
                         if action.is_blocking() {
-                            info!("[BEAT-{}] Blocking action '{}' executed, ending inference", self.instance.id, action);
+                            info!(
+                                "[BEAT-{}] Blocking action '{}' executed, ending inference",
+                                self.instance.id, action
+                            );
                             break;
                         }
                     }
@@ -790,10 +895,16 @@ impl Alice {
                     }
                     StreamItem::Error(e) => {
                         let (backoff, rotation) = self.set_inference_backoff();
-                        anyhow::bail!("{}", crate::policy::messages::inference_error(&e, backoff, rotation.as_ref()));
+                        anyhow::bail!(
+                            "{}",
+                            crate::policy::messages::inference_error(
+                                &e,
+                                backoff,
+                                rotation.as_ref()
+                            )
+                        );
                     }
                 },
-
             }
         }
 
@@ -804,16 +915,22 @@ impl Alice {
         // the instance is truly idle, not here at beat() end. This prevents the frontend
         // from seeing brief "idle" flickers between consecutive beats in a reasoning chain.
 
-        info!("[BEAT-{}] Heartbeat end ({:.1}s, {} actions)",
+        for record in &tx.action_records {
+            if let crate::inference::Action::Summary { content } = &record.action {
+                spawn_capture_task(self, content, &self.log_dir);
+            }
+        }
+
+        info!(
+            "[BEAT-{}] Heartbeat end ({:.1}s, {} actions)",
             self.instance.id,
             beat_start.elapsed().as_secs_f64(),
-            tx.action_records.len());
+            tx.action_records.len()
+        );
 
         Ok(())
     }
 }
-
-
 
 // ─── Tests ───────────────────────────────────────────────────────
 
@@ -826,6 +943,42 @@ pub struct RollTask {
     pub llm_configs: Vec<crate::external::llm::LlmConfig>,
 }
 
+pub struct CaptureTask {
+    pub memory: crate::persist::memory::Memory,
+    pub request: crate::inference::capture::CaptureRequest,
+    pub instance_id: String,
+    pub llm_configs: Vec<crate::external::llm::LlmConfig>,
+    pub log_path: PathBuf,
+}
+
+pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
+    let llm_client = crate::external::llm::LlmClient::new(task.llm_configs);
+    let messages = task.request.render();
+
+    info!(
+        "[CAPTURE-{}] Background: calling LLM for knowledge capture",
+        task.instance_id
+    );
+    let (new_knowledge, usage) =
+        llm_client.infer_sync_streaming(messages, &task.instance_id, Some(&task.log_path))?;
+
+    if new_knowledge.trim().is_empty() {
+        anyhow::bail!("LLM returned empty knowledge");
+    }
+
+    task.memory.knowledge.write(new_knowledge.trim())?;
+
+    let result = format!(
+        "knowledge updated{}",
+        usage
+            .as_ref()
+            .map(|u| format!(" ({}→{} tokens)", u.input_tokens, u.output_tokens))
+            .unwrap_or_default()
+    );
+    info!("[CAPTURE-{}] Background: {}", task.instance_id, result);
+    Ok(result)
+}
+
 /// Prepare history rolling if needed (fast, non-blocking).
 /// Returns Some(RollTask) if rolling is needed, None otherwise.
 
@@ -835,18 +988,19 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     // Create a temporary LLM client for this task
     let llm_client = crate::external::llm::LlmClient::new(task.llm_configs);
 
-    info!("[ROLL-{}] Background: calling LLM for history compression", task.instance_id);
-    let (new_history, usage) = llm_client.infer_compress(
-        task.request,
-        &task.instance_id,
-    )?;
+    info!(
+        "[ROLL-{}] Background: calling LLM for history compression",
+        task.instance_id
+    );
+    let (new_history, usage) = llm_client.infer_compress(task.request, &task.instance_id)?;
 
     if new_history.trim().is_empty() {
         anyhow::bail!("LLM returned empty history");
     }
 
     // Commit via Memory (marker → write history → delete block → clear marker)
-    task.memory.commit_history(new_history.trim(), &task.oldest_block)?;
+    task.memory
+        .commit_history(new_history.trim(), &task.oldest_block)?;
 
     let result = crate::policy::messages::roll_result(
         &task.oldest_block,
@@ -855,6 +1009,25 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     info!("[ROLL-{}] Background: {}", task.instance_id, result);
 
     Ok(result)
+}
+
+pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::path::Path) {
+    let request = crate::prompt::build_capture_request(alice, summary_content);
+    let log_path = crate::logging::create_infer_log_path(log_dir, &alice.instance.id)
+        .0
+        .with_extension("capture.log");
+    let task = CaptureTask {
+        memory: alice.instance.memory.clone(),
+        request,
+        instance_id: alice.instance.id.clone(),
+        llm_configs: alice.llm_client.all_configs().to_vec(),
+        log_path,
+    };
+
+    std::thread::spawn(move || match execute_capture_task(task) {
+        Ok(msg) => info!("[CAPTURE] {}", msg),
+        Err(e) => error!("[CAPTURE] Background capture failed: {}", e),
+    });
 }
 
 pub mod signal;
@@ -876,7 +1049,12 @@ mod tests {
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let log_dir = tmp.path().join("logs");
-        let llm_config = LlmConfig { model: String::new(), api_key: String::new(), temperature: None, max_tokens: None };
+        let llm_config = LlmConfig {
+            model: String::new(),
+            api_key: String::new(),
+            temperature: None,
+            max_tokens: None,
+        };
         let env_config = Arc::new(crate::policy::EnvConfig::from_env());
         let alice = Alice::new(instance, log_dir, vec![llm_config], env_config, None).unwrap();
         (alice, tmp)
@@ -885,11 +1063,20 @@ mod tests {
     #[test]
     fn test_alice_creation() {
         let (alice, tmp) = create_test_alice();
-        assert_eq!(alice.instance.id, tmp.path().file_name().unwrap().to_str().unwrap());
+        assert_eq!(
+            alice.instance.id,
+            tmp.path().file_name().unwrap().to_str().unwrap()
+        );
         assert_eq!(alice.user_id, "user1");
         assert!(alice.current_infer_log_path.is_none());
-        assert_eq!(alice.instance.memory.memory_dir(), tmp.path().join("memory"));
-        assert_eq!(alice.instance.memory.sessions_dir(), tmp.path().join("memory").join("sessions"));
+        assert_eq!(
+            alice.instance.memory.memory_dir(),
+            tmp.path().join("memory")
+        );
+        assert_eq!(
+            alice.instance.memory.sessions_dir(),
+            tmp.path().join("memory").join("sessions")
+        );
         assert_eq!(alice.instance.workspace, tmp.path().join("workspace"));
         // Verify directories were created
         assert!(alice.instance.memory.sessions_dir().exists());
@@ -899,8 +1086,16 @@ mod tests {
     fn test_history_read_write() {
         let (alice, _tmp) = create_test_alice();
         assert_eq!(alice.instance.memory.history.read().unwrap(), "");
-        alice.instance.memory.history.write("hello history").unwrap();
-        assert_eq!(alice.instance.memory.history.read().unwrap(), "hello history");
+        alice
+            .instance
+            .memory
+            .history
+            .write("hello history")
+            .unwrap();
+        assert_eq!(
+            alice.instance.memory.history.read().unwrap(),
+            "hello history"
+        );
     }
 
     #[test]
@@ -910,46 +1105,107 @@ mod tests {
         alice.instance.memory.write_current("line1").unwrap();
         assert_eq!(alice.instance.memory.current.read().unwrap(), "line1");
         alice.instance.memory.append_current("line2").unwrap();
-        assert_eq!(alice.instance.memory.current.read().unwrap(), "line1\nline2");
+        assert_eq!(
+            alice.instance.memory.current.read().unwrap(),
+            "line1\nline2"
+        );
     }
 
     #[test]
     fn test_session_block_append_and_read() {
         let (alice, _tmp) = create_test_alice();
-        assert_eq!(alice.instance.memory.read_session_block("20260223172500").unwrap(), "");
-        alice.instance.memory.append_session_block("20260223172500", "{\"first_msg\":\"a\",\"last_msg\":\"b\",\"summary\":\"test\"}\n").unwrap();
-        let content = alice.instance.memory.read_session_block("20260223172500").unwrap();
+        assert_eq!(
+            alice
+                .instance
+                .memory
+                .read_session_block("20260223172500")
+                .unwrap(),
+            ""
+        );
+        alice
+            .instance
+            .memory
+            .append_session_block(
+                "20260223172500",
+                "{\"first_msg\":\"a\",\"last_msg\":\"b\",\"summary\":\"test\"}\n",
+            )
+            .unwrap();
+        let content = alice
+            .instance
+            .memory
+            .read_session_block("20260223172500")
+            .unwrap();
         assert!(content.contains("summary"));
     }
 
     #[test]
     fn test_session_block_size() {
         let (alice, _tmp) = create_test_alice();
-        assert_eq!(alice.instance.memory.session_block_size("20260223172500"), 0);
-        alice.instance.memory.append_session_block("20260223172500", "some content\n").unwrap();
+        assert_eq!(
+            alice.instance.memory.session_block_size("20260223172500"),
+            0
+        );
+        alice
+            .instance
+            .memory
+            .append_session_block("20260223172500", "some content\n")
+            .unwrap();
         assert!(alice.instance.memory.session_block_size("20260223172500") > 0);
     }
 
     #[test]
     fn test_list_session_blocks() {
         let (alice, _tmp) = create_test_alice();
-        alice.instance.memory.append_session_block("20260223172500", "line\n").unwrap();
-        alice.instance.memory.append_session_block("20260221150000", "line\n").unwrap();
-        alice.instance.memory.append_session_block("20260222100000", "line\n").unwrap();
+        alice
+            .instance
+            .memory
+            .append_session_block("20260223172500", "line\n")
+            .unwrap();
+        alice
+            .instance
+            .memory
+            .append_session_block("20260221150000", "line\n")
+            .unwrap();
+        alice
+            .instance
+            .memory
+            .append_session_block("20260222100000", "line\n")
+            .unwrap();
         let blocks = alice.instance.memory.list_session_blocks().unwrap();
-        assert_eq!(blocks, vec!["20260221150000", "20260222100000", "20260223172500"]);
+        assert_eq!(
+            blocks,
+            vec!["20260221150000", "20260222100000", "20260223172500"]
+        );
     }
 
     #[test]
     fn test_delete_session_block() {
         let (alice, _tmp) = create_test_alice();
-        alice.instance.memory.append_session_block("20260223172500", "line\n").unwrap();
-        assert!(!alice.instance.memory.read_session_block("20260223172500").unwrap().is_empty());
-        alice.instance.memory.delete_session_block("20260223172500").unwrap();
-        assert_eq!(alice.instance.memory.read_session_block("20260223172500").unwrap(), "");
+        alice
+            .instance
+            .memory
+            .append_session_block("20260223172500", "line\n")
+            .unwrap();
+        assert!(!alice
+            .instance
+            .memory
+            .read_session_block("20260223172500")
+            .unwrap()
+            .is_empty());
+        alice
+            .instance
+            .memory
+            .delete_session_block("20260223172500")
+            .unwrap();
+        assert_eq!(
+            alice
+                .instance
+                .memory
+                .read_session_block("20260223172500")
+                .unwrap(),
+            ""
+        );
     }
-
-
 
     #[test]
     fn test_session_files_in_sessions_dir() {
@@ -958,7 +1214,6 @@ mod tests {
         let current_file = alice.instance.memory.sessions_dir().join("current.txt");
         assert!(current_file.exists());
     }
-
 
     #[test]
     fn test_transaction_creation() {
@@ -984,7 +1239,10 @@ mod tests {
     #[test]
     fn test_build_session_text() {
         let mut tx = Transaction::new("test");
-        let id = tx.record_doing(Action::Idle { timeout_secs: None }, "doing idle\n".to_string());
+        let id = tx.record_doing(
+            Action::Idle { timeout_secs: None },
+            "doing idle\n".to_string(),
+        );
         tx.record_done(&id, "done idle\n".to_string());
 
         let text = tx.build_session_text();
@@ -1004,8 +1262,16 @@ mod tests {
     #[test]
     fn test_build_doing_description() {
         use crate::policy::action_output;
-        assert_eq!(action_output::build_doing_description(&Action::Idle { timeout_secs: None }), "idle");
-        assert_eq!(action_output::build_doing_description(&Action::Idle { timeout_secs: Some(30) }), "idle (30s)");
+        assert_eq!(
+            action_output::build_doing_description(&Action::Idle { timeout_secs: None }),
+            "idle"
+        );
+        assert_eq!(
+            action_output::build_doing_description(&Action::Idle {
+                timeout_secs: Some(30)
+            }),
+            "idle (30s)"
+        );
         assert!(action_output::build_doing_description(&Action::ReadMsg).contains("收件箱"));
 
         let send = Action::SendMsg {
@@ -1028,19 +1294,30 @@ mod tests {
     #[test]
     fn test_sequence_guard_normal_allows_all() {
         let mut guard = SequenceGuard::new("test");
-        assert_eq!(guard.check(&Action::Thinking { content: "hi".into() }), SequenceVerdict::Allow);
+        assert_eq!(
+            guard.check(&Action::Thinking {
+                content: "hi".into()
+            }),
+            SequenceVerdict::Allow
+        );
     }
 
     #[test]
     fn test_sequence_guard_normal_to_idle() {
         let mut guard = SequenceGuard::new("test");
-        assert_eq!(guard.check(&Action::Idle { timeout_secs: None }), SequenceVerdict::Allow);
+        assert_eq!(
+            guard.check(&Action::Idle { timeout_secs: None }),
+            SequenceVerdict::Allow
+        );
     }
 
     #[test]
     fn test_sequence_guard_idle_then_reject() {
         let mut guard = SequenceGuard::new("test");
-        assert_eq!(guard.check(&Action::Idle { timeout_secs: None }), SequenceVerdict::Allow);
+        assert_eq!(
+            guard.check(&Action::Idle { timeout_secs: None }),
+            SequenceVerdict::Allow
+        );
         match guard.check(&Action::ReadMsg) {
             SequenceVerdict::Reject(_) => {}
             other => panic!("Expected Reject, got {:?}", other),
@@ -1050,14 +1327,22 @@ mod tests {
     #[test]
     fn test_sequence_guard_idle_then_idle_ignored() {
         let mut guard = SequenceGuard::new("test");
-        assert_eq!(guard.check(&Action::Idle { timeout_secs: None }), SequenceVerdict::Allow);
-        assert_eq!(guard.check(&Action::Idle { timeout_secs: None }), SequenceVerdict::Ignore);
+        assert_eq!(
+            guard.check(&Action::Idle { timeout_secs: None }),
+            SequenceVerdict::Allow
+        );
+        assert_eq!(
+            guard.check(&Action::Idle { timeout_secs: None }),
+            SequenceVerdict::Ignore
+        );
     }
 
     #[test]
     fn test_sequence_guard_blocking_then_blocking_allowed() {
         let mut guard = SequenceGuard::new("test");
-        let script = Action::Script { content: "echo hi".into() };
+        let script = Action::Script {
+            content: "echo hi".into(),
+        };
         assert_eq!(guard.check(&script), SequenceVerdict::Allow);
         assert_eq!(guard.check(&Action::ReadMsg), SequenceVerdict::Allow);
     }
@@ -1065,17 +1350,26 @@ mod tests {
     #[test]
     fn test_sequence_guard_blocking_then_idle_ignored() {
         let mut guard = SequenceGuard::new("test");
-        let script = Action::Script { content: "echo hi".into() };
+        let script = Action::Script {
+            content: "echo hi".into(),
+        };
         assert_eq!(guard.check(&script), SequenceVerdict::Allow);
-        assert_eq!(guard.check(&Action::Idle { timeout_secs: None }), SequenceVerdict::Ignore);
+        assert_eq!(
+            guard.check(&Action::Idle { timeout_secs: None }),
+            SequenceVerdict::Ignore
+        );
     }
 
     #[test]
     fn test_sequence_guard_blocking_then_nonblocking_rejected() {
         let mut guard = SequenceGuard::new("test");
-        let script = Action::Script { content: "echo hi".into() };
+        let script = Action::Script {
+            content: "echo hi".into(),
+        };
         assert_eq!(guard.check(&script), SequenceVerdict::Allow);
-        match guard.check(&Action::Thinking { content: "hmm".into() }) {
+        match guard.check(&Action::Thinking {
+            content: "hmm".into(),
+        }) {
             SequenceVerdict::Reject(_) => {}
             other => panic!("Expected Reject, got {:?}", other),
         }
@@ -1084,17 +1378,46 @@ mod tests {
     #[test]
     fn test_sequence_guard_nonblocking_chain() {
         let mut guard = SequenceGuard::new("test");
-        assert_eq!(guard.check(&Action::Thinking { content: "a".into() }), SequenceVerdict::Allow);
-        assert_eq!(guard.check(&Action::SendMsg { recipient: "u".into(), content: "hi".into() }), SequenceVerdict::Allow);
-        assert_eq!(guard.check(&Action::WriteFile { path: "f".into(), content: "c".into() }), SequenceVerdict::Allow);
+        assert_eq!(
+            guard.check(&Action::Thinking {
+                content: "a".into()
+            }),
+            SequenceVerdict::Allow
+        );
+        assert_eq!(
+            guard.check(&Action::SendMsg {
+                recipient: "u".into(),
+                content: "hi".into()
+            }),
+            SequenceVerdict::Allow
+        );
+        assert_eq!(
+            guard.check(&Action::WriteFile {
+                path: "f".into(),
+                content: "c".into()
+            }),
+            SequenceVerdict::Allow
+        );
     }
 
     #[test]
     fn test_sequence_guard_bab_pattern() {
         let mut guard = SequenceGuard::new("test");
-        assert_eq!(guard.check(&Action::Thinking { content: "plan".into() }), SequenceVerdict::Allow);
-        assert_eq!(guard.check(&Action::Script { content: "echo hi".into() }), SequenceVerdict::Allow);
-        match guard.check(&Action::Thinking { content: "reflect".into() }) {
+        assert_eq!(
+            guard.check(&Action::Thinking {
+                content: "plan".into()
+            }),
+            SequenceVerdict::Allow
+        );
+        assert_eq!(
+            guard.check(&Action::Script {
+                content: "echo hi".into()
+            }),
+            SequenceVerdict::Allow
+        );
+        match guard.check(&Action::Thinking {
+            content: "reflect".into(),
+        }) {
             SequenceVerdict::Reject(_) => {}
             other => panic!("Expected Reject, got {:?}", other),
         }
@@ -1107,7 +1430,15 @@ mod tests {
 
         assert!(!Action::Idle { timeout_secs: None }.is_blocking());
         assert!(!Action::Thinking { content: "".into() }.is_blocking());
-        assert!(!Action::SendMsg { recipient: "".into(), content: "".into() }.is_blocking());
-        assert!(!Action::WriteFile { path: "".into(), content: "".into() }.is_blocking());
+        assert!(!Action::SendMsg {
+            recipient: "".into(),
+            content: "".into()
+        }
+        .is_blocking());
+        assert!(!Action::WriteFile {
+            path: "".into(),
+            content: "".into()
+        }
+        .is_blocking());
     }
 }

@@ -57,7 +57,10 @@ pub fn to_reqwest_method(method: &axum::http::Method) -> reqwest::Method {
 }
 
 /// Forward request headers, filtering out hop-by-hop headers.
-pub fn forward_request_headers(headers: &HeaderMap, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+pub fn forward_request_headers(
+    headers: &HeaderMap,
+    builder: reqwest::RequestBuilder,
+) -> reqwest::RequestBuilder {
     let mut req = builder;
     for (name, value) in headers.iter() {
         if !is_hop_by_hop_header(name.as_str()) {
@@ -90,7 +93,12 @@ pub fn rewrite_cookie_path(cookie: &str, proxy_prefix: &str) -> String {
         let original_path = &cookie[path_start..path_end];
         if !original_path.starts_with(proxy_prefix) {
             let new_path = format!("{}{}", proxy_prefix, original_path);
-            return format!("{}{}{}", &cookie[..path_start], new_path, &cookie[path_end..]);
+            return format!(
+                "{}{}{}",
+                &cookie[..path_start],
+                new_path,
+                &cookie[path_end..]
+            );
         }
     }
     cookie.to_string()
@@ -105,7 +113,11 @@ pub const API_KEY_FIELD_NAME: &str = "api_key";
 /// Mask an API key value, showing only prefix and suffix.
 pub fn mask_api_key(s: &str) -> String {
     if s.len() > API_KEY_MASK_MIN_LEN {
-        format!("{}...{}", &s[..API_KEY_MASK_PREFIX_LEN], &s[s.len() - API_KEY_MASK_SUFFIX_LEN..])
+        format!(
+            "{}...{}",
+            &s[..API_KEY_MASK_PREFIX_LEN],
+            &s[s.len() - API_KEY_MASK_SUFFIX_LEN..]
+        )
     } else {
         s.to_string()
     }
@@ -149,7 +161,11 @@ pub fn build_proxy_prefix(port: u16) -> String {
 
 /// Process a response header for proxy forwarding.
 /// Returns the (possibly rewritten) header value, or None if the header should be stripped.
-pub fn process_proxy_response_header(name: &str, value: &str, proxy_prefix: &str) -> Option<String> {
+pub fn process_proxy_response_header(
+    name: &str,
+    value: &str,
+    proxy_prefix: &str,
+) -> Option<String> {
     let name_lower = name.to_lowercase();
     match name_lower.as_str() {
         "location" => {
@@ -160,9 +176,7 @@ pub fn process_proxy_response_header(name: &str, value: &str, proxy_prefix: &str
             };
             Some(rewritten)
         }
-        "set-cookie" => {
-            Some(rewrite_cookie_path(value, proxy_prefix))
-        }
+        "set-cookie" => Some(rewrite_cookie_path(value, proxy_prefix)),
         n if is_response_hop_by_hop(n) => None,
         _ => Some(value.to_string()),
     }
@@ -208,16 +222,10 @@ pub fn extract_session_token<'a>(cookies: &'a str, cookie_name: &str) -> Option<
 /// Static file paths that bypass auth (not route-annotated handlers).
 pub const SETUP_PAGE_FILE: &str = "/setup.html";
 
-pub const AUTH_WHITELIST_STATIC: &[&str] = &[
-    "/login.html",
-    "/setup.html",
-    "/error-reporter.js",
-];
+pub const AUTH_WHITELIST_STATIC: &[&str] = &["/login.html", "/setup.html", "/error-reporter.js"];
 
 /// Path prefixes that bypass auth.
-pub const AUTH_WHITELIST_PREFIXES: &[&str] = &[
-    "/public/",
-];
+pub const AUTH_WHITELIST_PREFIXES: &[&str] = &["/public/"];
 
 /// Login redirect path.
 pub const LOGIN_PATH: &str = "/login";

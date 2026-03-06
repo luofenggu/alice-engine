@@ -25,16 +25,15 @@
 /// Re-exported from inference module — safe template rendering.
 pub use inference::safe_render;
 
-pub mod logging;
-pub mod external;
-pub mod policy;
-pub mod core;
 pub mod action;
+pub mod core;
+pub mod external;
 pub mod inference;
+pub mod logging;
+pub mod policy;
 
-pub mod prompt;
+pub mod api;
 pub mod engine;
 pub mod persist;
+pub mod prompt;
 pub mod util;
-pub mod api;
-

@@ -18,16 +18,16 @@
 //! will be cut off here before it can bloat the process memory.
 
 use std::io::Read;
-use std::path::{Path, PathBuf, Component};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
-use std::thread;
 use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 use thiserror::Error;
-use tracing::{warn, instrument};
+use tracing::{instrument, warn};
 
 // ---------------------------------------------------------------------------
 // Path Resolution
@@ -104,7 +104,8 @@ impl ShellOutput {
 
     /// Human-readable exit code for error messages.
     pub fn exit_code_display(&self) -> String {
-        self.exit_code.map_or("unknown".to_string(), |c| c.to_string())
+        self.exit_code
+            .map_or("unknown".to_string(), |c| c.to_string())
     }
 }
 
@@ -120,9 +121,9 @@ fn read_limited(reader: &mut impl Read, limit: usize, buf: &mut Vec<u8>) {
         let remaining = limit - buf.len();
         let to_read = remaining.min(chunk.len());
         match reader.read(&mut chunk[..to_read]) {
-            Ok(0) => break,       // EOF
+            Ok(0) => break, // EOF
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(_) => break,      // I/O error, stop reading
+            Err(_) => break, // I/O error, stop reading
         }
     }
 }
@@ -169,7 +170,11 @@ impl Shell {
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
-        if exists { Some(user) } else { None }
+        if exists {
+            Some(user)
+        } else {
+            None
+        }
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -312,7 +317,10 @@ impl Shell {
     /// Creates parent directories if needed.
     pub fn write_file(&self, path: &str, content: &str) -> ShellResult<ShellOutput> {
         let escaped = path.replace('\'', "'\\''");
-        let delim = format!("HEREDOC_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
+        let delim = format!(
+            "HEREDOC_{}",
+            uuid::Uuid::new_v4().to_string().replace('-', "")
+        );
         self.exec(&format!(
             "mkdir -p \"$(dirname '{}')\" && cat > '{}' << '{}'\n{}\n{}",
             escaped, escaped, delim, content, delim,
@@ -369,8 +377,8 @@ mod tests {
     #[test]
     fn test_timeout() {
         let tmp = TempDir::new().unwrap();
-        let shell = Shell::new(tmp.path().to_path_buf(), None)
-            .with_timeout(Duration::from_millis(500));
+        let shell =
+            Shell::new(tmp.path().to_path_buf(), None).with_timeout(Duration::from_millis(500));
         let result = shell.exec("sleep 10");
         assert!(matches!(result, Err(ShellError::Timeout(_))));
     }
@@ -382,7 +390,6 @@ mod tests {
         assert!(result.output.contains("line1"));
         assert!(result.output.contains("line2"));
     }
-
 }
 
 // ─── System shell utilities ─────────────────────────────────────
@@ -397,7 +404,8 @@ pub fn available_mb(path: &std::path::Path) -> Option<u64> {
         .output()
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.lines()
+    stdout
+        .lines()
         .nth(1)?
         .trim()
         .trim_end_matches('M')
@@ -410,18 +418,28 @@ pub fn available_mb(path: &std::path::Path) -> Option<u64> {
 /// - Checks if user exists via `id {prefix}{name}`
 /// - Creates user if missing via `useradd -r -s /bin/bash --home-dir {workspace} {prefix}{name}`
 /// - Sets workspace directory ownership via `chown -R {user}:{user} {workspace}`
-pub fn ensure_sandbox_user(prefix: &str, name: &str, workspace: &std::path::Path) -> anyhow::Result<()> {
+pub fn ensure_sandbox_user(
+    prefix: &str,
+    name: &str,
+    workspace: &std::path::Path,
+) -> anyhow::Result<()> {
     use anyhow::Context;
 
     let user = format!("{}{}", prefix, name);
     let workspace_str = workspace.to_string_lossy();
 
     // Check if user already exists
-    let check = std::process::Command::new("id").arg(&user).output()
+    let check = std::process::Command::new("id")
+        .arg(&user)
+        .output()
         .context("Failed to run 'id' command")?;
 
     if !check.status.success() {
-        tracing::info!("[SANDBOX] Creating sandbox user: {} (home={})", user, workspace_str);
+        tracing::info!(
+            "[SANDBOX] Creating sandbox user: {} (home={})",
+            user,
+            workspace_str
+        );
         let create = std::process::Command::new("useradd")
             .args(["-r", "-s", "/bin/bash", "--home-dir", &workspace_str, &user])
             .output()
@@ -429,7 +447,11 @@ pub fn ensure_sandbox_user(prefix: &str, name: &str, workspace: &std::path::Path
 
         if !create.status.success() {
             let stderr = String::from_utf8_lossy(&create.stderr);
-            anyhow::bail!("Failed to create sandbox user '{}': {}", user, stderr.trim());
+            anyhow::bail!(
+                "Failed to create sandbox user '{}': {}",
+                user,
+                stderr.trim()
+            );
         }
         tracing::info!("[SANDBOX] Created sandbox user: {}", user);
     }
@@ -463,8 +485,7 @@ mod truncation_tests {
     #[test]
     fn test_truncation() {
         let tmp = TempDir::new().unwrap();
-        let shell = Shell::new(tmp.path().to_path_buf(), None)
-            .with_max_output(100);
+        let shell = Shell::new(tmp.path().to_path_buf(), None).with_max_output(100);
         // Generate output larger than 100 bytes
         let result = shell.exec("yes | head -200").unwrap();
         assert!(result.truncated);

@@ -26,16 +26,16 @@
 
 pub mod stream;
 
-use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use anyhow::{Result, Context};
-use tracing::{info, warn, error};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use tracing::{error, info, warn};
 
-use crate::inference::parse_actions;
 use crate::inference::beat::BeatRequest;
 use crate::inference::compress::CompressRequest;
+use crate::inference::parse_actions;
 /// Token usage info from LLM response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageInfo {
@@ -45,7 +45,7 @@ pub struct UsageInfo {
 }
 
 // Re-export key types
-pub use stream::{InferenceStream, StreamItem, RecvResult};
+pub use stream::{InferenceStream, RecvResult, StreamItem};
 
 // ---------------------------------------------------------------------------
 // LLM Client Configuration
@@ -117,15 +117,24 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: Role::System, content: content.into() }
+        Self {
+            role: Role::System,
+            content: content.into(),
+        }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: content.into() }
+        Self {
+            role: Role::User,
+            content: content.into(),
+        }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: content.into() }
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+        }
     }
 }
 
@@ -148,12 +157,19 @@ pub struct LlmClient {
 
 impl LlmClient {
     pub fn new(configs: Vec<LlmConfig>) -> Self {
-        assert!(!configs.is_empty(), "LlmClient requires at least one config");
+        assert!(
+            !configs.is_empty(),
+            "LlmClient requires at least one config"
+        );
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("Failed to build HTTP client");
-        Self { configs, channel_index: AtomicU64::new(0), http_client }
+        Self {
+            configs,
+            channel_index: AtomicU64::new(0),
+            http_client,
+        }
     }
 
     /// Get the current channel's config (round-robin by channel_index).
@@ -165,16 +181,25 @@ impl LlmClient {
     /// Access primary channel's model (for hot-reload comparison).
     /// Replace all configs (hot-reload channels). Keeps channel_index unchanged.
     pub fn update_configs(&mut self, configs: Vec<LlmConfig>) {
-        assert!(!configs.is_empty(), "LlmClient requires at least one config");
+        assert!(
+            !configs.is_empty(),
+            "LlmClient requires at least one config"
+        );
         self.configs = configs;
     }
 
     /// Clone all configs (for passing to background tasks like RollTask).
-    pub fn all_configs(&self) -> Vec<LlmConfig> { self.configs.clone() }
+    pub fn all_configs(&self) -> Vec<LlmConfig> {
+        self.configs.clone()
+    }
 
     /// Get display name for a channel index: 0 → "primary", N → "extraN".
     pub fn channel_display_name(idx: usize) -> String {
-        if idx == 0 { "primary".to_string() } else { format!("extra{}", idx) }
+        if idx == 0 {
+            "primary".to_string()
+        } else {
+            format!("extra{}", idx)
+        }
     }
 
     /// Advance to the next channel (called on inference error).
@@ -187,8 +212,10 @@ impl LlmClient {
             let new_idx = (old + 1) as usize % len;
             let old_name = Self::channel_display_name(old_idx);
             let new_name = Self::channel_display_name(new_idx);
-            info!("[CHANNEL] Rotated from {} to {} (model={})",
-                old_name, new_name, self.configs[new_idx].model);
+            info!(
+                "[CHANNEL] Rotated from {} to {} (model={})",
+                old_name, new_name, self.configs[new_idx].model
+            );
             Some((old_name, new_name))
         } else {
             None
@@ -216,17 +243,7 @@ impl LlmClient {
             .context("Failed to create tokio runtime")?;
 
         rt.block_on(async {
-            // Total sync inference timeout: 5 minutes (aligned with streaming inference)
-            match tokio::time::timeout(
-                tokio::time::Duration::from_secs(300),
-                run_sync_inference(&config, &http_client, messages, &instance_id)
-            ).await {
-                Ok(result) => result,
-                Err(_) => {
-                    error!("[INFER-SYNC-{}] Inference timeout (300s)", instance_id);
-                    anyhow::bail!("Sync inference timeout (300s)")
-                }
-            }
+            run_sync_inference(&config, &http_client, messages, &instance_id).await
         })
     }
 
@@ -254,7 +271,14 @@ impl LlmClient {
             .context("Failed to create tokio runtime")?;
 
         rt.block_on(async {
-            run_streaming_collect(&config, &http_client, messages, &instance_id, log_path.as_deref()).await
+            run_streaming_collect(
+                &config,
+                &http_client,
+                messages,
+                &instance_id,
+                log_path.as_deref(),
+            )
+            .await
         })
     }
 
@@ -288,9 +312,13 @@ impl LlmClient {
             let current = self.current_config();
             let (resolved_url, _) = llm_policy.resolve_model(&current.model);
             crate::logging::write_infer_input_log(
-                log_dir, &instance_id, log_timestamp,
-                &current.model, &resolved_url,
-                &system_prompt, &user_prompt,
+                log_dir,
+                &instance_id,
+                log_timestamp,
+                &current.model,
+                &resolved_url,
+                &system_prompt,
+                &user_prompt,
             );
         }
 
@@ -300,12 +328,7 @@ impl LlmClient {
         ];
 
         let separator_token = request.action_token.clone();
-        self.infer_async(
-            messages,
-            &separator_token,
-            log_path,
-            instance_id,
-        )
+        self.infer_async(messages, &separator_token, log_path, instance_id)
     }
 
     /// High-level compress inference: renders request, calls sync API.
@@ -324,7 +347,7 @@ impl LlmClient {
             ChatMessage::system(&system_msg),
             ChatMessage::user(&user_msg),
         ];
-        self.infer_sync(messages, instance_id)
+        self.infer_sync_streaming(messages, instance_id, None)
     }
 
     /// Start an async inference, returning a stream for consuming actions.
@@ -359,19 +382,24 @@ impl LlmClient {
 
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
-                .build() {
+                .build()
+            {
                 Ok(rt) => rt,
                 Err(e) => {
-                    error!("[INFER-{}] Failed to create tokio runtime: {}", instance_id, e);
-                    let _ = tx.send(StreamItem::Error(format!("Failed to create tokio runtime: {}", e)));
+                    error!(
+                        "[INFER-{}] Failed to create tokio runtime: {}",
+                        instance_id, e
+                    );
+                    let _ = tx.send(StreamItem::Error(format!(
+                        "Failed to create tokio runtime: {}",
+                        e
+                    )));
                     return;
                 }
             };
 
             rt.block_on(async {
-                // Total inference timeout: 5 minutes
-                let timeout_duration = tokio::time::Duration::from_secs(300);
-                let result = tokio::time::timeout(timeout_duration, run_inference(
+                if let Err(e) = run_inference(
                     &config,
                     &http_client,
                     messages,
@@ -381,18 +409,11 @@ impl LlmClient {
                     &log_path_clone,
                     &instance_id,
                     &tx,
-                )).await;
-
-                match result {
-                    Ok(Err(e)) => {
-                        error!("[INFER-{}] Inference error: {}", instance_id, e);
-                        let _ = tx.send(StreamItem::Error(format!("{}", e)));
-                    }
-                    Err(_) => {
-                        error!("[INFER-{}] Inference timeout ({}s)", instance_id, timeout_duration.as_secs());
-                        let _ = tx.send(StreamItem::Error("Inference timeout".to_string()));
-                    }
-                    Ok(Ok(())) => {}
+                )
+                .await
+                {
+                    error!("[INFER-{}] Inference error: {}", instance_id, e);
+                    let _ = tx.send(StreamItem::Error(format!("{}", e)));
                 }
             });
         });
@@ -433,13 +454,16 @@ pub(crate) async fn run_vision_inference(
     image_url: &str,
     instance_id: &str,
 ) -> Result<(String, Option<UsageInfo>)> {
-    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
     use base64::Engine as _;
+    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
     let llm_policy = &crate::policy::EngineConfig::get().llm;
     let (api_url, model_id) = llm_policy.resolve_model(&config.model);
 
-    info!("[VISION-{}] Starting vision inference, model={}", instance_id, model_id);
+    info!(
+        "[VISION-{}] Starting vision inference, model={}",
+        instance_id, model_id
+    );
 
     // Ensure image is a data URI (base64-encoded).
     // If it's a regular URL, download and convert to base64.
@@ -501,10 +525,14 @@ pub(crate) async fn run_vision_inference(
         anyhow::bail!("Vision API error {}: {}", status, body);
     }
 
-    let resp: SyncResponse = response.json().await
+    let resp: SyncResponse = response
+        .json()
+        .await
         .context("Failed to parse vision inference response")?;
 
-    let text = resp.choices.first()
+    let text = resp
+        .choices
+        .first()
         .and_then(|c| c.message.content.clone())
         .unwrap_or_default();
 
@@ -514,7 +542,11 @@ pub(crate) async fn run_vision_inference(
         total_cost: None,
     });
 
-    info!("[VISION-{}] Complete, {} chars output", instance_id, text.len());
+    info!(
+        "[VISION-{}] Complete, {} chars output",
+        instance_id,
+        text.len()
+    );
 
     Ok((text, usage))
 }
@@ -537,11 +569,17 @@ fn infer_image_media_type(url: &str, header_content_type: &str) -> &'static str 
     }
     // Fall back to HTTP content-type header if it's an image type
     let ct = header_content_type.split(';').next().unwrap_or("").trim();
-    if ct == "image/jpeg" { "image/jpeg" }
-    else if ct == "image/png" { "image/png" }
-    else if ct == "image/gif" { "image/gif" }
-    else if ct == "image/webp" { "image/webp" }
-    else { "image/png" }
+    if ct == "image/jpeg" {
+        "image/jpeg"
+    } else if ct == "image/png" {
+        "image/png"
+    } else if ct == "image/gif" {
+        "image/gif"
+    } else if ct == "image/webp" {
+        "image/webp"
+    } else {
+        "image/png"
+    }
 }
 
 pub(crate) async fn run_sync_inference(
@@ -555,7 +593,10 @@ pub(crate) async fn run_sync_inference(
     let llm_policy = &crate::policy::EngineConfig::get().llm;
     let (api_url, model_id) = llm_policy.resolve_model(&config.model);
 
-    info!("[INFER-SYNC-{}] Starting sync inference, model={}", instance_id, model_id);
+    info!(
+        "[INFER-SYNC-{}] Starting sync inference, model={}",
+        instance_id, model_id
+    );
 
     let body = serde_json::json!({
         "model": model_id,
@@ -580,10 +621,14 @@ pub(crate) async fn run_sync_inference(
         anyhow::bail!("LLM API error {}: {}", status, body);
     }
 
-    let resp: SyncResponse = response.json().await
+    let resp: SyncResponse = response
+        .json()
+        .await
         .context("Failed to parse sync inference response")?;
 
-    let text = resp.choices.first()
+    let text = resp
+        .choices
+        .first()
         .and_then(|c| c.message.content.clone())
         .unwrap_or_default();
 
@@ -593,7 +638,11 @@ pub(crate) async fn run_sync_inference(
         total_cost: None,
     });
 
-    info!("[INFER-SYNC-{}] Complete, {} chars output", instance_id, text.len());
+    info!(
+        "[INFER-SYNC-{}] Complete, {} chars output",
+        instance_id,
+        text.len()
+    );
 
     Ok((text, usage))
 }
@@ -613,13 +662,16 @@ async fn run_streaming_collect(
     instance_id: &str,
     log_path: Option<&Path>,
 ) -> Result<(String, Option<UsageInfo>)> {
-    use std::io::Write;
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+    use std::io::Write;
 
     let llm_policy = &crate::policy::EngineConfig::get().llm;
     let (api_url, model_id) = llm_policy.resolve_model(&config.model);
 
-    info!("[INFER-STREAM-COLLECT-{}] Starting streaming collect, model={}", instance_id, model_id);
+    info!(
+        "[INFER-STREAM-COLLECT-{}] Starting streaming collect, model={}",
+        instance_id, model_id
+    );
 
     let body = serde_json::json!({
         "model": model_id,
@@ -662,13 +714,13 @@ async fn run_streaming_collect(
 
     while let Some(chunk_result) = {
         // Per-chunk timeout: 60 seconds without any data
-        match tokio::time::timeout(
-            tokio::time::Duration::from_secs(60),
-            byte_stream.next()
-        ).await {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(60), byte_stream.next()).await {
             Ok(item) => item,
             Err(_) => {
-                warn!("[INFER-STREAM-COLLECT-{}] Stream timeout (60s no data)", instance_id);
+                warn!(
+                    "[INFER-STREAM-COLLECT-{}] Stream timeout (60s no data)",
+                    instance_id
+                );
                 anyhow::bail!("Streaming collect timeout: no data received for 60 seconds");
             }
         }
@@ -690,7 +742,10 @@ async fn run_streaming_collect(
                 continue;
             }
 
-            if let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+            if let Some(data) = line
+                .strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+            {
                 match serde_json::from_str::<SseResponse>(data) {
                     Ok(sse) => {
                         for choice in &sse.choices {
@@ -713,7 +768,10 @@ async fn run_streaming_collect(
                         }
                     }
                     Err(e) => {
-                        warn!("[INFER-STREAM-COLLECT-{}] SSE parse warning: {} for data: {}", instance_id, e, data);
+                        warn!(
+                            "[INFER-STREAM-COLLECT-{}] SSE parse warning: {} for data: {}",
+                            instance_id, e, data
+                        );
                     }
                 }
             }
@@ -726,7 +784,12 @@ async fn run_streaming_collect(
         String::new()
     };
 
-    info!("[INFER-STREAM-COLLECT-{}] Complete, {} chars{}", instance_id, full_text.len(), usage_info);
+    info!(
+        "[INFER-STREAM-COLLECT-{}] Complete, {} chars{}",
+        instance_id,
+        full_text.len(),
+        usage_info
+    );
 
     Ok((full_text, collected_usage))
 }
@@ -747,13 +810,16 @@ async fn run_inference(
     instance_id: &str,
     tx: &mpsc::Sender<StreamItem>,
 ) -> Result<()> {
-    use std::io::Write;
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+    use std::io::Write;
 
     let llm_policy = &crate::policy::EngineConfig::get().llm;
     let (api_url, model_id) = llm_policy.resolve_model(&config.model);
 
-    info!("[INFER-{}] Starting inference, model={}", instance_id, model_id);
+    info!(
+        "[INFER-{}] Starting inference, model={}",
+        instance_id, model_id
+    );
 
     // Build request body
     let body = serde_json::json!({
@@ -798,10 +864,7 @@ async fn run_inference(
 
     while let Some(chunk_result) = {
         // Per-chunk timeout: 60 seconds without any data = stale connection
-        match tokio::time::timeout(
-            tokio::time::Duration::from_secs(60),
-            byte_stream.next()
-        ).await {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(60), byte_stream.next()).await {
             Ok(item) => item,
             Err(_) => {
                 warn!("[INFER-{}] SSE stream timeout (60s no data)", instance_id);
@@ -826,7 +889,10 @@ async fn run_inference(
                 continue;
             }
 
-            if let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+            if let Some(data) = line
+                .strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+            {
                 match serde_json::from_str::<SseResponse>(data) {
                     Ok(sse) => {
                         for choice in &sse.choices {
@@ -846,14 +912,19 @@ async fn run_inference(
                                 output_tokens: usage.completion_tokens.unwrap_or(0),
                                 total_cost: None, // OpenRouter doesn't report cost in SSE
                             });
-                            info!("[INFER-{}] Usage: input={} output={}",
+                            info!(
+                                "[INFER-{}] Usage: input={} output={}",
                                 instance_id,
                                 usage.prompt_tokens.unwrap_or(0),
-                                usage.completion_tokens.unwrap_or(0));
+                                usage.completion_tokens.unwrap_or(0)
+                            );
                         }
                     }
                     Err(e) => {
-                        warn!("[INFER-{}] SSE parse warning: {} for data: {}", instance_id, e, data);
+                        warn!(
+                            "[INFER-{}] SSE parse warning: {} for data: {}",
+                            instance_id, e, data
+                        );
                     }
                 }
             }
@@ -870,9 +941,18 @@ async fn run_inference(
                 if let Some(next_offset) = next_sep {
                     // Complete action found between two separators
                     let action_text = &full_text[abs_start..after_start + next_offset];
-                    info!("[INFER-{}] Stream action detected: {:?}", instance_id, crate::util::safe_truncate(action_text, 80));
-                    let actions = parse_actions(action_text, separator_for_parse, separator_token).unwrap_or_default();
-                    info!("[INFER-{}] Parsed {} actions from stream chunk", instance_id, actions.len());
+                    info!(
+                        "[INFER-{}] Stream action detected: {:?}",
+                        instance_id,
+                        crate::util::safe_truncate(action_text, 80)
+                    );
+                    let actions = parse_actions(action_text, separator_for_parse, separator_token)
+                        .unwrap_or_default();
+                    info!(
+                        "[INFER-{}] Parsed {} actions from stream chunk",
+                        instance_id,
+                        actions.len()
+                    );
                     for action in actions {
                         let _ = tx.send(StreamItem::Action(action));
                     }
@@ -888,11 +968,21 @@ async fn run_inference(
     // Parse any remaining actions after stream ends
     if last_parsed_pos < full_text.len() {
         let remaining = &full_text[last_parsed_pos..];
-        info!("[INFER-{}] Remaining text ({} chars): {:?}", instance_id, remaining.len(), crate::util::safe_truncate(remaining, 100));
+        info!(
+            "[INFER-{}] Remaining text ({} chars): {:?}",
+            instance_id,
+            remaining.len(),
+            crate::util::safe_truncate(remaining, 100)
+        );
         if remaining.contains(separator) {
             info!("[INFER-{}] Parsing remaining actions", instance_id);
-            let actions = parse_actions(remaining, separator_for_parse, separator_token).unwrap_or_default();
-            info!("[INFER-{}] Parsed {} remaining actions", instance_id, actions.len());
+            let actions =
+                parse_actions(remaining, separator_for_parse, separator_token).unwrap_or_default();
+            info!(
+                "[INFER-{}] Parsed {} remaining actions",
+                instance_id,
+                actions.len()
+            );
             for action in actions {
                 let _ = tx.send(StreamItem::Action(action));
             }
@@ -900,7 +990,12 @@ async fn run_inference(
             info!("[INFER-{}] No separator in remaining text", instance_id);
         }
     } else {
-        info!("[INFER-{}] No remaining text (last_parsed_pos={}, full_text.len={})", instance_id, last_parsed_pos, full_text.len());
+        info!(
+            "[INFER-{}] No remaining text (last_parsed_pos={}, full_text.len={})",
+            instance_id,
+            last_parsed_pos,
+            full_text.len()
+        );
     }
 
     // Signal completion — all actions already sent via streaming

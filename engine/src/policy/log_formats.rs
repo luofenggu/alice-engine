@@ -98,4 +98,3 @@ pub fn infer_input_log_content(
         user_prompt.len(), user_prompt,
     )
 }
-

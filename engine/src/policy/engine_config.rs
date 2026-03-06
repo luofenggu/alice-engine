@@ -91,18 +91,14 @@ impl LlmPolicyConfig {
         if let Some(pos) = model.find('@') {
             let provider = &model[..pos];
             let model_id = &model[pos + 1..];
-            let api_url = self.providers.get(provider)
-                .cloned()
-                .unwrap_or_else(|| {
-                    tracing::warn!("Unknown provider '{}', using as direct URL", provider);
-                    provider.to_string()
-                });
+            let api_url = self.providers.get(provider).cloned().unwrap_or_else(|| {
+                tracing::warn!("Unknown provider '{}', using as direct URL", provider);
+                provider.to_string()
+            });
             (api_url, model_id.to_string())
         } else {
             // No provider prefix — use first available provider URL as fallback
-            let fallback_url = self.providers.values().next()
-                .cloned()
-                .unwrap_or_default();
+            let fallback_url = self.providers.values().next().cloned().unwrap_or_default();
             (fallback_url, model.to_string())
         }
     }
@@ -111,7 +107,9 @@ impl LlmPolicyConfig {
 impl FileBrowseConfig {
     /// Check if a filename has a binary extension.
     pub fn is_binary_file(&self, name: &str) -> bool {
-        self.binary_extensions.iter().any(|ext| name.ends_with(ext.as_str()))
+        self.binary_extensions
+            .iter()
+            .any(|ext| name.ends_with(ext.as_str()))
     }
 
     /// Check if a directory name should be hidden.

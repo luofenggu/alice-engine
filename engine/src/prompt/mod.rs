@@ -7,6 +7,7 @@
 
 use crate::core::Alice;
 use crate::inference::beat::{BeatRequest, PromptMessage, SessionBlockData, SessionEntryData};
+use crate::inference::capture::CaptureRequest;
 
 // ---------------------------------------------------------------------------
 // Session block data extraction (depends on Alice for chat DB access)
@@ -19,14 +20,23 @@ use crate::inference::beat::{BeatRequest, PromptMessage, SessionBlockData, Sessi
 ///
 /// For each line, fetches actual chat messages from chat.db in the
 /// [first_msg, last_msg] range, returning raw data structs.
-pub fn extract_session_block_data(block_entries: &[crate::persist::SessionBlockEntry], alice: &Alice) -> Vec<SessionEntryData> {
+pub fn extract_session_block_data(
+    block_entries: &[crate::persist::SessionBlockEntry],
+    alice: &Alice,
+) -> Vec<SessionEntryData> {
     let mut entries = Vec::new();
     for entry in block_entries {
         let mut messages = Vec::new();
 
         // Fetch chat messages from database (raw, no truncation here)
         if !entry.first_msg.is_empty() && !entry.last_msg.is_empty() {
-            if let Ok(db_messages) = alice.instance.chat.lock().unwrap().read_messages_in_range(&entry.first_msg, &entry.last_msg) {
+            if let Ok(db_messages) = alice
+                .instance
+                .chat
+                .lock()
+                .unwrap()
+                .read_messages_in_range(&entry.first_msg, &entry.last_msg)
+            {
                 for msg in &db_messages {
                     messages.push(PromptMessage {
                         sender: msg.sender.clone(),
@@ -54,10 +64,7 @@ pub fn extract_session_block_data(block_entries: &[crate::persist::SessionBlockE
 /// Reads memory, chat, config from Alice and assembles a BeatRequest struct
 /// with raw data. The caller passes this to LlmClient which handles
 /// rendering and inference internally.
-pub fn build_beat_request(
-    alice: &Alice,
-    host: Option<&str>,
-) -> BeatRequest {
+pub fn build_beat_request(alice: &Alice, host: Option<&str>) -> BeatRequest {
     let knowledge_content = load_knowledge_raw(alice);
 
     let history_content = alice.instance.memory.history.read().unwrap_or_default();
@@ -93,9 +100,58 @@ pub fn load_knowledge_raw(alice: &Alice) -> String {
     alice.instance.memory.knowledge.read().unwrap_or_default()
 }
 
+/// Build capture request from current memory state.
+/// Input = knowledge + recent session blocks + current increment + this summary.
+pub fn build_capture_request(alice: &Alice, summary_content: &str) -> CaptureRequest {
+    let knowledge_content = load_knowledge_raw(alice);
+
+    let recent_content = {
+        let session_blocks = extract_all_session_blocks(alice);
+        if session_blocks.is_empty() {
+            String::new()
+        } else {
+            let mut parts = Vec::new();
+            for block in session_blocks {
+                let mut entry_texts = Vec::new();
+                for entry in block.entries {
+                    let messages = entry
+                        .messages
+                        .iter()
+                        .map(|m| format!("{} [{}]: {}", m.sender, m.timestamp, m.content))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    entry_texts.push(format!(
+                        "messages:\n{}\nsummary:\n{}",
+                        messages, entry.summary
+                    ));
+                }
+                parts.push(format!(
+                    "[{}]\n{}",
+                    block.block_name,
+                    entry_texts.join("\n\n")
+                ));
+            }
+            parts.join("\n\n")
+        }
+    };
+
+    let current_content = alice.instance.memory.current.read().unwrap_or_default();
+
+    CaptureRequest {
+        knowledge_content,
+        recent_content,
+        current_content,
+        summary_content: summary_content.to_string(),
+    }
+}
+
 /// Extract all session blocks as structured data in chronological order.
 fn extract_all_session_blocks(alice: &Alice) -> Vec<SessionBlockData> {
-    let blocks = alice.instance.memory.list_session_blocks().unwrap_or_default();
+    let blocks = alice
+        .instance
+        .memory
+        .list_session_blocks()
+        .unwrap_or_default();
     if blocks.is_empty() {
         return Vec::new();
     }
@@ -131,15 +187,34 @@ mod tests {
         std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let alice = Alice::new(instance, tmp.path().join("logs"), vec![Default::default()], env_config, None).unwrap();
+        let alice = Alice::new(
+            instance,
+            tmp.path().join("logs"),
+            vec![Default::default()],
+            env_config,
+            None,
+        )
+        .unwrap();
         (alice, tmp)
     }
 
     #[test]
     fn test_extract_session_block_data() {
         let (mut alice, _tmp) = setup_alice();
-        alice.instance.chat.lock().unwrap().write_user_message("24007", "hello world", "20260223155500").unwrap();
-        alice.instance.chat.lock().unwrap().write_agent_reply("alice", "hi back", "20260223155600").unwrap();
+        alice
+            .instance
+            .chat
+            .lock()
+            .unwrap()
+            .write_user_message("24007", "hello world", "20260223155500")
+            .unwrap();
+        alice
+            .instance
+            .chat
+            .lock()
+            .unwrap()
+            .write_agent_reply("alice", "hi back", "20260223155600")
+            .unwrap();
 
         let block_entries = vec![crate::persist::SessionBlockEntry {
             first_msg: "20260223155500".to_string(),
@@ -191,9 +266,19 @@ mod tests {
     fn test_build_beat_request_with_session_block() {
         let (mut alice, _tmp) = setup_alice();
         alice.instance.memory.history.write("some history").unwrap();
-        alice.instance.chat.lock().unwrap().write_user_message("24007", "hi there", "20260223120000").unwrap();
+        alice
+            .instance
+            .chat
+            .lock()
+            .unwrap()
+            .write_user_message("24007", "hi there", "20260223120000")
+            .unwrap();
         let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
-        alice.instance.memory.append_session_block("20260223120000", jsonl).unwrap();
+        alice
+            .instance
+            .memory
+            .append_session_block("20260223120000", jsonl)
+            .unwrap();
 
         let request = build_beat_request(&alice, None);
         let (_, user, _) = request.render();
@@ -204,7 +289,12 @@ mod tests {
     #[test]
     fn test_load_knowledge_raw() {
         let (alice, _tmp) = setup_alice();
-        alice.instance.memory.knowledge.write("raw knowledge content").unwrap();
+        alice
+            .instance
+            .memory
+            .knowledge
+            .write("raw knowledge content")
+            .unwrap();
         let raw = load_knowledge_raw(&alice);
         assert_eq!(raw, "raw knowledge content");
     }
@@ -212,7 +302,12 @@ mod tests {
     #[test]
     fn test_build_beat_request_with_knowledge() {
         let (alice, _tmp) = setup_alice();
-        alice.instance.memory.knowledge.write("# 泛准则\n- 谨慎加信任").unwrap();
+        alice
+            .instance
+            .memory
+            .knowledge
+            .write("# 泛准则\n- 谨慎加信任")
+            .unwrap();
         let request = build_beat_request(&alice, None);
         let (_, user, _) = request.render();
         assert!(user.contains("### 要点与知识 ###"));

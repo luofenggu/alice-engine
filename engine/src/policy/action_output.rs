@@ -64,7 +64,10 @@ pub fn script_result(duration_secs: f64, output: &str, exit_code: Option<i32>) -
         Some(code) => format!("\n[exit code: {}]", code),
         None => "\n[exit code: unknown]".to_string(),
     };
-    format!("---exec result ({})---\n{}{}\n", duration_str, output, exit_info)
+    format!(
+        "---exec result ({})---\n{}{}\n",
+        duration_str, output, exit_info
+    )
 }
 
 // ─── File write ──────────────────────────────────────────────────
@@ -112,11 +115,17 @@ pub fn format_preview(lines: &[&str]) -> String {
     }
     if total > PREVIEW_THRESHOLD {
         preview.push(PREVIEW_ELLIPSIS.to_string());
-        for (line, num) in lines[total - PREVIEW_TAIL_LINES..].iter().zip(total - PREVIEW_TAIL_LINES + 1..) {
+        for (line, num) in lines[total - PREVIEW_TAIL_LINES..]
+            .iter()
+            .zip(total - PREVIEW_TAIL_LINES + 1..)
+        {
             preview.push(preview_line(num, line));
         }
     } else if total > PREVIEW_HEAD_LINES {
-        for (line, num) in lines[PREVIEW_HEAD_LINES..].iter().zip(PREVIEW_HEAD_LINES + 1..) {
+        for (line, num) in lines[PREVIEW_HEAD_LINES..]
+            .iter()
+            .zip(PREVIEW_HEAD_LINES + 1..)
+        {
             preview.push(preview_line(num, line));
         }
     }
@@ -127,7 +136,10 @@ pub fn format_preview(lines: &[&str]) -> String {
 
 /// Format replace match error (matched 0 or >1 times).
 pub fn replace_match_error(search_preview: &str, count: usize) -> String {
-    format!("  ERROR: '{}...' matched {} times (expected 1)", search_preview, count)
+    format!(
+        "  ERROR: '{}...' matched {} times (expected 1)",
+        search_preview, count
+    )
 }
 
 /// Format single replace block success.
@@ -138,7 +150,10 @@ pub fn replace_block_success(search_preview: &str) -> String {
 /// Format replace operation summary with details.
 /// Counts successful blocks internally from detail_lines.
 pub fn replace_result(detail_lines: &[String]) -> String {
-    let total_replaced = detail_lines.iter().filter(|l| !l.starts_with("  ERROR")).count();
+    let total_replaced = detail_lines
+        .iter()
+        .filter(|l| !l.starts_with("  ERROR"))
+        .count();
     let summary = format!("replaced {} block(s) successfully", total_replaced);
     let detail = detail_lines.join("\n");
     format!("{}\n{}\n", summary, detail)
@@ -153,12 +168,20 @@ pub fn inbox_empty() -> String {
 
 /// Format a single read message entry.
 /// If the sender is not the owner, prepend a warning line.
-pub fn read_msg_entry(sender: &str, timestamp: &str, content: &str, owner_id: Option<&str>) -> String {
+pub fn read_msg_entry(
+    sender: &str,
+    timestamp: &str,
+    content: &str,
+    owner_id: Option<&str>,
+) -> String {
     let warning = match owner_id {
         Some(owner) if sender != owner => format!("⚠️ 此消息来自非所属用户的发送者：{}\n", sender),
         _ => String::new(),
     };
-    format!("{}{} [MSG:{}]{}\n\n{}\n", warning, sender, timestamp, MSG_READ_CONTEXT, content)
+    format!(
+        "{}{} [MSG:{}]{}\n\n{}\n",
+        warning, sender, timestamp, MSG_READ_CONTEXT, content
+    )
 }
 
 /// Format send failure for unknown recipient.
@@ -221,7 +244,9 @@ pub fn action_block_end(action_id: &str) -> String {
 pub fn forgotten_block(action_id: &str, summary: &str) -> String {
     format!(
         "---------行为编号[{}]开始---------\n[已提炼] {}\n---------行为编号[{}]结束---------\n",
-        action_id, summary.trim(), action_id
+        action_id,
+        summary.trim(),
+        action_id
     )
 }
 
@@ -235,9 +260,15 @@ pub fn profile_unknown_key(key: &str) -> String {
 /// Format profile update success.
 pub fn profile_updated(update: &crate::persist::Settings) -> String {
     let mut fields = Vec::new();
-    if let Some(ref v) = update.name { fields.push(format!("name: {}", v)); }
-    if let Some(ref v) = update.color { fields.push(format!("color: {}", v)); }
-    if let Some(ref v) = update.avatar { fields.push(format!("avatar: {}", v)); }
+    if let Some(ref v) = update.name {
+        fields.push(format!("name: {}", v));
+    }
+    if let Some(ref v) = update.color {
+        fields.push(format!("color: {}", v));
+    }
+    if let Some(ref v) = update.avatar {
+        fields.push(format!("avatar: {}", v));
+    }
     if fields.is_empty() {
         "profile updated (no changes)\n".to_string()
     } else {
@@ -255,7 +286,6 @@ pub fn instance_created(id: &str, name: &str, knowledge_bytes: usize) -> String 
     )
 }
 
-
 // ─── Action block formatting ─────────────────────────────────────
 
 /// Format a complete action block (start + doing + done + end).
@@ -271,7 +301,11 @@ pub fn action_block_full(action_id: &str, doing_text: &str, done_text: Option<&s
 
 /// Build the "doing" text for an action (description + executing marker).
 pub fn build_doing_text(action: &Action) -> String {
-    format!("{}\n{}", build_doing_description(action), action_executing())
+    format!(
+        "{}\n{}",
+        build_doing_description(action),
+        action_executing()
+    )
 }
 
 /// Build the "done" text for an action result.
@@ -322,33 +356,47 @@ pub fn anomaly_notification(message: &str) -> String {
 pub fn build_doing_description(action: &Action) -> String {
     match action {
         Action::Idle { timeout_secs: None } => "idle".to_string(),
-        Action::Idle { timeout_secs: Some(secs) } => format!("idle ({}s)", secs),
+        Action::Idle {
+            timeout_secs: Some(secs),
+        } => format!("idle ({}s)", secs),
         Action::ReadMsg => "你打开了收件箱，开始阅读来信。".to_string(),
-        Action::SendMsg { recipient, content } =>
-            format!("you send a letter to [{}]: \n\n{}\n", recipient, content),
-        Action::Thinking { content } =>
-            format!("记录思考: {}", content),
-        Action::Script { content } =>
-            format!("execute script: \n{}", content),
+        Action::SendMsg { recipient, content } => {
+            format!("you send a letter to [{}]: \n\n{}\n", recipient, content)
+        }
+        Action::Thinking { content } => format!("记录思考: {}", content),
+        Action::Script { content } => format!("execute script: \n{}", content),
         Action::WriteFile { path, content } => {
             let _ = content;
             format!("write file [{}]", path)
         }
-        Action::ReplaceInFile { path, .. } =>
-            format!("replace in file [{}]", path),
-        Action::Summary { .. } =>
-            "summary (小结)".to_string(),
+        Action::ReplaceInFile { path, .. } => format!("replace in file [{}]", path),
+        Action::Summary { .. } => "summary (小结)".to_string(),
         Action::SetProfile { update } => {
             let mut fields = Vec::new();
-            if update.name.is_some() { fields.push("name"); }
-            if update.color.is_some() { fields.push("color"); }
-            if update.avatar.is_some() { fields.push("avatar"); }
+            if update.name.is_some() {
+                fields.push("name");
+            }
+            if update.color.is_some() {
+                fields.push("color");
+            }
+            if update.avatar.is_some() {
+                fields.push("avatar");
+            }
             format!("set_profile [{}]", fields.join(", "))
         }
-        Action::CreateInstance { name, knowledge } =>
-            format!("create_instance: {} ({} bytes knowledge)", name, knowledge.len()),
-        Action::Forget { target_action_id, summary } =>
-            format!("forget [{}]: {}", target_action_id, crate::util::safe_truncate(summary, 80)),
+        Action::CreateInstance { name, knowledge } => format!(
+            "create_instance: {} ({} bytes knowledge)",
+            name,
+            knowledge.len()
+        ),
+        Action::Forget {
+            target_action_id,
+            summary,
+        } => format!(
+            "forget [{}]: {}",
+            target_action_id,
+            crate::util::safe_truncate(summary, 80)
+        ),
     }
 }
 

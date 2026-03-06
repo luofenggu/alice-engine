@@ -83,13 +83,22 @@ pub struct ActionResult {
 
 impl ActionResult {
     pub fn ok(message: impl Into<String>) -> Self {
-        Self { success: true, message: Some(message.into()) }
+        Self {
+            success: true,
+            message: Some(message.into()),
+        }
     }
     pub fn ok_empty() -> Self {
-        Self { success: true, message: None }
+        Self {
+            success: true,
+            message: None,
+        }
     }
     pub fn err(message: impl Into<String>) -> Self {
-        Self { success: false, message: Some(message.into()) }
+        Self {
+            success: false,
+            message: Some(message.into()),
+        }
     }
 }
 
@@ -115,12 +124,24 @@ pub struct FileReadResult {
 
 impl FileReadResult {
     pub fn text(content: String, size: u64) -> Self {
-        Self { content, size, is_binary: false }
+        Self {
+            content,
+            size,
+            is_binary: false,
+        }
     }
     pub fn binary(description: String, size: u64) -> Self {
-        Self { content: description, size, is_binary: true }
+        Self {
+            content: description,
+            size,
+            is_binary: true,
+        }
     }
     pub fn error(message: String) -> Self {
-        Self { content: message, size: 0, is_binary: false }
+        Self {
+            content: message,
+            size: 0,
+            is_binary: false,
+        }
     }
 }

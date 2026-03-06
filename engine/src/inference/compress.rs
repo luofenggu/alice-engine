@@ -21,9 +21,10 @@ impl CompressRequest {
     /// Render the compression prompt.
     /// Returns `(system_prompt, user_content)` for the LLM call.
     pub fn render(&self) -> (String, String) {
-        let system_msg = safe_render(HISTORY_COMPRESS_PROMPT, &[
-            ("{{HISTORY_KB}}", &self.history_kb.to_string()),
-        ]);
+        let system_msg = safe_render(
+            HISTORY_COMPRESS_PROMPT,
+            &[("{{HISTORY_KB}}", &self.history_kb.to_string())],
+        );
 
         let user_content = if self.current_history.is_empty() {
             self.session_content.clone()

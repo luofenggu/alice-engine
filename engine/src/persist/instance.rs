@@ -5,16 +5,16 @@
 //!   Instance (parent) — manages all persistence for one instance
 //!   Memory (child) — manages memory files (knowledge, history, current, sessions)
 
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use anyhow::{Context, Result};
 use tracing::info;
 
-use crate::persist::Document;
 use super::chat::ChatHistory;
-use super::Settings;
 use super::memory::Memory;
+use super::Settings;
+use crate::persist::Document;
 use crate::persist::TextFile;
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -23,8 +23,8 @@ const KNOWLEDGE_FILE: &str = "knowledge.md";
 
 /// Preset colors for new instances.
 const PRESET_COLORS: &[&str] = &[
-    "#6c5ce7", "#00b894", "#e17055", "#0984e3", "#fdcb6e",
-    "#e84393", "#00cec9", "#a29bfe", "#ff7675", "#55efc4",
+    "#6c5ce7", "#00b894", "#e17055", "#0984e3", "#fdcb6e", "#e84393", "#00cec9", "#a29bfe",
+    "#ff7675", "#55efc4",
 ];
 
 /// All persistent state for a single agent instance.
@@ -73,12 +73,17 @@ impl Instance {
         let workspace = instance_dir.join("workspace");
         let data_dir = instance_dir.join("data");
 
-        std::fs::create_dir_all(&instance_dir)
-            .with_context(|| format!("Failed to create instance dir: {}", instance_dir.display()))?;
+        std::fs::create_dir_all(&instance_dir).with_context(|| {
+            format!("Failed to create instance dir: {}", instance_dir.display())
+        })?;
         std::fs::create_dir_all(&memory_dir)
             .with_context(|| format!("Failed to create memory dir: {}", memory_dir.display()))?;
-        std::fs::create_dir_all(&knowledge_dir)
-            .with_context(|| format!("Failed to create knowledge dir: {}", knowledge_dir.display()))?;
+        std::fs::create_dir_all(&knowledge_dir).with_context(|| {
+            format!(
+                "Failed to create knowledge dir: {}",
+                knowledge_dir.display()
+            )
+        })?;
         std::fs::create_dir_all(&workspace)
             .with_context(|| format!("Failed to create workspace dir: {}", workspace.display()))?;
         std::fs::create_dir_all(&data_dir)
@@ -100,8 +105,8 @@ impl Instance {
             settings_obj = merged;
         }
         let settings_path = instance_dir.join(SETTINGS_FILE);
-        let settings_json = serde_json::to_string_pretty(&settings_obj)
-            .context("Failed to serialize settings")?;
+        let settings_json =
+            serde_json::to_string_pretty(&settings_obj).context("Failed to serialize settings")?;
         std::fs::write(&settings_path, &settings_json)
             .with_context(|| format!("Failed to write settings: {}", settings_path.display()))?;
 
@@ -114,18 +119,21 @@ impl Instance {
         }
 
         // Open all persistent handles
-        let settings = Document::open(&settings_path)
-            .context("Failed to open settings document")?;
-        let memory = Memory::open(&memory_dir)
-            .context("Failed to open memory")?;
+        let settings =
+            Document::open(&settings_path).context("Failed to open settings document")?;
+        let memory = Memory::open(&memory_dir).context("Failed to open memory")?;
         let chat_db_path = data_dir.join("chat.db");
-        let chat = ChatHistory::open(&chat_db_path)
-            .context("Failed to open chat history")?;
+        let chat = ChatHistory::open(&chat_db_path).context("Failed to open chat history")?;
 
-        info!("[INSTANCE-{}] Created for user {} at {}", id, user_id, instance_dir.display());
+        info!(
+            "[INSTANCE-{}] Created for user {} at {}",
+            id,
+            user_id,
+            instance_dir.display()
+        );
 
-        let skill = TextFile::open(instance_dir.join(SKILL_FILE))
-            .context("Failed to open skill file")?;
+        let skill =
+            TextFile::open(instance_dir.join(SKILL_FILE)).context("Failed to open skill file")?;
         Ok(Self {
             id,
             instance_dir,
@@ -169,7 +177,9 @@ impl Instance {
         let id = instance_dir
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or_else(|| anyhow::anyhow!("Invalid instance directory: {}", instance_dir.display()))?
+            .ok_or_else(|| {
+                anyhow::anyhow!("Invalid instance directory: {}", instance_dir.display())
+            })?
             .to_string();
 
         let memory_dir = instance_dir.join("memory");
@@ -180,8 +190,12 @@ impl Instance {
         // Ensure directories exist (backward compatibility)
         std::fs::create_dir_all(&memory_dir)
             .with_context(|| format!("Failed to create memory dir: {}", memory_dir.display()))?;
-        std::fs::create_dir_all(&knowledge_dir)
-            .with_context(|| format!("Failed to create knowledge dir: {}", knowledge_dir.display()))?;
+        std::fs::create_dir_all(&knowledge_dir).with_context(|| {
+            format!(
+                "Failed to create knowledge dir: {}",
+                knowledge_dir.display()
+            )
+        })?;
         std::fs::create_dir_all(&workspace)
             .with_context(|| format!("Failed to create workspace dir: {}", workspace.display()))?;
         std::fs::create_dir_all(&data_dir)
@@ -199,18 +213,16 @@ impl Instance {
             .with_context(|| format!("Failed to open settings: {}", settings_path.display()))?;
 
         // Open memory (after migration so TextFile reads migrated content)
-        let memory = Memory::open(&memory_dir)
-            .context("Failed to open memory")?;
+        let memory = Memory::open(&memory_dir).context("Failed to open memory")?;
 
         // Open chat history
         let chat_db_path = data_dir.join("chat.db");
-        let chat = ChatHistory::open(&chat_db_path)
-            .context("Failed to open chat history")?;
+        let chat = ChatHistory::open(&chat_db_path).context("Failed to open chat history")?;
 
         info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
 
-        let skill = TextFile::open(instance_dir.join(SKILL_FILE))
-            .context("Failed to open skill file")?;
+        let skill =
+            TextFile::open(instance_dir.join(SKILL_FILE)).context("Failed to open skill file")?;
         Ok(Self {
             id,
             instance_dir: instance_dir.to_path_buf(),
@@ -227,7 +239,9 @@ impl Instance {
         let id = instance_dir
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or_else(|| anyhow::anyhow!("Invalid instance directory: {}", instance_dir.display()))?
+            .ok_or_else(|| {
+                anyhow::anyhow!("Invalid instance directory: {}", instance_dir.display())
+            })?
             .to_string();
 
         let memory_dir = instance_dir.join("memory");
@@ -238,8 +252,12 @@ impl Instance {
         // Ensure directories exist (backward compatibility)
         std::fs::create_dir_all(&memory_dir)
             .with_context(|| format!("Failed to create memory dir: {}", memory_dir.display()))?;
-        std::fs::create_dir_all(&knowledge_dir)
-            .with_context(|| format!("Failed to create knowledge dir: {}", knowledge_dir.display()))?;
+        std::fs::create_dir_all(&knowledge_dir).with_context(|| {
+            format!(
+                "Failed to create knowledge dir: {}",
+                knowledge_dir.display()
+            )
+        })?;
         std::fs::create_dir_all(&workspace)
             .with_context(|| format!("Failed to create workspace dir: {}", workspace.display()))?;
         std::fs::create_dir_all(&data_dir)
@@ -255,13 +273,12 @@ impl Instance {
         let settings = Document::open(&settings_path)
             .with_context(|| format!("Failed to open settings: {}", settings_path.display()))?;
 
-        let memory = Memory::open(&memory_dir)
-            .context("Failed to open memory")?;
+        let memory = Memory::open(&memory_dir).context("Failed to open memory")?;
 
         info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
 
-        let skill = TextFile::open(instance_dir.join(SKILL_FILE))
-            .context("Failed to open skill file")?;
+        let skill =
+            TextFile::open(instance_dir.join(SKILL_FILE)).context("Failed to open skill file")?;
 
         Ok(Self {
             id,
@@ -276,13 +293,20 @@ impl Instance {
 
     /// Get user_id from settings.
     pub fn user_id(&self) -> String {
-        self.settings.load().map(|s| s.user_id_or_default()).unwrap_or_default()
+        self.settings
+            .load()
+            .map(|s| s.user_id_or_default())
+            .unwrap_or_default()
     }
 
-
     /// One-time migration: keypoints.md + knowledge/*.md → knowledge.md
-    fn migrate_knowledge(knowledge_dir: &Path, knowledge_file: &Path, instance_id: &str) -> Result<()> {
-        let keypoints_path = knowledge_dir.parent()
+    fn migrate_knowledge(
+        knowledge_dir: &Path,
+        knowledge_file: &Path,
+        instance_id: &str,
+    ) -> Result<()> {
+        let keypoints_path = knowledge_dir
+            .parent()
             .ok_or_else(|| anyhow::anyhow!("Invalid knowledge dir"))?
             .join("keypoints.md");
 
@@ -402,7 +426,13 @@ impl InstanceStore {
         knowledge: Option<&str>,
         initial_settings: Option<&Settings>,
     ) -> Result<Instance> {
-        let instance = Instance::create(&self.instances_dir, user_id, display_name, knowledge, initial_settings)?;
+        let instance = Instance::create(
+            &self.instances_dir,
+            user_id,
+            display_name,
+            knowledge,
+            initial_settings,
+        )?;
         // Cache the connection from the newly created instance
         let mut cache = self.connections.write().unwrap();
         cache.insert(instance.id.clone(), instance.chat.clone());
@@ -450,7 +480,10 @@ impl InstanceStore {
             cache.remove(id);
         }
 
-        info!("[INSTANCE-STORE] Deleted instance: {} -> .trash/{}", id, trash_name);
+        info!(
+            "[INSTANCE-STORE] Deleted instance: {} -> .trash/{}",
+            id, trash_name
+        );
         Ok(trash_name)
     }
 
@@ -458,8 +491,12 @@ impl InstanceStore {
     pub fn list_ids(&self) -> Result<Vec<String>> {
         let mut ids = Vec::new();
 
-        let entries = std::fs::read_dir(&self.instances_dir)
-            .with_context(|| format!("Failed to read instances dir: {}", self.instances_dir.display()))?;
+        let entries = std::fs::read_dir(&self.instances_dir).with_context(|| {
+            format!(
+                "Failed to read instances dir: {}",
+                self.instances_dir.display()
+            )
+        })?;
 
         for entry in entries {
             let entry = entry?;
@@ -479,9 +516,7 @@ impl InstanceStore {
 
         Ok(ids)
     }
-
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -493,7 +528,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let instances_dir = tmp.path();
 
-        let instance = Instance::create(instances_dir, "user1", Some("TestBot"), None, None).unwrap();
+        let instance =
+            Instance::create(instances_dir, "user1", Some("TestBot"), None, None).unwrap();
 
         assert_eq!(instance.id.len(), 6);
         assert!(instance.instance_dir.exists());
@@ -533,7 +569,8 @@ mod tests {
         let instances_dir = tmp.path();
 
         // Create first
-        let created = Instance::create(instances_dir, "user1", Some("TestBot"), None, None).unwrap();
+        let created =
+            Instance::create(instances_dir, "user1", Some("TestBot"), None, None).unwrap();
         let id = created.id.clone();
         let dir = created.instance_dir.clone();
         drop(created);
@@ -553,7 +590,11 @@ mod tests {
 
         // All subdirectories should exist immediately after create
         assert!(instance.instance_dir.join("memory").exists());
-        assert!(instance.instance_dir.join("memory").join("knowledge").exists());
+        assert!(instance
+            .instance_dir
+            .join("memory")
+            .join("knowledge")
+            .exists());
         assert!(instance.instance_dir.join("workspace").exists());
         assert!(instance.instance_dir.join("data").exists());
         assert!(instance.instance_dir.join(SETTINGS_FILE).exists());
@@ -590,7 +631,11 @@ mod tests {
         let memory_dir = instance_dir.join("memory");
         let knowledge_dir = memory_dir.join("knowledge");
         std::fs::create_dir_all(&knowledge_dir).unwrap();
-        std::fs::write(memory_dir.join("keypoints.md"), "# Keypoints\nImportant stuff").unwrap();
+        std::fs::write(
+            memory_dir.join("keypoints.md"),
+            "# Keypoints\nImportant stuff",
+        )
+        .unwrap();
         std::fs::write(knowledge_dir.join("01_basics.md"), "# Basics\nBasic info").unwrap();
 
         // Write settings
@@ -623,7 +668,9 @@ mod tests {
         assert!(ids.is_empty());
 
         // Create an instance
-        let instance = store.create("user1", Some("Test Agent"), None, None).unwrap();
+        let instance = store
+            .create("user1", Some("Test Agent"), None, None)
+            .unwrap();
         assert_eq!(instance.id.len(), 6);
 
         // List should return it
@@ -637,13 +684,20 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = InstanceStore::new(tmp.path().to_path_buf());
 
-        let created = store.create("user1", None, Some("test knowledge"), None).unwrap();
+        let created = store
+            .create("user1", None, Some("test knowledge"), None)
+            .unwrap();
         let id = created.id.clone();
         drop(created);
 
         let opened = store.open(&id).unwrap();
         assert_eq!(opened.id, id);
-        assert!(opened.memory.knowledge.read().unwrap().contains("test knowledge"));
+        assert!(opened
+            .memory
+            .knowledge
+            .read()
+            .unwrap()
+            .contains("test knowledge"));
     }
 
     #[test]
@@ -685,6 +739,4 @@ mod tests {
         assert!(store.delete("path/traversal").is_err());
         assert!(store.delete("").is_err());
     }
-
 }
-

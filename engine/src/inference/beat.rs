@@ -14,9 +14,7 @@ const RESERVED_SKILL_TEMPLATE: &str = include_str!("../../templates/reserved_ski
 
 pub const INITIAL_HISTORY: &str = include_str!("../../templates/initial_history.txt");
 
-
 const SOFT_LIMIT: usize = 180_000;
-
 
 use crate::policy::action_output as out;
 use crate::policy::EngineConfig;
@@ -80,10 +78,7 @@ impl BeatRequest {
         let system_start_time = self.system_start_time.format("%Y%m%d%H%M%S").to_string();
 
         // System prompt
-        let system_prompt = safe_render(TEMPLATE_SYSTEM, &[
-            ("{{TOKEN}}", &self.action_token),
-
-        ]);
+        let system_prompt = safe_render(TEMPLATE_SYSTEM, &[("{{TOKEN}}", &self.action_token)]);
 
         // Format raw data into display strings
         let history_display = if self.history_content.is_empty() {
@@ -132,20 +127,23 @@ impl BeatRequest {
         };
 
         // User prompt
-        let user_prompt = safe_render(TEMPLATE_USER, &[
-            ("{{CURRENT_TIME}}", &current_time),
-            ("{{SYSTEM_START_TIME}}", &system_start_time),
-            ("{{UNREAD_COUNT}}", &self.unread_count.to_string()),
-            ("{{MEMORY_STATUS}}", &memory_status),
-            ("{{IDENTITY_INFO}}", &identity_info),
-            ("{{SHELL_ENV}}", &self.shell_env),
-            ("{{HOST_INFO}}", &host_line),
-            ("{{SKILL}}", &skill_section),
-            ("{{KNOWLEDGE}}", &knowledge_section),
-            ("{{HISTORY_MEMORY}}", &history_display),
-            ("{{DAILY_MEMORY}}", &daily_rendered),
-            ("{{CURRENT_MEMORY}}", &current_display),
-        ]);
+        let user_prompt = safe_render(
+            TEMPLATE_USER,
+            &[
+                ("{{CURRENT_TIME}}", &current_time),
+                ("{{SYSTEM_START_TIME}}", &system_start_time),
+                ("{{UNREAD_COUNT}}", &self.unread_count.to_string()),
+                ("{{MEMORY_STATUS}}", &memory_status),
+                ("{{IDENTITY_INFO}}", &identity_info),
+                ("{{SHELL_ENV}}", &self.shell_env),
+                ("{{HOST_INFO}}", &host_line),
+                ("{{SKILL}}", &skill_section),
+                ("{{KNOWLEDGE}}", &knowledge_section),
+                ("{{HISTORY_MEMORY}}", &history_display),
+                ("{{DAILY_MEMORY}}", &daily_rendered),
+                ("{{CURRENT_MEMORY}}", &current_display),
+            ],
+        );
 
         let snapshot = MemorySnapshot {
             history: self.history_content.clone(),
@@ -184,7 +182,10 @@ impl BeatRequest {
     fn build_skill_section(&self) -> String {
         let default_skill = make_reserved_skill(self.host.as_deref(), &self.instance_id);
 
-        let combined = match (default_skill.is_empty(), self.skill_content.trim().is_empty()) {
+        let combined = match (
+            default_skill.is_empty(),
+            self.skill_content.trim().is_empty(),
+        ) {
             (true, true) => return String::new(),
             (false, true) => default_skill,
             (true, false) => self.skill_content.clone(),
@@ -223,7 +224,11 @@ pub fn format_session_entries(entries: &[SessionEntryData]) -> String {
             } else {
                 msg.content.clone()
             };
-            parts.push(messages::chat_message(&msg.sender, &msg.timestamp, &content_display));
+            parts.push(messages::chat_message(
+                &msg.sender,
+                &msg.timestamp,
+                &content_display,
+            ));
         }
 
         if !entry.summary.is_empty() {
@@ -244,11 +249,15 @@ pub fn format_session_entries(entries: &[SessionEntryData]) -> String {
 /// Parse dual-output summary: split into summary text and knowledge text.
 /// The knowledge_marker contains the current beat's random token, ensuring
 /// it cannot match any historical content (self-reference defense).
-pub fn parse_summary_dual_output(raw: &str, summary_marker: &str, knowledge_marker: &str) -> (String, String) {
+pub fn parse_summary_dual_output(
+    raw: &str,
+    summary_marker: &str,
+    knowledge_marker: &str,
+) -> (String, String) {
     // Find first knowledge marker on its own line (token ensures uniqueness)
     let lines: Vec<&str> = raw.lines().collect();
     let mut knowledge_line_idx: Option<usize> = None;
-    
+
     for (i, line) in lines.iter().enumerate() {
         if line.trim() == knowledge_marker {
             knowledge_line_idx = Some(i);
@@ -301,9 +310,12 @@ pub fn extract_msg_ids(text: &str) -> Vec<String> {
             if candidate.len() == 14 && candidate.chars().all(|c| c.is_ascii_digit()) {
                 let after_bracket = abs_start + end + 1;
                 let is_send = bracket_pos >= send_context.len()
-                    && text.get(bracket_pos - send_context.len()..bracket_pos)
+                    && text
+                        .get(bracket_pos - send_context.len()..bracket_pos)
                         .map_or(false, |s| s == send_context);
-                let is_read = text.get(after_bracket..).map_or(false, |s| s.starts_with(read_context));
+                let is_read = text
+                    .get(after_bracket..)
+                    .map_or(false, |s| s.starts_with(read_context));
                 if (is_send || is_read) && !ids.contains(&candidate.to_string()) {
                     ids.push(candidate.to_string());
                 }
@@ -394,7 +406,8 @@ mod tests {
     #[test]
     fn test_parse_summary_dual_output_with_knowledge() {
         let raw = "This is summary\n===KNOWLEDGE_abc123===\nknowledge content here";
-        let (summary, knowledge) = parse_summary_dual_output(raw, "===SUMMARY===", "===KNOWLEDGE_abc123===");
+        let (summary, knowledge) =
+            parse_summary_dual_output(raw, "===SUMMARY===", "===KNOWLEDGE_abc123===");
         assert_eq!(summary, "This is summary");
         assert_eq!(knowledge, "knowledge content here");
     }
@@ -402,7 +415,8 @@ mod tests {
     #[test]
     fn test_parse_summary_dual_output_no_knowledge() {
         let raw = "Just summary, no knowledge marker";
-        let (summary, knowledge) = parse_summary_dual_output(raw, "===SUMMARY===", "===KNOWLEDGE_xyz===");
+        let (summary, knowledge) =
+            parse_summary_dual_output(raw, "===SUMMARY===", "===KNOWLEDGE_xyz===");
         assert_eq!(summary, "Just summary, no knowledge marker");
         assert_eq!(knowledge, "");
     }
@@ -410,7 +424,8 @@ mod tests {
     #[test]
     fn test_parse_summary_dual_output_strip_summary_marker() {
         let raw = "===SUMMARY===\nActual summary\n===KNOWLEDGE_t1===\nknowledge";
-        let (summary, knowledge) = parse_summary_dual_output(raw, "===SUMMARY===", "===KNOWLEDGE_t1===");
+        let (summary, knowledge) =
+            parse_summary_dual_output(raw, "===SUMMARY===", "===KNOWLEDGE_t1===");
         assert_eq!(summary, "Actual summary");
         assert_eq!(knowledge, "knowledge");
     }
@@ -459,7 +474,10 @@ mod tests {
 
     #[test]
     fn test_make_host_line() {
-        assert_eq!(make_host_line(Some("1.2.3.4:8080")), messages::host_info("1.2.3.4"));
+        assert_eq!(
+            make_host_line(Some("1.2.3.4:8080")),
+            messages::host_info("1.2.3.4")
+        );
         assert_eq!(make_host_line(None), "");
         assert_eq!(make_host_line(Some("")), "");
     }
@@ -472,14 +490,14 @@ mod tests {
 
     #[test]
     fn test_format_session_entries_basic() {
-        let entries = vec![
-            SessionEntryData {
-                messages: vec![
-                    PromptMessage { sender: "user1".into(), timestamp: "20260303120000".into(), content: "hello".into() },
-                ],
-                summary: "User said hello".into(),
-            },
-        ];
+        let entries = vec![SessionEntryData {
+            messages: vec![PromptMessage {
+                sender: "user1".into(),
+                timestamp: "20260303120000".into(),
+                content: "hello".into(),
+            }],
+            summary: "User said hello".into(),
+        }];
         let rendered = format_session_entries(&entries);
         assert!(rendered.contains("user1"));
         assert!(rendered.contains("hello"));
@@ -489,14 +507,14 @@ mod tests {
     #[test]
     fn test_format_session_entries_truncates() {
         let long_content = "x".repeat(300);
-        let entries = vec![
-            SessionEntryData {
-                messages: vec![
-                    PromptMessage { sender: "user1".into(), timestamp: "20260303120000".into(), content: long_content },
-                ],
-                summary: String::new(),
-            },
-        ];
+        let entries = vec![SessionEntryData {
+            messages: vec![PromptMessage {
+                sender: "user1".into(),
+                timestamp: "20260303120000".into(),
+                content: long_content,
+            }],
+            summary: String::new(),
+        }];
         let rendered = format_session_entries(&entries);
         assert!(!rendered.contains(&"x".repeat(300)));
     }
@@ -507,4 +525,3 @@ mod tests {
         assert_eq!(format_session_entries(&entries), "");
     }
 }
-

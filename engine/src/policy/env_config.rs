@@ -47,7 +47,6 @@ pub struct EnvConfig {
     pub html_dir: Option<String>,
     /// HTTP listen port (`ALICE_HTTP_PORT`, default: 8081).
     pub http_port: u16,
-
 }
 
 impl EnvConfig {
@@ -73,8 +72,7 @@ impl EnvConfig {
             base_dir: std::env::var("ALICE_BASE_DIR").ok(),
             instances_dir: std::env::var("ALICE_INSTANCES_DIR").ok(),
             logs_dir: std::env::var("ALICE_LOGS_DIR").ok(),
-            user_id: std::env::var("ALICE_USER_ID")
-                .unwrap_or_else(|_| "user".to_string()),
+            user_id: std::env::var("ALICE_USER_ID").unwrap_or_else(|_| "user".to_string()),
             pid_file: std::env::var("ALICE_PID_FILE").ok().map(PathBuf::from),
             host: std::env::var("ALICE_HOST").ok().filter(|s| !s.is_empty()),
             shell_env: std::env::var("ALICE_SHELL_ENV")
@@ -87,8 +85,7 @@ impl EnvConfig {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(7),
             rpc_socket: std::env::var("ALICE_RPC_SOCKET").ok(),
-            default_api_key: std::env::var("ALICE_DEFAULT_API_KEY")
-                .unwrap_or_default(),
+            default_api_key: std::env::var("ALICE_DEFAULT_API_KEY").unwrap_or_default(),
             default_model: std::env::var("ALICE_DEFAULT_MODEL").ok(),
             shutdown_signal_file: std::env::var("ALICE_SHUTDOWN_SIGNAL_FILE")
                 .map(PathBuf::from)
@@ -103,14 +100,16 @@ impl EnvConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(8081),
-
         }
     }
 
     /// Resolve PID file path, using env var or default based on instances directory.
     pub fn pid_file_path(&self, instances_base: &std::path::Path) -> PathBuf {
         self.pid_file.clone().unwrap_or_else(|| {
-            instances_base.parent().unwrap_or(instances_base).join("alice-engine.pid")
+            instances_base
+                .parent()
+                .unwrap_or(instances_base)
+                .join("alice-engine.pid")
         })
     }
 }

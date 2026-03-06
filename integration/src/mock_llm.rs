@@ -33,22 +33,39 @@ pub struct MockScript {
     pub response: String,
     pub expected_user_contains: Option<String>,
     pub status_code: Option<u16>,
+    /// If true, this script matches requests without action token (e.g. capture requests).
+    pub match_non_action: bool,
 }
 
 impl MockScript {
     /// Create a script without user assertion.
     pub fn new(response: impl Into<String>) -> Self {
-        Self { response: response.into(), expected_user_contains: None, status_code: None }
+        Self {
+            response: response.into(),
+            expected_user_contains: None,
+            status_code: None,
+            match_non_action: false,
+        }
     }
 
     /// Create a script with user line assertion.
     pub fn with_user_assert(response: impl Into<String>, expected: impl Into<String>) -> Self {
-        Self { response: response.into(), expected_user_contains: Some(expected.into()), status_code: None }
+        Self {
+            response: response.into(),
+            expected_user_contains: Some(expected.into()),
+            status_code: None,
+            match_non_action: false,
+        }
     }
 
     /// Create a script that returns an HTTP error status.
     pub fn with_error(status_code: u16) -> Self {
-        Self { response: String::new(), expected_user_contains: None, status_code: Some(status_code) }
+        Self {
+            response: String::new(),
+            expected_user_contains: None,
+            status_code: Some(status_code),
+            match_non_action: false,
+        }
     }
 }
 
@@ -83,7 +100,8 @@ impl MockLlmServer {
             .route("/stats", get(handle_stats))
             .with_state(state);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
             .expect("Failed to bind mock LLM server");
         let port = listener.local_addr().unwrap().port();
 
@@ -109,7 +127,8 @@ impl MockLlmServer {
             .with_state(state);
 
         let addr = format!("127.0.0.1:{}", port);
-        let listener = tokio::net::TcpListener::bind(&addr).await
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
             .unwrap_or_else(|e| panic!("Failed to bind mock LLM server on {}: {}", addr, e));
         let actual_port = listener.local_addr().unwrap().port();
 
@@ -125,7 +144,10 @@ impl MockLlmServer {
     /// Format: `http://127.0.0.1:{port}/v1/chat/completions@test-model`
     /// The engine's `resolve_model` treats the part before `@` as the provider URL.
     pub fn model_string(&self) -> String {
-        format!("http://127.0.0.1:{}/v1/chat/completions@test-model", self.port)
+        format!(
+            "http://127.0.0.1:{}/v1/chat/completions@test-model",
+            self.port
+        )
     }
 }
 
@@ -140,8 +162,8 @@ async fn handle_completion(
     State(state): State<Arc<MockState>>,
     body: String,
 ) -> axum::response::Response {
-    let body_json: serde_json::Value = serde_json::from_str(&body)
-        .expect("Mock LLM: invalid JSON request body");
+    let body_json: serde_json::Value =
+        serde_json::from_str(&body).expect("Mock LLM: invalid JSON request body");
 
     let is_stream = body_json["stream"].as_bool().unwrap_or(true);
 
@@ -149,9 +171,68 @@ async fn handle_completion(
     let token = match try_extract_action_token(&body_json) {
         Some(t) => t,
         None => {
-            // Compress request (no action token) — return fixed response, do NOT consume script
+            // No action token — could be compress or capture request.
+            // Extract last user message for matching.
+            let last_user_for_match = body_json["messages"]
+                .as_array()
+                .and_then(|msgs| {
+                    msgs.iter()
+                        .rev()
+                        .find(|m| m["role"].as_str() == Some("user"))
+                })
+                .and_then(|m| m["content"].as_str())
+                .unwrap_or("");
+
+            // Check if next script expects non-action requests (e.g. capture)
+            // Also verify expected_user_contains if specified
+            let should_consume_non_action = {
+                let scripts = state.scripts.lock().unwrap();
+                scripts.front().map_or(false, |s| {
+                    s.match_non_action && match &s.expected_user_contains {
+                        Some(expected) => last_user_for_match.contains(expected.as_str()),
+                        None => true,
+                    }
+                })
+            };
+
+            if should_consume_non_action {
+                // Consume the non-action script
+                let (script, remaining) = {
+                    let mut scripts = state.scripts.lock().unwrap();
+                    let s = scripts.pop_front().unwrap();
+                    (s, scripts.len())
+                };
+                let idx = state.total_scripts - remaining;
+                let user_preview: String = last_user_for_match.chars().take(60).collect();
+                eprintln!(
+                    "[MOCK-LLM] Consuming non-action script #{} ({} remaining) | non-action request | user: {}",
+                    idx, remaining, user_preview
+                );
+                // Record model for stats
+                let request_model = body_json["model"].as_str().unwrap_or("unknown").to_string();
+                state.request_models.lock().unwrap().push(request_model);
+
+                let response_text = &script.response;
+                if is_stream {
+                    let sse_body = format_sse_response(response_text);
+                    return axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .header("cache-control", "no-cache")
+                        .body(axum::body::Body::from(sse_body))
+                        .unwrap();
+                } else {
+                    let json_body = format_sync_response(response_text);
+                    return axum::response::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(json_body))
+                        .unwrap();
+                }
+            }
+
+            // Default: compress request — return fixed response, do NOT consume script
             eprintln!("[MOCK-LLM] No action token (compress request), returning fixed response");
-            let compress_response = "Compressed: calculator app development, division feature, system logs review.";
+            let compress_response =
+                "Compressed: calculator app development, division feature, system logs review.";
             if is_stream {
                 let sse_body = format_sse_response(compress_response);
                 return axum::response::Response::builder()
@@ -170,15 +251,24 @@ async fn handle_completion(
     };
 
     // Extract last user message content (full for assertion, truncated for logging)
-    let last_user_content = body_json["messages"].as_array()
-        .and_then(|msgs| msgs.iter().rev().find(|m| m["role"].as_str() == Some("user")))
+    let last_user_content = body_json["messages"]
+        .as_array()
+        .and_then(|msgs| {
+            msgs.iter()
+                .rev()
+                .find(|m| m["role"].as_str() == Some("user"))
+        })
         .and_then(|m| m["content"].as_str())
         .unwrap_or("<no user msg>");
     let last_user_preview: String = last_user_content.chars().take(60).collect();
 
     // Record the requested model for stats
     let request_model = body_json["model"].as_str().unwrap_or("unknown").to_string();
-    state.request_models.lock().unwrap().push(request_model.clone());
+    state
+        .request_models
+        .lock()
+        .unwrap()
+        .push(request_model.clone());
 
     // Now consume the next scripted response
     let mock_script = {
@@ -188,20 +278,31 @@ async fn handle_completion(
         match &script {
             Some(s) => {
                 let idx = state.total_scripts - remaining + 1;
-                eprintln!("[MOCK-LLM] Consuming script #{} ({} remaining) | model: {} | user: {}", 
-                    idx, remaining - 1, request_model, last_user_preview);
+                eprintln!(
+                    "[MOCK-LLM] Consuming script #{} ({} remaining) | model: {} | user: {}",
+                    idx,
+                    remaining - 1,
+                    request_model,
+                    last_user_preview
+                );
                 // Assert user line if expected — search full content, not just preview
                 if let Some(ref expected) = s.expected_user_contains {
-                    assert!(last_user_content.contains(expected.as_str()),
+                    assert!(
+                        last_user_content.contains(expected.as_str()),
                         "Mock script #{}: expected user message to contain '{}', preview: '{}'",
-                        idx, expected, last_user_preview);
+                        idx,
+                        expected,
+                        last_user_preview
+                    );
                 }
-            },
+            }
             None => {
                 // All scripts consumed — return idle instead of panicking
                 let user_preview: String = last_user_content.chars().take(60).collect();
-                eprintln!("[MOCK-LLM] All {} scripts consumed, returning idle | model: {} | user: {}", 
-                    state.total_scripts, request_model, user_preview);
+                eprintln!(
+                    "[MOCK-LLM] All {} scripts consumed, returning idle | model: {} | user: {}",
+                    state.total_scripts, request_model, user_preview
+                );
                 let idle_content = format!("{}-idle\n", token);
                 let sse_body = format_sse_response(&idle_content);
                 return axum::response::Response::builder()
@@ -223,7 +324,8 @@ async fn handle_completion(
                 "type": "mock_error",
                 "message": format!("Mock LLM error {}", status_code)
             }
-        }).to_string();
+        })
+        .to_string();
         return axum::response::Response::builder()
             .status(status_code)
             .header("content-type", "application/json")
@@ -256,11 +358,10 @@ async fn handle_completion(
 }
 
 /// Return request statistics (models seen so far).
-async fn handle_stats(
-    State(state): State<Arc<MockState>>,
-) -> axum::response::Response {
+async fn handle_stats(State(state): State<Arc<MockState>>) -> axum::response::Response {
     let models = state.request_models.lock().unwrap().clone();
-    let body = serde_json::json!({ "models": models }).to_string();
+    let total = models.len();
+    let body = serde_json::json!({ "models": models, "total_requests": total }).to_string();
     axum::response::Response::builder()
         .header("content-type", "application/json")
         .body(axum::body::Body::from(body))
@@ -271,7 +372,8 @@ async fn handle_stats(
 fn replace_placeholders(script: &str, token: &str, all_content: &str) -> String {
     // Extract hex portion from token (e.g. "###ACTION_a1b2c3###" → "a1b2c3")
     let token_hex = token
-        .strip_prefix("###ACTION_").and_then(|s| s.strip_suffix("###"))
+        .strip_prefix("###ACTION_")
+        .and_then(|s| s.strip_suffix("###"))
         .unwrap_or("000000");
 
     let mut result = script.replace("{ACTION_TOKEN}", token);
@@ -326,7 +428,10 @@ fn find_action_id_by_keyword(content: &str, keyword: &str) -> String {
     }
 
     if last_action_id.is_empty() {
-        panic!("Mock LLM: could not find action block containing keyword '{}'", keyword);
+        panic!(
+            "Mock LLM: could not find action block containing keyword '{}'",
+            keyword
+        );
     }
 
     last_action_id
@@ -352,7 +457,8 @@ fn try_extract_action_token(body: &serde_json::Value) -> Option<String> {
 
 /// Collect all message content into a single string for searching.
 fn collect_message_content(body: &serde_json::Value) -> String {
-    let messages = body["messages"].as_array()
+    let messages = body["messages"]
+        .as_array()
         .unwrap_or(&Vec::new())
         .iter()
         .filter_map(|m| m["content"].as_str())
@@ -375,7 +481,8 @@ fn format_sync_response(content: &str) -> String {
     serde_json::json!({
         "choices": [{"message": {"content": content}}],
         "usage": {"prompt_tokens": 100, "completion_tokens": 50}
-    }).to_string()
+    })
+    .to_string()
 }
 
 #[cfg(test)]
@@ -390,7 +497,10 @@ mod tests {
                 {"role": "user", "content": "Hello"}
             ]
         });
-        assert_eq!(try_extract_action_token(&body), Some("###ACTION_a1b2c3###".to_string()));
+        assert_eq!(
+            try_extract_action_token(&body),
+            Some("###ACTION_a1b2c3###".to_string())
+        );
     }
 
     #[test]
@@ -405,7 +515,10 @@ mod tests {
     fn test_format_sync_response() {
         let response = format_sync_response("compressed history text");
         let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
-        assert_eq!(parsed["choices"][0]["message"]["content"], "compressed history text");
+        assert_eq!(
+            parsed["choices"][0]["message"]["content"],
+            "compressed history text"
+        );
         assert!(parsed["usage"]["prompt_tokens"].is_number());
     }
 
@@ -422,7 +535,10 @@ mod tests {
             "result: [LOG] service healthy\n",
             "---------行为编号[20260301_bbb222]结束---------\n",
         );
-        assert_eq!(find_action_id_by_keyword(content, "[LOG]"), "20260301_bbb222");
+        assert_eq!(
+            find_action_id_by_keyword(content, "[LOG]"),
+            "20260301_bbb222"
+        );
     }
 
     #[test]
@@ -435,7 +551,9 @@ mod tests {
             "---------行为编号[20260301_xyz789]结束---------\n",
         );
         let result = replace_placeholders(script, token, content);
-        assert_eq!(result, "###ACTION_abc123###-forget\n20260301_xyz789\nsummary text");
+        assert_eq!(
+            result,
+            "###ACTION_abc123###-forget\n20260301_xyz789\nsummary text"
+        );
     }
 }
-

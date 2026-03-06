@@ -5,12 +5,12 @@
 //!
 //! @TRACE: LOG-CLEANUP
 
+use chrono::Local;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use chrono::Local;
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::time::FormatTime;
+use tracing_subscriber::EnvFilter;
 
 use crate::policy::log_formats as logfmt;
 
@@ -181,11 +181,9 @@ pub fn write_infer_input_log(
 ) {
     let infer_log_dir = logs_dir.join(logfmt::INFER_DIR).join(instance_id);
     let in_log_path = infer_log_dir.join(logfmt::infer_in_filename(timestamp));
-    let in_log_content = logfmt::infer_input_log_content(model, api_url, system_prompt, user_prompt);
+    let in_log_content =
+        logfmt::infer_input_log_content(model, api_url, system_prompt, user_prompt);
     if let Err(e) = std::fs::write(&in_log_path, &in_log_content) {
-        warn!(
-            "[INFER-{}] Failed to write in-log: {}",
-            instance_id, e
-        );
+        warn!("[INFER-{}] Failed to write in-log: {}", instance_id, e);
     }
 }

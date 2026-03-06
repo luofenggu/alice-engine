@@ -6,13 +6,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tracing::{info, error};
+use tracing::{error, info};
 
-use crate::persist::instance::InstanceStore;
-use std::sync::atomic::AtomicBool;
-use crate::persist::{Settings, GlobalSettingsStore};
-use crate::core::signal::SignalHub;
 use crate::api::types::*;
+use crate::core::signal::SignalHub;
+use crate::persist::instance::InstanceStore;
+use crate::persist::{GlobalSettingsStore, Settings};
+use std::sync::atomic::AtomicBool;
 
 /// Engine state shared across the HTTP server and engine thread.
 pub struct EngineState {
@@ -56,16 +56,17 @@ impl EngineState {
         let session_token = if env_config.auth_secret.is_empty() {
             String::new()
         } else {
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let hash = Sha256::digest(env_config.auth_secret.as_bytes());
             hex::encode(hash)
         };
-        let session_cookie_name = super::http_protocol::build_session_cookie_name(&env_config.http_port.to_string());
-        let setup_done = global_settings_store.load()
+        let session_cookie_name =
+            super::http_protocol::build_session_cookie_name(&env_config.http_port.to_string());
+        let setup_done = global_settings_store
+            .load()
             .map(|s| s.api_key.as_ref().map_or(false, |k| !k.is_empty()))
             .unwrap_or(false);
         Self {
-
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
             html_dir,
@@ -84,9 +85,7 @@ impl EngineState {
     /// Get all instance info.
     pub async fn get_instances(&self) -> Vec<InstanceInfo> {
         let store = self.instance_store.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            collect_instances(&store)
-        }).await;
+        let result = tokio::task::spawn_blocking(move || collect_instances(&store)).await;
 
         match result {
             Ok(Ok(instances)) => instances,
@@ -104,12 +103,11 @@ impl EngineState {
     /// Get a single instance by ID.
     pub async fn get_instance(&self, instance_id: String) -> Option<InstanceInfo> {
         let store = self.instance_store.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            match store.open(&instance_id) {
-                Ok(instance) => Some(build_instance_info(instance_id, &instance)),
-                Err(_) => None,
-            }
-        }).await;
+        let result = tokio::task::spawn_blocking(move || match store.open(&instance_id) {
+            Ok(instance) => Some(build_instance_info(instance_id, &instance)),
+            Err(_) => None,
+        })
+        .await;
 
         match result {
             Ok(info) => info,
@@ -121,13 +119,27 @@ impl EngineState {
     }
 
     /// Create a new instance.
-    pub async fn create_instance(&self, display_name: String, initial_settings: Option<Settings>) -> ActionResult {
+    pub async fn create_instance(
+        &self,
+        display_name: String,
+        initial_settings: Option<Settings>,
+    ) -> ActionResult {
         let display_name = display_name.trim().to_string();
-        let name_opt = if display_name.is_empty() { None } else { Some(display_name.as_str()) };
+        let name_opt = if display_name.is_empty() {
+            None
+        } else {
+            Some(display_name.as_str())
+        };
 
-        match self.instance_store.create(&self.user_id, name_opt, None, initial_settings.as_ref()) {
+        match self
+            .instance_store
+            .create(&self.user_id, name_opt, None, initial_settings.as_ref())
+        {
             Ok(instance) => {
-                info!("[API] Created instance: id={}, name={:?}", instance.id, name_opt);
+                info!(
+                    "[API] Created instance: id={}, name={:?}",
+                    instance.id, name_opt
+                );
                 ActionResult::ok(instance.id)
             }
             Err(e) => {
@@ -141,7 +153,10 @@ impl EngineState {
     pub async fn delete_instance(&self, instance_id: String) -> ActionResult {
         match self.instance_store.delete(&instance_id) {
             Ok(trash_name) => {
-                info!("[API] Deleted instance: {} -> .trash/{}", instance_id, trash_name);
+                info!(
+                    "[API] Deleted instance: {} -> .trash/{}",
+                    instance_id, trash_name
+                );
                 ActionResult::ok(crate::policy::messages::instance_deleted(&instance_id))
             }
             Err(e) => {
@@ -160,7 +175,9 @@ impl EngineState {
         limit: i64,
     ) -> Result<MessagesResult, String> {
         let rpc_config = &self.engine_config.rpc;
-        let limit = limit.max(rpc_config.min_page_size).min(rpc_config.max_page_size);
+        let limit = limit
+            .max(rpc_config.min_page_size)
+            .min(rpc_config.max_page_size);
         let store = self.instance_store.clone();
 
         let result = tokio::task::spawn_blocking(move || {
@@ -168,24 +185,36 @@ impl EngineState {
             let ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(after) = after_id {
                 let rows = ch.get_messages_after(after, limit)?;
-                let messages: Vec<MessageInfo> = rows.into_iter().map(|(id, role, content, timestamp)| {
-                    MessageInfo { id, role, content, timestamp }
-                }).collect();
+                let messages: Vec<MessageInfo> = rows
+                    .into_iter()
+                    .map(|(id, role, content, timestamp)| MessageInfo {
+                        id,
+                        role,
+                        content,
+                        timestamp,
+                    })
+                    .collect();
                 let has_more = messages.len() >= limit as usize;
                 Ok::<_, anyhow::Error>(MessagesResult { messages, has_more })
             } else {
                 let qr = ch.query(limit, before_id)?;
-                let messages: Vec<MessageInfo> = qr.messages.iter().map(|m| {
-                    MessageInfo {
+                let messages: Vec<MessageInfo> = qr
+                    .messages
+                    .iter()
+                    .map(|m| MessageInfo {
                         id: m.id,
                         role: m.role.clone(),
                         content: m.content.clone(),
                         timestamp: m.timestamp.clone(),
-                    }
-                }).collect();
-                Ok(MessagesResult { messages, has_more: qr.has_more })
+                    })
+                    .collect();
+                Ok(MessagesResult {
+                    messages,
+                    has_more: qr.has_more,
+                })
             }
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(r)) => Ok(r),
@@ -218,7 +247,8 @@ impl EngineState {
             let id = ch.write_user_message(&user_id, &content, &timestamp)?;
             info!("[MSG] API: message sent to {}, id={}", name, id);
             Ok::<_, anyhow::Error>(id)
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(id)) => ActionResult::ok(id.to_string()),
@@ -235,14 +265,19 @@ impl EngineState {
             let instance = store.open(&instance_id)?;
             let ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
             ch.get_messages_after(after_id, 100)
-        }).await;
+        })
+        .await;
 
         match result {
-            Ok(Ok(replies)) => {
-                replies.into_iter().map(|(id, role, content, timestamp)| {
-                    MessageInfo { id, role, content, timestamp }
-                }).collect()
-            }
+            Ok(Ok(replies)) => replies
+                .into_iter()
+                .map(|(id, role, content, timestamp)| MessageInfo {
+                    id,
+                    role,
+                    content,
+                    timestamp,
+                })
+                .collect(),
             Ok(Err(e)) => {
                 error!("[API] get_replies_after error: {}", e);
                 vec![]
@@ -260,14 +295,19 @@ impl EngineState {
             Some(status) => {
                 let engine_online = if status.inferring {
                     EngineOnlineStatus::Inferring
-                } else if status.last_beat.elapsed() < std::time::Duration::from_secs(self.engine_config.rpc.heartbeat_timeout_secs) {
+                } else if status.last_beat.elapsed()
+                    < std::time::Duration::from_secs(self.engine_config.rpc.heartbeat_timeout_secs)
+                {
                     EngineOnlineStatus::Online
                 } else {
                     EngineOnlineStatus::Offline
                 };
 
                 let infer_output = if status.inferring {
-                    status.log_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok())
+                    status
+                        .log_path
+                        .as_ref()
+                        .and_then(|p| std::fs::read_to_string(p).ok())
                 } else {
                     None
                 };
@@ -304,7 +344,8 @@ impl EngineState {
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&id)?;
             instance.settings.load()
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(settings)) => settings,
@@ -340,7 +381,8 @@ impl EngineState {
                 }
                 None => Ok(ActionResult::err(crate::policy::messages::no_valid_fields())),
             }
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(r)) => r,
@@ -352,9 +394,7 @@ impl EngineState {
     /// Get global settings.
     pub async fn get_global_settings(&self) -> Settings {
         let store = self.global_settings_store.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            store.load()
-        }).await;
+        let result = tokio::task::spawn_blocking(move || store.load()).await;
 
         match result {
             Ok(Ok(settings)) => settings,
@@ -374,8 +414,11 @@ impl EngineState {
         let store = self.global_settings_store.clone();
         let result = tokio::task::spawn_blocking(move || {
             store.merge_update(update)?;
-            Ok::<_, anyhow::Error>(ActionResult::ok(crate::policy::messages::global_settings_updated()))
-        }).await;
+            Ok::<_, anyhow::Error>(ActionResult::ok(
+                crate::policy::messages::global_settings_updated(),
+            ))
+        })
+        .await;
 
         match result {
             Ok(Ok(r)) => r,
@@ -414,15 +457,21 @@ impl EngineState {
                 items.push(FileInfo {
                     name,
                     is_dir: metadata.is_dir(),
-                    size: if metadata.is_file() { Some(metadata.len()) } else { None },
+                    size: if metadata.is_file() {
+                        Some(metadata.len())
+                    } else {
+                        None
+                    },
                 });
             }
             items.sort_by(|a, b| {
-                b.is_dir.cmp(&a.is_dir)
+                b.is_dir
+                    .cmp(&a.is_dir)
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             });
             Ok(items)
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(items)) => items,
@@ -436,7 +485,6 @@ impl EngineState {
             }
         }
     }
-
 
     /// Delete a file or directory from instance workspace.
     pub async fn delete_file(&self, instance_id: String, path: String) -> ActionResult {
@@ -464,7 +512,8 @@ impl EngineState {
                 std::fs::remove_file(&target)?;
             }
             Ok(path)
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(deleted_path)) => ActionResult::ok(format!("Deleted: {}", deleted_path)),
@@ -494,18 +543,23 @@ impl EngineState {
                 anyhow::bail!("File too large (>1MB)");
             }
 
-            let file_name = target.file_name()
+            let file_name = target
+                .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
 
             if engine_config.file_browse.is_binary_file(&file_name) {
-                return Ok(FileReadResult::binary(crate::policy::messages::binary_file_description(&file_name, size), size));
+                return Ok(FileReadResult::binary(
+                    crate::policy::messages::binary_file_description(&file_name, size),
+                    size,
+                ));
             }
 
             let content = std::fs::read_to_string(&target)?;
             Ok::<_, anyhow::Error>(FileReadResult::text(content, size))
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(r)) => r,
@@ -526,8 +580,13 @@ impl EngineState {
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
-            instance.memory.knowledge.read().map_err(anyhow::Error::from)
-        }).await;
+            instance
+                .memory
+                .knowledge
+                .read()
+                .map_err(anyhow::Error::from)
+        })
+        .await;
 
         match result {
             Ok(Ok(content)) => content,
@@ -542,7 +601,8 @@ impl EngineState {
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
             instance.skill.read().map_err(anyhow::Error::from)
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(content)) => content,
@@ -558,36 +618,53 @@ impl EngineState {
             let instance = store.open(&instance_id)?;
             instance.skill.write(&content)?;
             Ok(())
-        }).await?
+        })
+        .await?
     }
 
     /// Run vision inference: send an image to the LLM for understanding.
     /// Uses the instance's primary channel (global + instance settings merged).
-    pub async fn vision(&self, instance_id: String, prompt: String, image_url: String) -> Result<String, String> {
+    pub async fn vision(
+        &self,
+        instance_id: String,
+        prompt: String,
+        image_url: String,
+    ) -> Result<String, String> {
         // Build LlmConfig from merged settings
         let store = self.instance_store.clone();
         let gs_store = self.global_settings_store.clone();
 
         let id_for_closure = instance_id.clone();
-        let config = tokio::task::spawn_blocking(move || -> anyhow::Result<crate::external::llm::LlmConfig> {
-            let global = gs_store.load().unwrap_or_default();
-            let instance = store.open(&id_for_closure)?;
-            let mut settings = instance.settings.load().unwrap_or_default();
-            settings.merge_fallback(&global);
-            settings.validate()?;
+        let config = tokio::task::spawn_blocking(
+            move || -> anyhow::Result<crate::external::llm::LlmConfig> {
+                let global = gs_store.load().unwrap_or_default();
+                let instance = store.open(&id_for_closure)?;
+                let mut settings = instance.settings.load().unwrap_or_default();
+                settings.merge_fallback(&global);
+                settings.validate()?;
 
-            Ok(crate::external::llm::LlmConfig {
-                model: settings.model_or_default(),
-                api_key: settings.api_key_or_default(),
-                temperature: settings.temperature,
-                max_tokens: settings.max_tokens,
-            })
-        }).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+                Ok(crate::external::llm::LlmConfig {
+                    model: settings.model_or_default(),
+                    api_key: settings.api_key_or_default(),
+                    temperature: settings.temperature,
+                    max_tokens: settings.max_tokens,
+                })
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
 
         let http_client = self.http_client.clone();
         match crate::external::llm::run_vision_inference(
-            &config, &http_client, &prompt, &image_url, &instance_id,
-        ).await {
+            &config,
+            &http_client,
+            &prompt,
+            &image_url,
+            &instance_id,
+        )
+        .await
+        {
             Ok((text, _usage)) => Ok(text),
             Err(e) => Err(e.to_string()),
         }
@@ -612,7 +689,9 @@ fn build_instance_info(id: String, instance: &crate::persist::instance::Instance
         privileged = settings.privileged_or_default();
     }
 
-    let last_active = instance.chat.lock()
+    let last_active = instance
+        .chat
+        .lock()
         .ok()
         .and_then(|chat| chat.get_last_message_time().ok())
         .unwrap_or(0);

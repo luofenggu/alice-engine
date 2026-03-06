@@ -66,24 +66,60 @@ pub struct Settings {
 impl Settings {
     /// Fill None fields from fallback. Self takes priority.
     pub fn merge_fallback(&mut self, fallback: &Settings) {
-        if self.api_key.is_none() { self.api_key = fallback.api_key.clone(); }
-        if self.model.is_none() { self.model = fallback.model.clone(); }
-        if self.user_id.is_none() { self.user_id = fallback.user_id.clone(); }
-        if self.privileged.is_none() { self.privileged = fallback.privileged; }
-        if self.max_beats.is_none() { self.max_beats = fallback.max_beats; }
-        if self.session_blocks_limit.is_none() { self.session_blocks_limit = fallback.session_blocks_limit; }
-        if self.session_block_kb.is_none() { self.session_block_kb = fallback.session_block_kb; }
-        if self.history_kb.is_none() { self.history_kb = fallback.history_kb; }
-        if self.safety_max_consecutive_beats.is_none() { self.safety_max_consecutive_beats = fallback.safety_max_consecutive_beats; }
-        if self.safety_cooldown_secs.is_none() { self.safety_cooldown_secs = fallback.safety_cooldown_secs; }
-        if self.name.is_none() { self.name = fallback.name.clone(); }
-        if self.color.is_none() { self.color = fallback.color.clone(); }
-        if self.avatar.is_none() { self.avatar = fallback.avatar.clone(); }
-        if self.temperature.is_none() { self.temperature = fallback.temperature; }
-        if self.max_tokens.is_none() { self.max_tokens = fallback.max_tokens; }
-        if self.host.is_none() { self.host = fallback.host.clone(); }
-        if self.shell_env.is_none() { self.shell_env = fallback.shell_env.clone(); }
-        if self.extra_channels.is_none() { self.extra_channels = fallback.extra_channels.clone(); }
+        if self.api_key.is_none() {
+            self.api_key = fallback.api_key.clone();
+        }
+        if self.model.is_none() {
+            self.model = fallback.model.clone();
+        }
+        if self.user_id.is_none() {
+            self.user_id = fallback.user_id.clone();
+        }
+        if self.privileged.is_none() {
+            self.privileged = fallback.privileged;
+        }
+        if self.max_beats.is_none() {
+            self.max_beats = fallback.max_beats;
+        }
+        if self.session_blocks_limit.is_none() {
+            self.session_blocks_limit = fallback.session_blocks_limit;
+        }
+        if self.session_block_kb.is_none() {
+            self.session_block_kb = fallback.session_block_kb;
+        }
+        if self.history_kb.is_none() {
+            self.history_kb = fallback.history_kb;
+        }
+        if self.safety_max_consecutive_beats.is_none() {
+            self.safety_max_consecutive_beats = fallback.safety_max_consecutive_beats;
+        }
+        if self.safety_cooldown_secs.is_none() {
+            self.safety_cooldown_secs = fallback.safety_cooldown_secs;
+        }
+        if self.name.is_none() {
+            self.name = fallback.name.clone();
+        }
+        if self.color.is_none() {
+            self.color = fallback.color.clone();
+        }
+        if self.avatar.is_none() {
+            self.avatar = fallback.avatar.clone();
+        }
+        if self.temperature.is_none() {
+            self.temperature = fallback.temperature;
+        }
+        if self.max_tokens.is_none() {
+            self.max_tokens = fallback.max_tokens;
+        }
+        if self.host.is_none() {
+            self.host = fallback.host.clone();
+        }
+        if self.shell_env.is_none() {
+            self.shell_env = fallback.shell_env.clone();
+        }
+        if self.extra_channels.is_none() {
+            self.extra_channels = fallback.extra_channels.clone();
+        }
     }
 
     /// Build seed settings from environment variables and engine.toml defaults.
@@ -91,8 +127,15 @@ impl Settings {
         let llm = &crate::policy::EngineConfig::get().llm;
         let mem = &crate::policy::EngineConfig::get().memory;
         Self {
-            api_key: if env.default_api_key.is_empty() { None } else { Some(env.default_api_key.clone()) },
-            model: env.default_model.clone().or_else(|| Some(llm.default_model.clone())),
+            api_key: if env.default_api_key.is_empty() {
+                None
+            } else {
+                Some(env.default_api_key.clone())
+            },
+            model: env
+                .default_model
+                .clone()
+                .or_else(|| Some(llm.default_model.clone())),
             user_id: Some(env.user_id.clone()),
             privileged: None,
             max_beats: None,
@@ -107,7 +150,11 @@ impl Settings {
             temperature: Some(llm.temperature),
             max_tokens: Some(llm.max_tokens),
             host: env.host.clone(),
-            shell_env: if env.shell_env.is_empty() { None } else { Some(env.shell_env.clone()) },
+            shell_env: if env.shell_env.is_empty() {
+                None
+            } else {
+                Some(env.shell_env.clone())
+            },
             extra_channels: None,
         }
     }
@@ -156,7 +203,10 @@ impl GlobalSettingsStore {
     /// Performs three-layer merge: env ∪ engine.toml → seed, seed ∪ persisted → global.
     /// Writes merged result back to disk.
     /// Returns (merged_settings, store).
-    pub fn init(base_dir: &std::path::Path, env: &crate::policy::EnvConfig) -> anyhow::Result<(Settings, Self)> {
+    pub fn init(
+        base_dir: &std::path::Path,
+        env: &crate::policy::EnvConfig,
+    ) -> anyhow::Result<(Settings, Self)> {
         let path = base_dir.join(super::GLOBAL_SETTINGS_FILE);
         let seed = Settings::from_env_and_defaults(env);
 
@@ -202,9 +252,9 @@ impl GlobalSettingsStore {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Document;
     use super::*;
     use tempfile::TempDir;
-    use super::super::Document;
 
     #[test]
     fn test_merge_fallback() {
@@ -218,19 +268,33 @@ mod tests {
             ..Default::default()
         };
         base.merge_fallback(&fallback);
-        assert_eq!(base.model.as_deref(), Some("base-model"), "Self takes priority");
-        assert_eq!(base.api_key.as_deref(), Some("fallback-key"), "None filled from fallback");
+        assert_eq!(
+            base.model.as_deref(),
+            Some("base-model"),
+            "Self takes priority"
+        );
+        assert_eq!(
+            base.api_key.as_deref(),
+            Some("fallback-key"),
+            "None filled from fallback"
+        );
     }
 
     #[test]
     fn test_validate_empty_key() {
         let s = Settings::default();
-        assert!(s.validate().is_err(), "Empty api_key should fail validation");
+        assert!(
+            s.validate().is_err(),
+            "Empty api_key should fail validation"
+        );
     }
 
     #[test]
     fn test_validate_with_key() {
-        let s = Settings { api_key: Some("key".into()), ..Default::default() };
+        let s = Settings {
+            api_key: Some("key".into()),
+            ..Default::default()
+        };
         assert!(s.validate().is_ok(), "Non-empty api_key should pass");
     }
 
@@ -265,53 +329,101 @@ mod tests {
         let instance_doc = Document::<Settings>::open(&instance_settings_path).unwrap();
         // Instance starts blank
         let instance_settings = instance_doc.load().unwrap();
-        assert_eq!(instance_settings.api_key, None, "Instance should start blank");
+        assert_eq!(
+            instance_settings.api_key, None,
+            "Instance should start blank"
+        );
         assert_eq!(instance_settings.model, None, "Instance should start blank");
 
         // === Layer 3: Runtime merge — instance enjoys global (env) values ===
         let mut runtime = instance_settings.clone();
         runtime.merge_fallback(&global);
-        assert_eq!(runtime.api_key.as_deref(), Some("env-api-key"), "Should inherit global api_key");
-        assert_eq!(runtime.model.as_deref(), Some("env-model"), "Should inherit global model");
-        assert_eq!(runtime.temperature, Some(0.7), "Should inherit global temperature");
+        assert_eq!(
+            runtime.api_key.as_deref(),
+            Some("env-api-key"),
+            "Should inherit global api_key"
+        );
+        assert_eq!(
+            runtime.model.as_deref(),
+            Some("env-model"),
+            "Should inherit global model"
+        );
+        assert_eq!(
+            runtime.temperature,
+            Some(0.7),
+            "Should inherit global temperature"
+        );
 
         // === Update instance setting (only model) — 留白: only store what was explicitly set ===
-        let update = Settings { model: Some("instance-model".into()), ..Default::default() };
+        let update = Settings {
+            model: Some("instance-model".into()),
+            ..Default::default()
+        };
         let mut new_instance = update.clone();
         new_instance.merge_fallback(&instance_settings); // preserve previously set fields
         instance_doc.save(&new_instance).unwrap();
 
         // Verify 留白: instance file only has model, not api_key
-        let saved: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&instance_settings_path).unwrap()
-        ).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&instance_settings_path).unwrap())
+                .unwrap();
         assert!(saved.get("model").is_some(), "model should be persisted");
-        assert!(saved.get("api_key").is_none(),
-            "api_key should NOT be in instance file (留白)");
+        assert!(
+            saved.get("api_key").is_none(),
+            "api_key should NOT be in instance file (留白)"
+        );
 
         // Runtime merge — instance model wins, api_key from global
         let instance_settings = instance_doc.load().unwrap();
         let mut runtime = instance_settings.clone();
         runtime.merge_fallback(&global);
-        assert_eq!(runtime.model.as_deref(), Some("instance-model"), "Instance model should win");
-        assert_eq!(runtime.api_key.as_deref(), Some("env-api-key"), "Should still inherit global api_key");
+        assert_eq!(
+            runtime.model.as_deref(),
+            Some("instance-model"),
+            "Instance model should win"
+        );
+        assert_eq!(
+            runtime.api_key.as_deref(),
+            Some("env-api-key"),
+            "Should still inherit global api_key"
+        );
 
         // === Update global setting (change api_key) ===
-        let global_update = Settings { api_key: Some("new-global-key".into()), ..Default::default() };
+        let global_update = Settings {
+            api_key: Some("new-global-key".into()),
+            ..Default::default()
+        };
         store.merge_update(global_update).unwrap();
         let new_global = store.load().unwrap();
-        assert_eq!(new_global.api_key.as_deref(), Some("new-global-key"), "Global api_key should be updated");
-        assert_eq!(new_global.model.as_deref(), Some("env-model"), "Global model unchanged");
+        assert_eq!(
+            new_global.api_key.as_deref(),
+            Some("new-global-key"),
+            "Global api_key should be updated"
+        );
+        assert_eq!(
+            new_global.model.as_deref(),
+            Some("env-model"),
+            "Global model unchanged"
+        );
 
         // Runtime merge with updated global — instance picks up new global api_key
         let instance_settings = instance_doc.load().unwrap();
         let mut runtime = instance_settings.clone();
         runtime.merge_fallback(&new_global);
-        assert_eq!(runtime.api_key.as_deref(), Some("new-global-key"),
-            "Instance should enjoy new global api_key (not overridden)");
-        assert_eq!(runtime.model.as_deref(), Some("instance-model"),
-            "Instance model should NOT be affected by global changes");
-        assert_eq!(runtime.temperature, Some(0.7),
-            "Temperature inherited from global (unchanged)");
+        assert_eq!(
+            runtime.api_key.as_deref(),
+            Some("new-global-key"),
+            "Instance should enjoy new global api_key (not overridden)"
+        );
+        assert_eq!(
+            runtime.model.as_deref(),
+            Some("instance-model"),
+            "Instance model should NOT be affected by global changes"
+        );
+        assert_eq!(
+            runtime.temperature,
+            Some(0.7),
+            "Temperature inherited from global (unchanged)"
+        );
     }
 }

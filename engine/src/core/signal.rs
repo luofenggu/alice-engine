@@ -5,7 +5,10 @@
 //! Also holds per-instance engine status for RPC observe queries.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, RwLock,
+};
 use std::time::Instant;
 
 /// Runtime status of an engine instance, updated by engine thread, read by RPC.

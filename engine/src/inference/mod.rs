@@ -7,6 +7,7 @@
 //! no LLM API calls, no streaming, no blocking hallucination defense.
 
 pub mod beat;
+pub mod capture;
 pub mod compress;
 
 // ---------------------------------------------------------------------------
@@ -59,10 +60,9 @@ const REPLACE_MARKER: &str = "===REPLACE";
 /// `>>>END` end marker for replace_in_file blocks
 const BLOCK_END_MARKER: &str = ">>>END";
 
-
-use std::fmt;
-use anyhow::{Result, bail};
 use crate::persist::Settings;
+use anyhow::{bail, Result};
+use std::fmt;
 
 // ---------------------------------------------------------------------------
 // Action enum
@@ -70,24 +70,51 @@ use crate::persist::Settings;
 
 #[derive(Debug, Clone)]
 pub enum Action {
-    Idle { timeout_secs: Option<u64> },
+    Idle {
+        timeout_secs: Option<u64>,
+    },
     ReadMsg,
-    SendMsg { recipient: String, content: String },
-    Thinking { content: String },
-    Script { content: String },
-    WriteFile { path: String, content: String },
-    ReplaceInFile { path: String, blocks: Vec<ReplaceBlock> },
-    Summary { content: String, knowledge: Option<String> },
-    SetProfile { update: Settings },
-    CreateInstance { name: String, knowledge: String },
-    Forget { target_action_id: String, summary: String },
+    SendMsg {
+        recipient: String,
+        content: String,
+    },
+    Thinking {
+        content: String,
+    },
+    Script {
+        content: String,
+    },
+    WriteFile {
+        path: String,
+        content: String,
+    },
+    ReplaceInFile {
+        path: String,
+        blocks: Vec<ReplaceBlock>,
+    },
+    Summary {
+        content: String,
+    },
+    SetProfile {
+        update: Settings,
+    },
+    CreateInstance {
+        name: String,
+        knowledge: String,
+    },
+    Forget {
+        target_action_id: String,
+        summary: String,
+    },
 }
 
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Action::Idle { timeout_secs: None } => write!(f, "idle"),
-            Action::Idle { timeout_secs: Some(secs) } => write!(f, "idle {}", secs),
+            Action::Idle {
+                timeout_secs: Some(secs),
+            } => write!(f, "idle {}", secs),
             Action::ReadMsg => write!(f, "read_msg"),
             Action::SendMsg { recipient, .. } => write!(f, "send_msg → {}", recipient),
             Action::Thinking { .. } => write!(f, "thinking"),
@@ -99,13 +126,21 @@ impl fmt::Display for Action {
             Action::Summary { .. } => write!(f, "summary"),
             Action::SetProfile { update } => {
                 let mut fields = Vec::new();
-                if update.name.is_some() { fields.push("name"); }
-                if update.color.is_some() { fields.push("color"); }
-                if update.avatar.is_some() { fields.push("avatar"); }
+                if update.name.is_some() {
+                    fields.push("name");
+                }
+                if update.color.is_some() {
+                    fields.push("color");
+                }
+                if update.avatar.is_some() {
+                    fields.push("avatar");
+                }
                 write!(f, "set_profile → {}", fields.join(", "))
             }
             Action::CreateInstance { name, .. } => write!(f, "create_instance → {}", name),
-            Action::Forget { target_action_id, .. } => write!(f, "forget → {}", target_action_id),
+            Action::Forget {
+                target_action_id, ..
+            } => write!(f, "forget → {}", target_action_id),
         }
     }
 }
@@ -144,16 +179,28 @@ const ACTION_NAMES: &[(&str, ActionKind)] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ActionKind {
-    Idle, ReadMsg, SendMsg, Thinking, Script,
-    WriteFile, ReplaceInFile, Summary, SetProfile,
-    CreateInstance, Forget,
+    Idle,
+    ReadMsg,
+    SendMsg,
+    Thinking,
+    Script,
+    WriteFile,
+    ReplaceInFile,
+    Summary,
+    SetProfile,
+    CreateInstance,
+    Forget,
 }
 
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
 
-pub fn parse_actions(raw: &str, action_separator: &str, separator_token: &str) -> Result<Vec<Action>> {
+pub fn parse_actions(
+    raw: &str,
+    action_separator: &str,
+    separator_token: &str,
+) -> Result<Vec<Action>> {
     let mut actions = Vec::new();
     let prefix = format!("{}###-", action_separator);
 
@@ -183,7 +230,8 @@ fn parse_single_action(text: &str, separator_token: &str) -> Result<Action> {
         None => (text.trim(), ""),
     };
 
-    let kind = ACTION_NAMES.iter()
+    let kind = ACTION_NAMES
+        .iter()
         .find(|(name, _)| *name == first_line)
         .map(|(_, kind)| *kind)
         .ok_or_else(|| anyhow::anyhow!("Unknown action type: '{}'", first_line))?;
@@ -198,7 +246,10 @@ fn parse_single_action(text: &str, separator_token: &str) -> Result<Action> {
                     None
                 } else {
                     Some(first_rest_line.parse::<u64>().map_err(|_| {
-                        anyhow::anyhow!("Invalid idle timeout: '{}' (expected number of seconds)", first_rest_line)
+                        anyhow::anyhow!(
+                            "Invalid idle timeout: '{}' (expected number of seconds)",
+                            first_rest_line
+                        )
                     })?)
                 }
             };
@@ -207,36 +258,49 @@ fn parse_single_action(text: &str, separator_token: &str) -> Result<Action> {
         ActionKind::ReadMsg => Ok(Action::ReadMsg),
         ActionKind::SendMsg => {
             let (recipient, content) = split_first_line(rest, "send_msg")?;
-            Ok(Action::SendMsg { recipient: recipient.to_string(), content: content.to_string() })
+            Ok(Action::SendMsg {
+                recipient: recipient.to_string(),
+                content: content.to_string(),
+            })
         }
-        ActionKind::Thinking => Ok(Action::Thinking { content: rest.to_string() }),
-        ActionKind::Script => Ok(Action::Script { content: strip_markdown_code_block(rest) }),
+        ActionKind::Thinking => Ok(Action::Thinking {
+            content: rest.to_string(),
+        }),
+        ActionKind::Script => Ok(Action::Script {
+            content: strip_markdown_code_block(rest),
+        }),
         ActionKind::WriteFile => {
             let (path, content) = split_first_line(rest, "write_file")?;
-            Ok(Action::WriteFile { path: path.to_string(), content: strip_markdown_code_block(content) })
+            Ok(Action::WriteFile {
+                path: path.to_string(),
+                content: strip_markdown_code_block(content),
+            })
         }
         ActionKind::ReplaceInFile => {
             let (path, blocks_text) = split_first_line(rest, "replace_in_file")?;
             let blocks = parse_replace_blocks(blocks_text, separator_token)?;
-            Ok(Action::ReplaceInFile { path: path.to_string(), blocks })
-        }
-        ActionKind::Summary => {
-            let knowledge_marker = format!("===KNOWLEDGE_{}===", separator_token);
-            let summary_marker = "===SUMMARY===";
-            let (summary_text, knowledge_text) = crate::inference::beat::parse_summary_dual_output(rest, summary_marker, &knowledge_marker);
-            Ok(Action::Summary {
-                content: summary_text,
-                knowledge: if knowledge_text.trim().is_empty() { None } else { Some(knowledge_text.trim().to_string()) },
+            Ok(Action::ReplaceInFile {
+                path: path.to_string(),
+                blocks,
             })
         }
+        ActionKind::Summary => Ok(Action::Summary {
+            content: rest.trim().to_string(),
+        }),
         ActionKind::SetProfile => parse_set_profile(rest),
         ActionKind::CreateInstance => {
             let (name, knowledge) = split_first_line(rest, "create_instance")?;
-            Ok(Action::CreateInstance { name: name.to_string(), knowledge: knowledge.to_string() })
+            Ok(Action::CreateInstance {
+                name: name.to_string(),
+                knowledge: knowledge.to_string(),
+            })
         }
         ActionKind::Forget => {
             let (target_action_id, summary) = split_first_line(rest, "forget")?;
-            Ok(Action::Forget { target_action_id: target_action_id.to_string(), summary: summary.to_string() })
+            Ok(Action::Forget {
+                target_action_id: target_action_id.to_string(),
+                summary: summary.to_string(),
+            })
         }
     }
 }
@@ -344,8 +408,6 @@ fn parse_replace_blocks(text: &str, separator_token: &str) -> Result<Vec<Replace
 // REMEMBER marker utilities
 // ---------------------------------------------------------------------------
 
-
-
 /// Parse set_profile action content.
 fn parse_set_profile(text: &str) -> Result<Action> {
     let mut update = Settings::default();
@@ -365,7 +427,11 @@ fn parse_set_profile(text: &str) -> Result<Action> {
                 "name" => update.name = value_opt,
                 "color" => update.color = value_opt,
                 "avatar" => update.avatar = value_opt,
-                _ => bail!("set_profile: unknown key '{}' (known: {})", key, known_keys.join(", ")),
+                _ => bail!(
+                    "set_profile: unknown key '{}' (known: {})",
+                    key,
+                    known_keys.join(", ")
+                ),
             }
             count += 1;
         } else {
@@ -390,33 +456,43 @@ mod tests {
 
     const SEP: &str = "###ACTION_test123";
     const TEST_TOKEN: &str = "test123";
-    macro_rules! sm { () => { "<<<SEARCH_test123" } }
-    macro_rules! rm { () => { "===REPLACE_test123" } }
-    macro_rules! em { () => { ">>>END_test123" } }
+    macro_rules! sm {
+        () => {
+            "<<<SEARCH_test123"
+        };
+    }
+    macro_rules! rm {
+        () => {
+            "===REPLACE_test123"
+        };
+    }
+    macro_rules! em {
+        () => {
+            ">>>END_test123"
+        };
+    }
 
     #[test]
     fn test_safe_render_basic() {
-        let result = safe_render("Hello {{NAME}}, welcome to {{PLACE}}!", &[
-            ("{{NAME}}", "Alice"),
-            ("{{PLACE}}", "Wonderland"),
-        ]);
+        let result = safe_render(
+            "Hello {{NAME}}, welcome to {{PLACE}}!",
+            &[("{{NAME}}", "Alice"), ("{{PLACE}}", "Wonderland")],
+        );
         assert_eq!(result, "Hello Alice, welcome to Wonderland!");
     }
 
     #[test]
     fn test_safe_render_no_injection() {
-        let result = safe_render("A={{A}} B={{B}}", &[
-            ("{{A}}", "contains {{B}} inside"),
-            ("{{B}}", "INJECTED"),
-        ]);
+        let result = safe_render(
+            "A={{A}} B={{B}}",
+            &[("{{A}}", "contains {{B}} inside"), ("{{B}}", "INJECTED")],
+        );
         assert_eq!(result, "A=contains {{B}} inside B=INJECTED");
     }
 
     #[test]
     fn test_safe_render_unknown_placeholder() {
-        let result = safe_render("{{KNOWN}} and {{UNKNOWN}}", &[
-            ("{{KNOWN}}", "yes"),
-        ]);
+        let result = safe_render("{{KNOWN}} and {{UNKNOWN}}", &[("{{KNOWN}}", "yes")]);
         assert_eq!(result, "yes and {{UNKNOWN}}");
     }
 
@@ -428,10 +504,10 @@ mod tests {
 
     #[test]
     fn test_safe_render_chinese() {
-        let result = safe_render("你好{{NAME}}，欢迎来到{{PLACE}}", &[
-            ("{{NAME}}", "小白"),
-            ("{{PLACE}}", "仙境"),
-        ]);
+        let result = safe_render(
+            "你好{{NAME}}，欢迎来到{{PLACE}}",
+            &[("{{NAME}}", "小白"), ("{{PLACE}}", "仙境")],
+        );
         assert_eq!(result, "你好小白，欢迎来到仙境");
     }
 
@@ -467,7 +543,9 @@ mod tests {
         let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
-            Action::Idle { timeout_secs: Some(120) } => {}
+            Action::Idle {
+                timeout_secs: Some(120),
+            } => {}
             other => panic!("Expected Idle with 120s timeout, got {:?}", other),
         }
     }
@@ -482,7 +560,15 @@ mod tests {
 
     #[test]
     fn test_idle_display_with_timeout() {
-        assert_eq!(format!("{}", Action::Idle { timeout_secs: Some(60) }), "idle 60");
+        assert_eq!(
+            format!(
+                "{}",
+                Action::Idle {
+                    timeout_secs: Some(60)
+                }
+            ),
+            "idle 60"
+        );
         assert_eq!(format!("{}", Action::Idle { timeout_secs: None }), "idle");
     }
 
@@ -510,7 +596,10 @@ mod tests {
 
     #[test]
     fn test_parse_thinking() {
-        let raw = format!("{}###-thinking\nI need to plan this carefully.\nStep 1...", SEP);
+        let raw = format!(
+            "{}###-thinking\nI need to plan this carefully.\nStep 1...",
+            SEP
+        );
         let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
@@ -548,7 +637,10 @@ mod tests {
     fn test_parse_replace_in_file() {
         let raw = format!(
             "{}###-replace_in_file\nconfig.toml\n{}\nold text\n{}\nnew text\n{}",
-            SEP, sm!(), rm!(), em!()
+            SEP,
+            sm!(),
+            rm!(),
+            em!()
         );
         let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
@@ -567,7 +659,13 @@ mod tests {
     fn test_parse_replace_multiple_blocks() {
         let raw = format!(
             "{}###-replace_in_file\nfile.rs\n{}\nfoo\n{}\nbar\n{}\n{}\nbaz\n{}\nqux\n{}",
-            SEP, sm!(), rm!(), em!(), sm!(), rm!(), em!()
+            SEP,
+            sm!(),
+            rm!(),
+            em!(),
+            sm!(),
+            rm!(),
+            em!()
         );
         let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
         match &actions[0] {
@@ -588,9 +686,8 @@ mod tests {
         let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
-            Action::Summary { content, knowledge } => {
+            Action::Summary { content } => {
                 assert!(content.contains("读了代码"));
-                assert!(knowledge.is_none());
             }
             _ => panic!("Expected Summary"),
         }
@@ -611,7 +708,10 @@ mod tests {
 
     #[test]
     fn test_strip_markdown_code_block_bash() {
-        assert_eq!(strip_markdown_code_block("```bash\nwhoami\npwd\nls\n```"), "whoami\npwd\nls");
+        assert_eq!(
+            strip_markdown_code_block("```bash\nwhoami\npwd\nls\n```"),
+            "whoami\npwd\nls"
+        );
     }
 
     #[test]
@@ -628,7 +728,10 @@ mod tests {
 
     #[test]
     fn test_strip_markdown_code_block_generic() {
-        assert_eq!(strip_markdown_code_block("```\nsome content\nmore content\n```"), "some content\nmore content");
+        assert_eq!(
+            strip_markdown_code_block("```\nsome content\nmore content\n```"),
+            "some content\nmore content"
+        );
     }
 
     #[test]
@@ -649,20 +752,43 @@ mod tests {
     fn test_action_display() {
         assert_eq!(format!("{}", Action::Idle { timeout_secs: None }), "idle");
         assert_eq!(
-            format!("{}", Action::SendMsg { recipient: "24007".to_string(), content: "hi".to_string() }),
+            format!(
+                "{}",
+                Action::SendMsg {
+                    recipient: "24007".to_string(),
+                    content: "hi".to_string()
+                }
+            ),
             "send_msg → 24007"
         );
         assert_eq!(
-            format!("{}", Action::ReplaceInFile {
-                path: "f.rs".to_string(),
-                blocks: vec![
-                    ReplaceBlock { search: "a".to_string(), replace: "b".to_string() },
-                    ReplaceBlock { search: "c".to_string(), replace: "d".to_string() },
-                ],
-            }),
+            format!(
+                "{}",
+                Action::ReplaceInFile {
+                    path: "f.rs".to_string(),
+                    blocks: vec![
+                        ReplaceBlock {
+                            search: "a".to_string(),
+                            replace: "b".to_string()
+                        },
+                        ReplaceBlock {
+                            search: "c".to_string(),
+                            replace: "d".to_string()
+                        },
+                    ],
+                }
+            ),
             "replace_in_file → f.rs (2 blocks)"
         );
-        assert_eq!(format!("{}", Action::Summary { content: "test".to_string(), knowledge: None }), "summary");
+        assert_eq!(
+            format!(
+                "{}",
+                Action::Summary {
+                    content: "test".to_string(),
+                }
+            ),
+            "summary"
+        );
     }
 
     #[test]
@@ -687,7 +813,12 @@ mod tests {
         let rust_code_replace = "    connections: RwLock<HashMap<String, Arc<Mutex<Chat>>>>,\n    extra_field: bool,\n}";
         let raw = format!(
             "{}###-replace_in_file\nmod.rs\n{}\n{}\n{}\n{}\n{}",
-            SEP, sm!(), rust_code_search, rm!(), rust_code_replace, em!()
+            SEP,
+            sm!(),
+            rust_code_search,
+            rm!(),
+            rust_code_replace,
+            em!()
         );
         let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
@@ -718,10 +849,7 @@ mod tests {
         assert_eq!(blocks2.len(), 1);
         assert_eq!(blocks2[0].replace, "new");
 
-        let text3 = format!(
-            "{}\nold\n{}\nline with {}suffix\n{}\n",
-            sm, rm, em, em
-        );
+        let text3 = format!("{}\nold\n{}\nline with {}suffix\n{}\n", sm, rm, em, em);
         let blocks3 = parse_replace_blocks(&text3, TEST_TOKEN).unwrap();
         assert_eq!(blocks3.len(), 1);
         assert_eq!(blocks3[0].replace, format!("line with {}suffix", em));
@@ -758,6 +886,4 @@ mod tests {
             _ => panic!("Expected SendMsg"),
         }
     }
-
-
 }

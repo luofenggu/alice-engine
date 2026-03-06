@@ -23,6 +23,8 @@ struct ScriptEntry {
     response: String,
     expected_user_contains: Option<String>,
     status_code: Option<u16>,
+    #[serde(default)]
+    match_non_action: bool,
 }
 
 #[tokio::main]
@@ -34,30 +36,30 @@ async fn main() {
     }
 
     let script_path = &args[1];
-    let port: u16 = args.get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let port: u16 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
 
-    let content = std::fs::read_to_string(script_path)
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to read script file '{}': {}", script_path, e);
-            std::process::exit(1);
-        });
+    let content = std::fs::read_to_string(script_path).unwrap_or_else(|e| {
+        eprintln!("Failed to read script file '{}': {}", script_path, e);
+        std::process::exit(1);
+    });
 
-    let entries: Vec<ScriptEntry> = serde_json::from_str(&content)
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to parse script JSON: {}", e);
-            std::process::exit(1);
-        });
+    let entries: Vec<ScriptEntry> = serde_json::from_str(&content).unwrap_or_else(|e| {
+        eprintln!("Failed to parse script JSON: {}", e);
+        std::process::exit(1);
+    });
 
-    let scripts: Vec<MockScript> = entries.into_iter().map(|e| {
-        let mut script = match e.expected_user_contains {
-            Some(expected) => MockScript::with_user_assert(e.response, expected),
-            None => MockScript::new(e.response),
-        };
-        script.status_code = e.status_code;
-        script
-    }).collect();
+    let scripts: Vec<MockScript> = entries
+        .into_iter()
+        .map(|e| {
+            let mut script = match e.expected_user_contains {
+                Some(expected) => MockScript::with_user_assert(e.response, expected),
+                None => MockScript::new(e.response),
+            };
+            script.status_code = e.status_code;
+            script.match_non_action = e.match_non_action;
+            script
+        })
+        .collect();
 
     let count = scripts.len();
     let mock = if port > 0 {
@@ -68,7 +70,10 @@ async fn main() {
 
     // Print port to stdout for the orchestration script to capture
     println!("{}", mock.port);
-    eprintln!("[MOCK-LLM] Started with {} scripts on port {}", count, mock.port);
+    eprintln!(
+        "[MOCK-LLM] Started with {} scripts on port {}",
+        count, mock.port
+    );
 
     // Keep running until killed
     tokio::signal::ctrl_c().await.ok();

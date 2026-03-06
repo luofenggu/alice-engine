@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::inference::Action;
 use super::UsageInfo;
+use crate::inference::Action;
 
 // ---------------------------------------------------------------------------
 // Stream Items
@@ -141,7 +141,9 @@ mod tests {
     fn test_mock_stream() {
         let stream = InferenceStream::mock(vec![
             StreamItem::Action(Action::Idle { timeout_secs: None }),
-            StreamItem::Action(Action::Thinking { content: "hmm".to_string() }),
+            StreamItem::Action(Action::Thinking {
+                content: "hmm".to_string(),
+            }),
             StreamItem::Done(vec![Action::Idle { timeout_secs: None }], None),
         ]);
 

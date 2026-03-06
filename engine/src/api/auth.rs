@@ -2,14 +2,14 @@
 //!
 //! Uses EngineState for auth configuration (session_token, auth_secret, skip_auth).
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use axum::extract::{Request, State};
 use axum::extract::connect_info::ConnectInfo;
+use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use route_macro::*;
+use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use crate::api::http_protocol;
 use crate::api::state::EngineState;
@@ -57,7 +57,9 @@ pub async fn check_auth(
         || path == ROUTE_HANDLE_FRONTEND_ERROR
         || path == ROUTE_HANDLE_SETUP
         || http_protocol::AUTH_WHITELIST_STATIC.contains(&path.as_str())
-        || http_protocol::AUTH_WHITELIST_PREFIXES.iter().any(|p| path.starts_with(p))
+        || http_protocol::AUTH_WHITELIST_PREFIXES
+            .iter()
+            .any(|p| path.starts_with(p))
     {
         return next.run(req).await;
     }
@@ -82,7 +84,9 @@ pub async fn check_auth(
     // Check cookie
     if let Some(cookie_header) = req.headers().get(axum::http::header::COOKIE) {
         if let Ok(cookies) = cookie_header.to_str() {
-            if let Some(token) = http_protocol::extract_session_token(cookies, &state.session_cookie_name) {
+            if let Some(token) =
+                http_protocol::extract_session_token(cookies, &state.session_cookie_name)
+            {
                 if token == state.session_token {
                     return next.run(req).await;
                 }
@@ -111,7 +115,8 @@ pub async fn handle_login_post(
 
     let auth_secret = &state.env_config.auth_secret;
     if form.password.trim() == auth_secret {
-        let cookie = http_protocol::build_session_cookie(&state.session_cookie_name, &state.session_token);
+        let cookie =
+            http_protocol::build_session_cookie(&state.session_cookie_name, &state.session_token);
         let mut headers = HeaderMap::new();
         headers.insert(header::SET_COOKIE, cookie.parse().unwrap());
         (headers, Redirect::to(http_protocol::ROOT_PATH)).into_response()
@@ -122,9 +127,7 @@ pub async fn handle_login_post(
 
 /// Logout — clears session cookie.
 #[get("/api/logout")]
-pub async fn handle_logout(
-    State(state): State<Arc<EngineState>>,
-) -> Response {
+pub async fn handle_logout(State(state): State<Arc<EngineState>>) -> Response {
     use axum::http::{header, HeaderMap};
     use axum::response::Redirect;
 
@@ -143,7 +146,12 @@ pub async fn handle_frontend_error(
     let message = payload.message.as_deref().unwrap_or_default();
     let source = payload.source.as_deref().unwrap_or_default();
 
-    tracing::warn!("[FRONTEND-ERROR] [{}] {} | source: {}", error_type, message, source);
+    tracing::warn!(
+        "[FRONTEND-ERROR] [{}] {} | source: {}",
+        error_type,
+        message,
+        source
+    );
     axum::http::StatusCode::OK
 }
 
@@ -163,5 +171,3 @@ pub async fn handle_setup(
     tracing::info!("[SETUP] Initial configuration saved");
     axum::Json(serde_json::json!({"status": "ok"})).into_response() // log: setup response
 }
-
-

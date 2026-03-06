@@ -41,8 +41,7 @@ impl SkeletonConfig {
 
     fn load() -> Self {
         let toml_str = include_str!("skeleton.toml");
-        let root: TomlRoot = toml::from_str(toml_str)
-            .expect("Failed to parse skeleton.toml");
+        let root: TomlRoot = toml::from_str(toml_str).expect("Failed to parse skeleton.toml");
 
         let mut markers = HashMap::new();
         for lang in root.languages.values() {
@@ -109,7 +108,12 @@ mod tests {
     #[test]
     fn test_extract_rust() {
         let config = SkeletonConfig::load();
-        let result = config.extract("rs", "use std::io;\n\npub fn hello() {\n    println!(\"hi\");\n}\n\nstruct Foo;").unwrap();
+        let result = config
+            .extract(
+                "rs",
+                "use std::io;\n\npub fn hello() {\n    println!(\"hi\");\n}\n\nstruct Foo;",
+            )
+            .unwrap();
         assert!(result.contains("pub fn hello"));
         assert!(result.contains("struct Foo"));
     }
@@ -123,7 +127,10 @@ mod tests {
     #[test]
     fn test_extract_from_path_md() {
         let config = SkeletonConfig::load();
-        assert!(matches!(config.extract_from_path("readme.md", "# Hello"), ExtractionResult::Full));
+        assert!(matches!(
+            config.extract_from_path("readme.md", "# Hello"),
+            ExtractionResult::Full
+        ));
     }
 
     #[test]
@@ -140,6 +147,9 @@ mod tests {
     #[test]
     fn test_extract_from_path_unknown() {
         let config = SkeletonConfig::load();
-        assert!(matches!(config.extract_from_path("data.xyz", "anything"), ExtractionResult::NoRule));
+        assert!(matches!(
+            config.extract_from_path("data.xyz", "anything"),
+            ExtractionResult::NoRule
+        ));
     }
 }
