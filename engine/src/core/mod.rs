@@ -708,6 +708,15 @@ impl Alice {
             let doing_text = action_output::build_doing_text(&Action::ReadMsg);
             let action_id = tx.record_doing(Action::ReadMsg, doing_text);
 
+            // Phase 1 (Write-Ahead): write doing block before execution
+            if let Some(record) = tx.action_records.last() {
+                let doing_block = action_output::action_block_doing(
+                    &record.action_id,
+                    &record.doing_text,
+                );
+                self.instance.memory.append_current(&doing_block).ok();
+            }
+
             let result = execute_action(&Action::ReadMsg, self, &mut tx);
             let done_text = match result {
                 Ok(ref output) if output.is_empty() => String::new(),
@@ -716,13 +725,13 @@ impl Alice {
             };
             tx.record_done(&action_id, done_text);
 
+            // Phase 2: append done block after execution
             if let Some(record) = tx.action_records.last() {
-                let action_text = action_output::action_block_full(
+                let done_block = action_output::action_block_done(
                     &record.action_id,
-                    &record.doing_text,
                     record.done_text.as_deref(),
                 );
-                self.instance.memory.append_current(&action_text).ok();
+                self.instance.memory.append_current(&done_block).ok();
             }
 
             self.last_was_idle = false;
@@ -831,6 +840,15 @@ impl Alice {
 
                         let action_id = tx.record_doing(action.clone(), doing_text);
 
+                        // Phase 1 (Write-Ahead): write doing block before execution
+                        if let Some(record) = tx.action_records.last() {
+                            let doing_block = action_output::action_block_doing(
+                                &record.action_id,
+                                &record.doing_text,
+                            );
+                            self.instance.memory.append_current(&doing_block).ok();
+                        }
+
                         // Execute action
                         let result = execute_action(&action, self, &mut tx);
 
@@ -858,14 +876,16 @@ impl Alice {
                         };
                         tx.record_done(&action_id, done_text);
 
-                        // Append this action's record to current session immediately
-                        if let Some(record) = tx.action_records.last() {
-                            let action_text = action_output::action_block_full(
-                                &record.action_id,
-                                &record.doing_text,
-                                record.done_text.as_deref(),
-                            );
-                            self.instance.memory.append_current(&action_text).ok();
+                        // Phase 2: append done block after execution
+                        // Summary clears current during execution, so skip done block
+                        if !matches!(action, Action::Summary { .. }) {
+                            if let Some(record) = tx.action_records.last() {
+                                let done_block = action_output::action_block_done(
+                                    &record.action_id,
+                                    record.done_text.as_deref(),
+                                );
+                                self.instance.memory.append_current(&done_block).ok();
+                            }
                         }
 
                         // Blocking action: end inference after execution
