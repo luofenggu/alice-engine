@@ -6,7 +6,7 @@ use axum::{
     extract::{Multipart, Path as AxumPath, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, delete, get, post},
     Json, Router,
 };
 use route_macro::*;
@@ -206,6 +206,16 @@ async fn handle_file_read(
     json_ok(state.read_file(id, path).await)
 }
 
+
+#[delete("/api/instances/{id}/files/delete")]
+async fn handle_file_delete(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<FilePathQuery>,
+) -> Response {
+    let path = query.path.unwrap_or_default();
+    json_ok(state.delete_file(id, path).await)
+}
 #[get("/api/instances/{id}/knowledge")]
 async fn handle_get_knowledge(
     State(state): State<Arc<EngineState>>,
@@ -273,7 +283,7 @@ async fn serve_workspace_file(workspace: &std::path::Path, rel_path: &str) -> Re
         Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Cannot resolve workspace"),
     };
 
-    // Path traversal protection
+    // Path traversal protection: must be within workspace
     if !target.starts_with(&workspace_canonical) || !target.is_file() {
         return json_error(StatusCode::NOT_FOUND, "File not found");
     }
@@ -366,14 +376,16 @@ async fn handle_vision(
 
 // ── File Upload ──
 
-/// Upload files to the shared uploads directory.
-#[post("/api/upload")]
+/// Upload files to an instance's workspace uploads directory.
+#[post("/api/instances/{id}/upload")]
 async fn handle_upload(
     State(state): State<Arc<EngineState>>,
+    AxumPath(instance_id): AxumPath<String>,
     mut multipart: Multipart,
 ) -> Response {
+    let workspace = state.instance_store.workspace_dir(&instance_id);
     let today = chrono::Local::now().format("%Y%m%d").to_string();
-    let day_dir = state.uploads_dir.join(&today);
+    let day_dir = workspace.join("uploads").join(&today);
     if let Err(e) = std::fs::create_dir_all(&day_dir) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create upload directory: {}", e)).into_response();
     }
@@ -441,6 +453,7 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_GET_SETTINGS, get(handle_get_settings).post(handle_update_settings))
         .route(ROUTE_HANDLE_FILE_LIST, get(handle_file_list))
         .route(ROUTE_HANDLE_FILE_READ, get(handle_file_read))
+        .route(ROUTE_HANDLE_FILE_DELETE, delete(handle_file_delete))
         .route(ROUTE_HANDLE_GET_KNOWLEDGE, get(handle_get_knowledge))
         .route(ROUTE_HANDLE_GET_SKILL, get(handle_get_skill).put(handle_update_skill))
         .route(ROUTE_HANDLE_SERVE_STATIC, get(handle_serve_static))

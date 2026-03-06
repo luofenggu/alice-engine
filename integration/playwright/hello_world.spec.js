@@ -24,7 +24,7 @@ test('Hello World — full end-to-end with browser', async ({ page }) => {
 
   // === Step 3: Send message ===
   await page.fill('#msgInput', 'Hello, bot!');
-  await page.click('.send-btn');
+  await page.keyboard.press('Enter');
   console.log('✅ Message sent');
 
   // === Step 4: Wait for agent reply ===

@@ -349,6 +349,9 @@ body {
     gap: 10px;
     align-items: flex-end;
 }
+.chat-input .plus-btn {
+    margin-bottom: 2px;
+}
 .chat-input textarea {
     flex: 1;
     padding: 12px 16px;
@@ -368,24 +371,26 @@ body {
 }
 .chat-input textarea:focus { border-color: var(--accent); }
 .chat-input textarea::placeholder { color: var(--text-muted); }
-.send-btn {
-    width: 46px;
-    height: 46px;
-    background: var(--accent);
-    color: #fff;
-    border: none;
+.plus-btn {
+    width: 42px;
+    height: 42px;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
     border-radius: 50%;
     cursor: pointer;
-    font-size: 18px;
+    font-size: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
     transition: all 0.2s;
     flex-shrink: 0;
+    font-weight: 300;
+    line-height: 1;
 }
-.send-btn:hover { background: var(--accent-light); transform: scale(1.05); }
-.send-btn:active { transform: scale(0.95); }
-.send-btn svg { width: 20px; height: 20px; fill: currentColor; }
+.plus-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); transform: scale(1.05); }
+.plus-btn:active { transform: scale(0.95); }
+.plus-btn.uploading { pointer-events: none; opacity: 0.7; animation: spin 1s linear infinite; }
 
 /* @SEC: css-born — born loading animation */
 .born-loading { display:flex; flex-direction:column; align-items:center; justify-content:center; flex:1; padding:40px; text-align:center; }
@@ -415,7 +420,7 @@ body {
     .menu-btn { display: flex !important; }
     .msg { max-width: 85%; }
     .chat-input textarea { height: 46px; }
-    .send-btn { width: 42px; height: 42px; }
+    .plus-btn { width: 40px; height: 40px; font-size: 22px; margin-bottom: 4px; }
     .instance-delete { opacity: 0.6; }
 }
 
@@ -587,6 +592,19 @@ body {
     background: var(--accent);
     color: #fff;
 }
+.files-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+}
+.files-btn:hover { color: var(--accent); background: var(--surface2); }
+
 .view-toggle button:hover:not(.active) {
     color: var(--text-primary);
     background: var(--bg-hover);
@@ -840,8 +858,7 @@ body {
 .msg.user .msg-copy-btn { color: rgba(255,255,255,0.5); }
 .msg.user .msg-copy-btn:hover { color: rgba(255,255,255,0.9); }
 @media (max-width: 768px) { .msg-copy-btn { opacity: 0.7; } }
-.send-btn.sending { pointer-events: none; opacity: 0.7; }
-.send-btn.sending svg { animation: spin 0.8s linear infinite; }
+
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .msg.agent blockquote { border-left: 3px solid var(--accent-light); padding-left: 12px; margin: 8px 0; color: var(--text-secondary); }
 .msg.agent table { border-collapse: collapse; margin: 8px 0; width: 100%; font-size: 14px; }
@@ -881,10 +898,7 @@ body {
             <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
         </button>
         <h3 id="chatTitle">Select an instance</h3>
-        <div class="view-toggle" id="viewToggle" style="display:none;">
-            <button class="active" id="chatViewBtn" onclick="switchView('chat')">💬 Chat</button>
-            <button id="filesViewBtn" onclick="switchView('files')">📁 Files</button>
-        </div>
+        <button class="files-btn" id="filesBtn" style="display:none;" onclick="window.location.href='files.html?instance=' + encodeURIComponent(currentInstance)" title="Files">📁</button>
         <div class="ops-dropdown" id="opsDropdown" style="display:none;">
             <button class="ops-toggle" onclick="toggleOpsMenu(event)">⚙️</button>
             <div class="ops-menu" id="opsMenu">
@@ -902,6 +916,13 @@ body {
             <div class="no-instance-icon">💬</div>
             <div class="no-instance-text">Create or select an instance to start</div>
         </div>
+    </div>
+    <div id="knowledgePanel" style="display:none; flex:1; overflow-y:auto; padding:16px; background:var(--bg-primary);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 style="color:var(--text-secondary); font-size:14px;">🧬 Knowledge</h3>
+            <button onclick="closeKnowledge()" style="background:none; border:1px solid var(--border); color:var(--text-secondary); padding:4px 12px; border-radius:6px; cursor:pointer; font-size:13px;">💬 聊天</button>
+        </div>
+        <div id="knowledgeContent" style="font-family:monospace; font-size:13px; line-height:1.6; white-space:pre-wrap; color:var(--text-primary);"></div>
     </div>
 <!-- @SEC: html-files -->
     <div class="file-browser" id="fileBrowser">
@@ -936,10 +957,9 @@ body {
     </div>
 <!-- @SEC: html-input -->
     <div class="chat-input" id="chatInput" style="display:none;">
-        <textarea id="msgInput" placeholder="Message... (Ctrl+Enter to send)" onkeydown="handleKeydown(event)" oninput="autoResize(this)"></textarea>
-        <button class="send-btn" onclick="sendMessage()">
-            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-        </button>
+        <textarea id="msgInput" placeholder="Enter发送 / Shift+Enter换行" enterkeyhint="send" onkeydown="handleKeydown(event)" oninput="autoResize(this)"></textarea>
+        <button class="plus-btn" id="plusBtn" onclick="document.getElementById('chatFileInput').click()" title="Upload file">+</button>
+        <input type="file" id="chatFileInput" multiple style="display:none" onchange="uploadFromChat(this.files)">
     </div>
 </div>
 
@@ -1135,7 +1155,7 @@ async function switchInstance(name) {
     document.getElementById('chatInput').style.display = 'flex';
     document.getElementById('inferenceBar').style.display = 'block';
     document.getElementById('opsDropdown').style.display = 'inline-block';
-    document.getElementById('viewToggle').style.display = 'flex';
+    document.getElementById('filesBtn').style.display = 'flex';
     currentView = 'chat';
     switchView('chat');
     updateUptimeLabel();
@@ -1276,7 +1296,7 @@ async function sendWelcomeMessage() {
             messages[instanceId].msgs.push({ role: 'user', content: text, timestamp: nowTimestamp() });
             renderMessages();
             const sendRes = await api('POST', 'api/instances/' + encodeURIComponent(instanceId) + '/messages', {content: text});
-            if (sendRes && sendRes.data) { const sid = parseInt(sendRes.data); if (sid > 0 && messages[instanceId]) { messages[instanceId].lastMsgId = sid; } }
+            if (sendRes && sendRes.message) { const sid = parseInt(sendRes.message); if (sid > 0 && messages[instanceId]) { messages[instanceId].lastMsgId = sid; } }
             refreshInstances();
         }
     }
@@ -1336,12 +1356,11 @@ function waitForBorn(name) {
     });
 }
 
-/* @SEC: js-send — sendMessage + handleKeydown + autoResize */
+/* @SEC: js-send — sendMessage + handleKeydown + autoResize + uploadFromChat */
 let isSending = false;
 async function sendMessage() {
     if (!currentInstance || isSending) return;
     const input = document.getElementById('msgInput');
-    const btn = document.querySelector('.send-btn');
     const text = input.value.trim();
     if (!text) return;
     frontendLog('INFO', 'send_message', 'to=' + currentInstance + ' len=' + text.length);
@@ -1349,29 +1368,98 @@ async function sendMessage() {
     input.style.height = '46px';
     isSending = true;
     input.disabled = true;
-    btn.classList.add('sending');
-    btn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>';
     try {
-        await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
+        const sendRes = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages', {content: text});
+        // Insert with real id from server - poll dedup will skip this message
+        const msgId = sendRes && sendRes.message ? parseInt(sendRes.message) : null;
+        const mdata = messages[currentInstance] || (messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 });
+        const userMsg = { id: msgId, role: 'user', content: text, timestamp: nowTimestamp() };
+        mdata.msgs.push(userMsg);
+        if (msgId && msgId > mdata.lastMsgId) mdata.lastMsgId = msgId;
+        const chatEl = document.getElementById('chatMessages');
+        chatEl.appendChild(createMessageElement(userMsg));
+        chatEl.style.scrollBehavior = 'auto';
+        requestAnimationFrame(() => { chatEl.scrollTop = chatEl.scrollHeight; requestAnimationFrame(() => { chatEl.style.scrollBehavior = ''; }); });
         isSending = false;
-        await pollReplies();
         refreshInstances();
     } catch(e) {
         frontendLog('ERROR', 'send_message', 'error=' + (e.message || e));
     } finally {
         isSending = false;
         input.disabled = false;
-        btn.classList.remove('sending');
-        btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
         input.focus();
     }
 }
 
 function handleKeydown(event) {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         sendMessage();
     }
+}
+
+async function uploadFromChat(files) {
+    if (!files || files.length === 0) return;
+    const btn = document.getElementById('plusBtn');
+    const input = document.getElementById('msgInput');
+    btn.classList.add('uploading');
+    btn.textContent = '⏳';
+
+    var formData = new FormData();
+    for (var i = 0; i < files.length; i++) {
+        var file = files[i];
+        if (file.type && file.type.startsWith('image/')) {
+            try {
+                var compressed = await compressImage(file, 960, 0.8);
+                formData.append('files', compressed, file.name.replace(/\.[^.]+$/, '.jpg'));
+            } catch(e) {
+                formData.append('files', file);
+            }
+        } else {
+            formData.append('files', file);
+        }
+    }
+
+    try {
+        var res = await fetch('api/instances/' + encodeURIComponent(currentInstance) + '/upload', { method: 'POST', body: formData });
+        if (res.ok) {
+            var data = await res.json();
+            var paths = (data.files || []).map(function(f) { return f.path || f; });
+            if (paths.length > 0) {
+                var current = input.value;
+                var prefix = current ? current + '\n' : '';
+                input.value = prefix + paths.join('\n') + '\n';
+                autoResize(input);
+                input.focus();
+            }
+        } else {
+            frontendLog('ERROR', 'upload_from_chat', 'status=' + res.status);
+        }
+    } catch(e) {
+        frontendLog('ERROR', 'upload_from_chat', 'error=' + (e.message || e));
+    }
+    btn.classList.remove('uploading');
+    btn.textContent = '+';
+    document.getElementById('chatFileInput').value = '';
+}
+
+function compressImage(file, maxEdge, quality) {
+    return new Promise(function(resolve, reject) {
+        var img = new Image();
+        img.onload = function() {
+            var w = img.width, h = img.height;
+            if (w > maxEdge || h > maxEdge) {
+                if (w > h) { h = Math.round(h * maxEdge / w); w = maxEdge; }
+                else { w = Math.round(w * maxEdge / h); h = maxEdge; }
+            }
+            var canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+            canvas.toBlob(function(blob) { blob ? resolve(blob) : reject('compress failed'); }, 'image/jpeg', quality);
+        };
+        img.onerror = reject;
+        img.src = URL.createObjectURL(file);
+    });
 }
 
 function autoResize(el) {
@@ -1410,8 +1498,10 @@ function schedulePollReplies(gen) {
     }, interval);
 }
 
+let isPolling = false;
 async function pollReplies() {
-    if (!currentInstance || isSending) return;
+    if (!currentInstance || isSending || isPolling) return;
+    isPolling = true;
     if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
     const data = messages[currentInstance];
     const afterId = data.lastMsgId || 0;
@@ -1420,6 +1510,7 @@ async function pollReplies() {
         replies = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/replies?after_id=' + afterId);
     } catch(e) {
         frontendLog('ERROR', 'poll_replies', 'instance=' + currentInstance + ' error=' + e.message);
+        isPolling = false;
         return;
     }
     if (Array.isArray(replies) && replies.length > 0) {
@@ -1428,6 +1519,9 @@ async function pollReplies() {
             const id = r.id || null;
             const content = r.content || r;
             const timestamp = r.timestamp || nowTimestamp();
+            // Deduplicate: skip if message with same id already exists in data or DOM
+            if (id && data.msgs.some(m => m.id === id)) return;
+            if (id && document.querySelector('[data-msg-id="' + id + '"]')) return;
             data.msgs.push({ id: id, role: r.role || 'agent', content: content, timestamp: timestamp });
             if (id && id > data.lastMsgId) data.lastMsgId = id;
             added++;
@@ -1437,6 +1531,8 @@ async function pollReplies() {
                 const el = document.getElementById('chatMessages');
                 const newMsgs = data.msgs.slice(-added);
                 newMsgs.forEach(m => {
+                    // Final DOM-level dedup check
+                    if (m.id && document.querySelector('[data-msg-id="' + m.id + '"]')) return;
                     el.appendChild(createMessageElement(m));
                 });
                 el.style.scrollBehavior = 'auto';
@@ -1449,6 +1545,7 @@ async function pollReplies() {
             }
         }
     }
+    isPolling = false;
 }
 
 function updateUptimeLabel() {
@@ -1580,6 +1677,7 @@ function addCopyButtons(container) {
 function createMessageElement(m) {
     const div = document.createElement('div');
     div.className = 'msg ' + m.role;
+    if (m.id) div.setAttribute('data-msg-id', m.id);
     if (m.role === 'agent') {
         div.innerHTML = renderMarkdown(m.content);
         addCopyButtons(div);
@@ -1619,36 +1717,16 @@ let currentView = 'chat';
 let currentFilePath = '';
 
 function switchView(view) {
-    currentView = view;
-    const chatEl = document.getElementById('chatMessages');
-    const fileEl = document.getElementById('fileBrowser');
-    const chatBtn = document.getElementById('chatViewBtn');
-    const filesBtn = document.getElementById('filesViewBtn');
-    const inputEl = document.getElementById('chatInput');
-    const inferEl = document.getElementById('inferenceBar');
-
-    if (view === 'chat') {
-        chatEl.classList.remove('hidden');
-        fileEl.classList.remove('active');
-        chatBtn.classList.add('active');
-        filesBtn.classList.remove('active');
-        inputEl.style.display = 'flex';
-        inferEl.style.display = 'block';
-    } else {
-        chatEl.classList.add('hidden');
-        fileEl.classList.add('active');
-        chatBtn.classList.remove('active');
-        filesBtn.classList.add('active');
-        inputEl.style.display = 'none';
-        inferEl.style.display = 'none';
-        loadFileTree('');
-    }
+    // Files view is now a separate page (files.html)
+    // This function only handles chat view restoration
+    currentView = 'chat';
 }
 
 /* @SEC: js-files — loadFileTree + renderBreadcrumb + renderFileTree + loadFileContent + helpers */
 async function loadFileTree(path) {
     if (!currentInstance) return;
     const data = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/files/list?path=' + encodeURIComponent(path));
+    frontendLog("INFO", "loadFileTree", "path=" + path + " dataType=" + (Array.isArray(data) ? "array" : typeof data) + " len=" + (Array.isArray(data) ? data.length : (data && data.items ? data.items.length : "N/A")));
     if (!data || data.error) {
         document.getElementById('fileTreeItems').innerHTML = '<div style="padding:12px;color:var(--text-muted);">' + (data ? escHtml(data.error) : 'Failed to load') + '</div>';
         return;
@@ -1683,12 +1761,27 @@ function renderFileTree(items, basePath) {
         el.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:13px;">Empty directory</div>';
         return;
     }
-    items.forEach(item => {
+    // Add ".." back navigation for non-root directories
+    if (basePath) {
+        const upDiv = document.createElement('div');
+        upDiv.className = 'file-item';
+        upDiv.innerHTML = '<span class="file-item-icon">📁</span><span class="file-item-name" style="color:var(--text-muted)">..</span>';
+        const parentPath = basePath.includes('/') ? basePath.substring(0, basePath.lastIndexOf('/')) : '';
+        upDiv.onclick = function() { loadFileTree(parentPath); };
+        el.appendChild(upDiv);
+    }
+    // Sort: directories first, then files, alphabetical within each group
+    const sorted = items.slice().sort(function(a, b) {
+        if (a.is_dir && !b.is_dir) return -1;
+        if (!a.is_dir && b.is_dir) return 1;
+        return a.name.localeCompare(b.name);
+    });
+    sorted.forEach(item => {
         const div = document.createElement('div');
         div.className = 'file-item';
         const fullPath = basePath ? basePath + '/' + item.name : item.name;
         const icon = item.is_dir ? '📁' : getFileIcon(item.name);
-        const sizeStr = item.size !== undefined ? formatSize(item.size) : '';
+        const sizeStr = (item.size != null) ? formatSize(item.size) : '';
 
         div.innerHTML = '<span class="file-item-icon">' + icon + '</span>'
             + '<span class="file-item-name">' + escHtml(item.name) + '</span>'
@@ -1716,9 +1809,19 @@ async function loadFileContent(path) {
     }
 
     if (data.binary) {
-        contentEl.innerHTML = '<div class="file-content-header"><span class="file-content-name">' + escHtml(data.name) + '</span>'
-            + '<button class="file-item-copy" style="opacity:1" onclick="copyPath(\'' + escHtml(data.path) + '\',this)">📋</button></div>'
-            + '<div class="file-content-binary">Binary file (' + formatSize(data.size) + ')</div>';
+        var imgExts = ['png','jpg','jpeg','gif','webp','svg','bmp','ico'];
+        var ext = data.name.split('.').pop().toLowerCase();
+        if (imgExts.indexOf(ext) >= 0) {
+            var imgUrl = 'serve/' + encodeURIComponent(currentInstance) + '/' + data.path;
+            contentEl.innerHTML = '<div class="file-content-header"><span class="file-content-name">' + escHtml(data.name) + '</span>'
+                + '<span class="file-content-path">' + escHtml(data.path) + '</span>'
+                + '<button class="file-item-copy" style="opacity:1" onclick="copyPath(\'' + escHtml(data.path) + '\',this)">📋</button></div>'
+                + '<div style="padding:16px;text-align:center;"><img src="' + imgUrl + '" style="max-width:100%;max-height:70vh;border-radius:8px;" onerror="this.parentElement.innerHTML=\'Failed to load image\'"></div>';
+        } else {
+            contentEl.innerHTML = '<div class="file-content-header"><span class="file-content-name">' + escHtml(data.name) + '</span>'
+                + '<button class="file-item-copy" style="opacity:1" onclick="copyPath(\'' + escHtml(data.path) + '\',this)">📋</button></div>'
+                + '<div class="file-content-binary">Binary file (' + formatSize(data.size) + ')</div>';
+        }
         return;
     }
 
@@ -1732,14 +1835,11 @@ async function loadFileContent(path) {
 }
 
 function openFileFromLink(path) {
-    switchView('files');
-    // Navigate to the directory containing the file, then open the file
-    const parts = path.split('/');
-    const fileName = parts.pop();
-    const dirPath = parts.join('/');
-    loadFileTree(dirPath).then(() => {
-        loadFileContent(path);
-    });
+    // Jump to files.html with the file path
+    var parts = path.split('/');
+    parts.pop();
+    var dirPath = parts.join('/');
+    window.location.href = 'files.html?instance=' + encodeURIComponent(currentInstance) + (dirPath ? '&path=' + encodeURIComponent(dirPath) : '');
 }
 
 function copyPath(path, btn) {
@@ -1764,21 +1864,40 @@ function copyPath(path, btn) {
 
 async function handleUpload(files) {
     if (!files || files.length === 0) return;
+    const btn = document.querySelector('.upload-btn');
+    const origText = btn.textContent;
+    btn.textContent = '⏳';
+    btn.disabled = true;
     const formData = new FormData();
     for (var i = 0; i < files.length; i++) {
         formData.append('files', files[i]);
     }
     try {
-        const res = await fetch('api/upload', { method: 'POST', body: formData });
+        const res = await fetch('api/instances/' + encodeURIComponent(currentInstance) + '/upload', { method: 'POST', body: formData });
         if (res.status === 401) { location.href = 'login'; return; }
         const data = await res.json();
         if (data && data.files && data.files.length > 0) {
+            showToast('✅ ' + data.files.length + ' file(s) uploaded');
             loadFileTree('uploads');
+        } else {
+            showToast('❌ Upload failed');
         }
     } catch (e) {
         console.error('Upload failed:', e);
+        showToast('❌ Upload failed: ' + e.message);
     }
+    btn.textContent = origText;
+    btn.disabled = false;
     document.getElementById('uploadInput').value = '';
+}
+
+function showToast(msg) {
+    var t = document.createElement('div');
+    t.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:10px 20px;border-radius:8px;font-size:14px;z-index:9999;opacity:0;transition:opacity 0.3s;';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    requestAnimationFrame(function() { t.style.opacity = '1'; });
+    setTimeout(function() { t.style.opacity = '0'; setTimeout(function() { t.remove(); }, 300); }, 3000);
 }
 
 function getFileIcon(name) {
@@ -1906,7 +2025,28 @@ function toggleInference() {
 var settingsMode = 'instance'; // 'instance' or 'global'
 
 function openKnowledge() {
-    window.open('knowledge.html', '_blank');
+    if (!currentInstance) return;
+    document.getElementById('opsMenu').classList.remove('open');
+    document.getElementById('chatMessages').style.display = 'none';
+    var chatInput = document.getElementById('chatInput');
+    if (chatInput) chatInput.style.display = 'none';
+    var kPanel = document.getElementById('knowledgePanel');
+    kPanel.style.display = 'flex';
+    kPanel.style.flexDirection = 'column';
+    document.getElementById('knowledgeContent').textContent = '加载中...';
+    api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/knowledge').then(function(data) {
+        var content = typeof data === 'string' ? data : (data && data.content || '');
+        document.getElementById('knowledgeContent').textContent = content || '暂无知识';
+    }).catch(function(e) {
+        document.getElementById('knowledgeContent').textContent = '加载失败: ' + e.message;
+    });
+}
+
+function closeKnowledge() {
+    document.getElementById('knowledgePanel').style.display = 'none';
+    document.getElementById('chatMessages').style.display = '';
+    var chatInput = document.getElementById('chatInput');
+    if (chatInput) chatInput.style.display = '';
 }
 
 async function openSettings() {

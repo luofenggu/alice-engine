@@ -40,7 +40,7 @@ test('Channel rotation — failover from primary to extra channel', async ({ pag
 
   // === Step 4: Send message (triggers inference) ===
   await page.fill('#msgInput', 'Test channel rotation');
-  await page.click('.send-btn');
+  await page.keyboard.press('Enter');
   console.log('✅ Message sent — primary channel should get 402, then rotate to extra');
 
   // === Step 5: Wait for agent reply from channel B ===

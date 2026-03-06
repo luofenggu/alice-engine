@@ -36,8 +36,7 @@ pub struct EngineState {
     pub global_settings_store: GlobalSettingsStore,
     /// HTML directory for frontend files (fallback to embedded if not found).
     pub html_dir: PathBuf,
-    /// Uploads directory for user-uploaded files (machine-level, shared across instances).
-    pub uploads_dir: PathBuf,
+
     pub setup_completed: AtomicBool,
     /// Shared HTTP client for outbound requests (vision API, etc.)
     pub http_client: reqwest::Client,
@@ -66,7 +65,7 @@ impl EngineState {
             .map(|s| s.api_key.as_ref().map_or(false, |k| !k.is_empty()))
             .unwrap_or(false);
         Self {
-            uploads_dir: crate::persist::instance::InstanceStore::resolve_uploads_dir(instances_dir.parent().unwrap_or(&instances_dir)),
+
             instance_store: InstanceStore::new(instances_dir),
             logs_dir,
             html_dir,
@@ -389,23 +388,17 @@ impl EngineState {
     pub async fn list_files(&self, instance_id: String, path: String) -> Vec<FileInfo> {
         let store = self.instance_store.clone();
         let file_browse = self.engine_config.file_browse.clone();
-        let uploads_dir = self.uploads_dir.clone();
-
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
             let workspace = instance.workspace.clone();
             let workspace_canonical = workspace.canonicalize()?;
-            let uploads_canonical = uploads_dir.canonicalize().ok();
             let target = if path.is_empty() {
                 workspace_canonical.clone()
             } else {
                 workspace.join(&path).canonicalize()?
             };
 
-            // Allow access if target is within workspace OR within uploads dir (symlinked)
-            let in_workspace = target.starts_with(&workspace_canonical);
-            let in_uploads = uploads_canonical.as_ref().map_or(false, |u| target.starts_with(u));
-            if (!in_workspace && !in_uploads) || !target.is_dir() {
+            if !target.starts_with(&workspace_canonical) || !target.is_dir() {
                 return Ok::<_, anyhow::Error>(vec![]);
             }
 
@@ -444,6 +437,41 @@ impl EngineState {
         }
     }
 
+
+    /// Delete a file or directory from instance workspace.
+    pub async fn delete_file(&self, instance_id: String, path: String) -> ActionResult {
+        if path.is_empty() {
+            return ActionResult::err("Cannot delete workspace root");
+        }
+        let store = self.instance_store.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&instance_id)?;
+            let workspace = instance.workspace.clone();
+            let workspace_canonical = workspace.canonicalize()?;
+            let target = workspace.join(&path).canonicalize()?;
+
+            if !target.starts_with(&workspace_canonical) {
+                return Err(anyhow::anyhow!("Access denied"));
+            }
+            if target == workspace_canonical {
+                return Err(anyhow::anyhow!("Cannot delete workspace root"));
+            }
+
+            if target.is_dir() {
+                std::fs::remove_dir_all(&target)?;
+            } else {
+                std::fs::remove_file(&target)?;
+            }
+            Ok(path)
+        }).await;
+
+        match result {
+            Ok(Ok(deleted_path)) => ActionResult::ok(format!("Deleted: {}", deleted_path)),
+            Ok(Err(e)) => ActionResult::err(e.to_string()),
+            Err(e) => ActionResult::err(e.to_string()),
+        }
+    }
     /// Read a file from instance workspace.
     pub async fn read_file(&self, instance_id: String, path: String) -> FileReadResult {
         let store = self.instance_store.clone();

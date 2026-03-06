@@ -77,10 +77,8 @@ async fn main() -> anyhow::Result<()> {
     let http_port = env_config.http_port;
 
     // Ensure directories exist
-    let uploads_dir = alice_engine::persist::instance::InstanceStore::resolve_uploads_dir(&base_dir);
     std::fs::create_dir_all(&instances_dir).ok();
     std::fs::create_dir_all(&logs_dir).ok();
-    std::fs::create_dir_all(&uploads_dir).ok();
 
     // Set up crash log hook
     alice_engine::logging::setup_crash_hook(&logs_dir);

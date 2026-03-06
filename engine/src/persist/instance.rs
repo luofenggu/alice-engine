@@ -366,45 +366,9 @@ impl InstanceStore {
         &self.instances_dir
     }
 
-    /// The shared uploads directory (base_dir/uploads/).
-    pub fn uploads_dir(&self) -> PathBuf {
-        Self::resolve_uploads_dir(
-            self.instances_dir.parent().expect("instances_dir must have a parent")
-        )
-    }
-
-    /// Resolve the uploads directory path from a base directory.
-    pub fn resolve_uploads_dir(base_dir: &Path) -> PathBuf {
-        base_dir.join("uploads")
-    }
-
     /// The workspace directory for a given instance.
     pub fn workspace_dir(&self, id: &str) -> PathBuf {
         self.instances_dir.join(id).join("workspace")
-    }
-
-    /// Ensure workspace/uploads symlink points to the shared uploads directory.
-    fn ensure_uploads_symlink(&self, workspace: &Path) {
-        use std::os::unix::fs::symlink;
-
-        let link_path = workspace.join("uploads");
-        let target = self.uploads_dir();
-
-        // Already a correct symlink?
-        if link_path.is_symlink() {
-            if let Ok(existing_target) = std::fs::read_link(&link_path) {
-                if existing_target == target {
-                    return;
-                }
-            }
-            // Wrong target — remove and recreate
-            std::fs::remove_file(&link_path).ok();
-        }
-
-        // Create symlink (ignore errors — non-critical)
-        if let Err(e) = symlink(&target, &link_path) {
-            tracing::warn!("Failed to create uploads symlink in {}: {}", workspace.display(), e);
-        }
     }
 
     /// Get or create a cached SQLite connection for an instance.
@@ -439,7 +403,6 @@ impl InstanceStore {
         initial_settings: Option<&Settings>,
     ) -> Result<Instance> {
         let instance = Instance::create(&self.instances_dir, user_id, display_name, knowledge, initial_settings)?;
-        self.ensure_uploads_symlink(&instance.workspace);
         // Cache the connection from the newly created instance
         let mut cache = self.connections.write().unwrap();
         cache.insert(instance.id.clone(), instance.chat.clone());
@@ -454,7 +417,6 @@ impl InstanceStore {
         }
         let chat = self.get_connection(id)?;
         let instance = Instance::open_with_chat(&instance_dir, chat)?;
-        self.ensure_uploads_symlink(&instance.workspace);
         Ok(instance)
     }
 

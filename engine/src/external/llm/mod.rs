@@ -453,11 +453,11 @@ pub(crate) async fn run_vision_inference(
             .await
             .context("Failed to download image")?;
 
-        let content_type = img_response
+        let header_ct = img_response
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("image/png")
+            .unwrap_or("")
             .to_string();
 
         let img_bytes = img_response
@@ -465,8 +465,11 @@ pub(crate) async fn run_vision_inference(
             .await
             .context("Failed to read image bytes")?;
 
+        // Determine media type: prefer URL extension, fall back to header, default to image/png
+        let media_type = infer_image_media_type(image_url, &header_ct);
+
         let b64 = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
-        format!("data:{};base64,{}", content_type, b64)
+        format!("data:{};base64,{}", media_type, b64)
     };
 
     let body = serde_json::json!({
@@ -517,6 +520,30 @@ pub(crate) async fn run_vision_inference(
 }
 
 /// Run a non-streaming inference call. Returns (text, usage).
+/// Infer image media type from URL extension, falling back to HTTP header, then default.
+fn infer_image_media_type(url: &str, header_content_type: &str) -> &'static str {
+    // Try URL path extension first
+    if let Some(path) = url.split('?').next() {
+        let lower = path.to_lowercase();
+        if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+            return "image/jpeg";
+        } else if lower.ends_with(".png") {
+            return "image/png";
+        } else if lower.ends_with(".gif") {
+            return "image/gif";
+        } else if lower.ends_with(".webp") {
+            return "image/webp";
+        }
+    }
+    // Fall back to HTTP content-type header if it's an image type
+    let ct = header_content_type.split(';').next().unwrap_or("").trim();
+    if ct == "image/jpeg" { "image/jpeg" }
+    else if ct == "image/png" { "image/png" }
+    else if ct == "image/gif" { "image/gif" }
+    else if ct == "image/webp" { "image/webp" }
+    else { "image/png" }
+}
+
 pub(crate) async fn run_sync_inference(
     config: &LlmConfig,
     http_client: &reqwest::Client,
