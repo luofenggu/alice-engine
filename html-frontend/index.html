@@ -1687,7 +1687,7 @@ function renderFileTree(items, basePath) {
         const div = document.createElement('div');
         div.className = 'file-item';
         const fullPath = basePath ? basePath + '/' + item.name : item.name;
-        const icon = item.type === 'dir' ? '📁' : getFileIcon(item.name);
+        const icon = item.is_dir ? '📁' : getFileIcon(item.name);
         const sizeStr = item.size !== undefined ? formatSize(item.size) : '';
 
         div.innerHTML = '<span class="file-item-icon">' + icon + '</span>'
@@ -1695,7 +1695,7 @@ function renderFileTree(items, basePath) {
             + (sizeStr ? '<span class="file-item-size">' + sizeStr + '</span>' : '')
             + '<button class="file-item-copy" onclick="event.stopPropagation();copyPath(\'' + escHtml(fullPath) + '\',this)" title="Copy path">📋</button>';
 
-        if (item.type === 'dir') {
+        if (item.is_dir) {
             div.onclick = function() { loadFileTree(fullPath); };
         } else {
             div.onclick = function() { loadFileContent(fullPath); document.querySelectorAll('.file-item').forEach(d => d.classList.remove('active')); div.classList.add('active'); };
