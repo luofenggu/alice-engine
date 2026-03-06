@@ -659,6 +659,20 @@ body {
     align-items: center;
     gap: 6px;
 }
+.file-tree-header .upload-btn {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 13px;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: 0;
+}
+.file-tree-header .upload-btn:hover { border-color: var(--accent); color: var(--accent); }
 .file-tree-path {
     padding: 4px 12px 8px;
     font-size: 12px;
@@ -892,7 +906,8 @@ body {
 <!-- @SEC: html-files -->
     <div class="file-browser" id="fileBrowser">
         <div class="file-tree" id="fileTree">
-            <div class="file-tree-header">📂 Workspace</div>
+            <div class="file-tree-header">📂 Workspace <button class="upload-btn" onclick="document.getElementById('uploadInput').click()" title="Upload files to shared uploads folder">📤</button></div>
+            <input type="file" id="uploadInput" multiple style="display:none" onchange="handleUpload(this.files)">
             <div class="file-tree-path" id="fileTreePath"></div>
             <div id="fileTreeItems"></div>
         </div>
@@ -1745,6 +1760,25 @@ function copyPath(path, btn) {
         btn.textContent = '✓';
         setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500);
     });
+}
+
+async function handleUpload(files) {
+    if (!files || files.length === 0) return;
+    const formData = new FormData();
+    for (var i = 0; i < files.length; i++) {
+        formData.append('files', files[i]);
+    }
+    try {
+        const res = await fetch('api/upload', { method: 'POST', body: formData });
+        if (res.status === 401) { location.href = 'login'; return; }
+        const data = await res.json();
+        if (data && data.files && data.files.length > 0) {
+            loadFileTree('uploads');
+        }
+    } catch (e) {
+        console.error('Upload failed:', e);
+    }
+    document.getElementById('uploadInput').value = '';
 }
 
 function getFileIcon(name) {
