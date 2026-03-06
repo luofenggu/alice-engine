@@ -1655,7 +1655,7 @@ async function loadFileTree(path) {
     }
     currentFilePath = path;
     renderBreadcrumb(path);
-    renderFileTree(data.items, path);
+    renderFileTree(Array.isArray(data) ? data : (data.items || []), path);
 }
 
 function renderBreadcrumb(path) {
