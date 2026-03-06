@@ -31,7 +31,7 @@ session_blocks_limit = 4
 session_block_kb = 2
 history_kb = 2
 message_truncate_length = 200
-safety_max_consecutive_beats = 10
+safety_max_consecutive_beats = 20
 safety_cooldown_secs = 30
 
 [llm]

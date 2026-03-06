@@ -70,6 +70,28 @@ Settings can be configured at two levels:
 
 Settings follow a three-layer inheritance: **Environment Variables → Global Settings → Instance Settings**. Each layer only overrides what it explicitly sets.
 
+### Settings Keys
+
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `api_key` | string | LLM API key | — |
+| `model` | string | Model in `provider@model` format (e.g. `openrouter@anthropic/claude-sonnet-4`) | `openrouter@anthropic/claude-opus-4.6` |
+| `extra_channels` | array | Backup LLM channels `[{api_key, model}, ...]` for automatic failover | `[]` |
+| `name` | string | Display name | instance ID |
+| `avatar` | string | Avatar emoji | — |
+| `color` | string | Theme color (hex, e.g. `#FF6B6B`) | random |
+| `privileged` | bool | Allow file access outside workspace | `false` |
+| `temperature` | float | LLM temperature | `0.5` |
+| `max_tokens` | int | LLM max output tokens | `16384` |
+| `safety_max_consecutive_beats` | int | Max consecutive inferences before forced cooldown | `20` |
+| `safety_cooldown_secs` | int | Cooldown duration in seconds when safety valve triggers | `30` |
+| `max_beats` | int | Total inference limit (instance stops after reaching this) | unlimited |
+| `session_blocks_limit` | int | Max number of session memory blocks | `4` |
+| `session_block_kb` | int | Max size per session block (KB) | `2` |
+| `history_kb` | int | Max compressed history size (KB) | `2` |
+| `host` | string | Public hostname (for display URLs) | — |
+| `shell_env` | string | Extra environment variables for shell execution | — |
+
 ### Channel Rotation
 
 Configure multiple LLM channels for automatic failover:

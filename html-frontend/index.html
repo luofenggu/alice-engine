@@ -1909,6 +1909,12 @@ function populateChannelFields(res) {
     if (res.extra_channels && res.extra_channels.length) {
         res.extra_channels.forEach(function(ch) { addExtraChannelRow(ch.api_key || '', ch.model || ''); });
     }
+    document.getElementById('setSafetyMaxBeats').value = res.safety_max_consecutive_beats || '';
+    document.getElementById('setSafetyCooldown').value = res.safety_cooldown_secs || '';
+    document.getElementById('setSessionBlocksLimit').value = res.session_blocks_limit || '';
+    document.getElementById('setHistoryKb').value = res.history_kb || '';
+    document.getElementById('setTemperature').value = res.temperature != null ? res.temperature : '';
+    document.getElementById('setMaxTokens').value = res.max_tokens || '';
 }
 
 function addExtraChannelRow(apiKey, model) {
@@ -1949,6 +1955,19 @@ async function saveSettings() {
         if (k || m) extras.push({api_key: k, model: m});
     });
     body.extra_channels = extras;
+
+    var safetyMaxBeats = document.getElementById('setSafetyMaxBeats').value.trim();
+    var safetyCooldown = document.getElementById('setSafetyCooldown').value.trim();
+    var sessionBlocksLimit = document.getElementById('setSessionBlocksLimit').value.trim();
+    var historyKb = document.getElementById('setHistoryKb').value.trim();
+    var temperature = document.getElementById('setTemperature').value.trim();
+    var maxTokens = document.getElementById('setMaxTokens').value.trim();
+    if (safetyMaxBeats) body.safety_max_consecutive_beats = parseInt(safetyMaxBeats);
+    if (safetyCooldown) body.safety_cooldown_secs = parseInt(safetyCooldown);
+    if (sessionBlocksLimit) body.session_blocks_limit = parseInt(sessionBlocksLimit);
+    if (historyKb) body.history_kb = parseInt(historyKb);
+    if (temperature) body.temperature = parseFloat(temperature);
+    if (maxTokens) body.max_tokens = parseInt(maxTokens);
 
     if (settingsMode === 'instance') {
         if (!currentInstance) return;
@@ -2098,6 +2117,19 @@ setTimeout(updateSidebarFooter, 500);
         <label style="margin-top:14px">Extra Channels</label>
         <div id="extraChannelsList"></div>
         <button class="settings-add-btn" onclick="addExtraChannelRow()">+ Add extra channel</button>
+        <label style="margin-top:14px;font-weight:500;font-size:13px">Runtime Parameters</label>
+        <div style="display:flex;gap:8px">
+            <div style="flex:1"><label>Safety Valve (max consecutive beats)</label><input id="setSafetyMaxBeats" type="number" placeholder="20"></div>
+            <div style="flex:1"><label>Cooldown (seconds)</label><input id="setSafetyCooldown" type="number" placeholder="30"></div>
+        </div>
+        <div style="display:flex;gap:8px">
+            <div style="flex:1"><label>Session Blocks Limit</label><input id="setSessionBlocksLimit" type="number" placeholder="4"></div>
+            <div style="flex:1"><label>History KB</label><input id="setHistoryKb" type="number" placeholder="2"></div>
+        </div>
+        <div style="display:flex;gap:8px">
+            <div style="flex:1"><label>Temperature</label><input id="setTemperature" type="number" step="0.1" placeholder="0.5"></div>
+            <div style="flex:1"><label>Max Tokens</label><input id="setMaxTokens" type="number" placeholder="16384"></div>
+        </div>
         <div class="settings-instance-only">
             <label style="margin-top:12px">
                 <input type="checkbox" id="setPrivileged" style="width:auto;margin-right:6px">Privileged

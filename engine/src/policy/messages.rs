@@ -88,7 +88,7 @@ pub fn describe_settings_change(
 
 pub fn safety_valve_triggered(consecutive: u32, cooldown: u64) -> String {
     format!(
-        "安全阀触发：连续{}次推理未进入idle状态，强制冷却{}秒。这可能意味着推理陷入了循环。",
+        "安全阀触发：连续{}次推理未进入idle状态，强制冷却{}秒。这可能意味着推理陷入了循环。可以在Settings中调高safety_max_consecutive_beats上限。",
         consecutive, cooldown
     )
 }
