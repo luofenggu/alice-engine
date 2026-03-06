@@ -389,18 +389,23 @@ impl EngineState {
     pub async fn list_files(&self, instance_id: String, path: String) -> Vec<FileInfo> {
         let store = self.instance_store.clone();
         let file_browse = self.engine_config.file_browse.clone();
+        let uploads_dir = self.uploads_dir.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
             let workspace = instance.workspace.clone();
             let workspace_canonical = workspace.canonicalize()?;
+            let uploads_canonical = uploads_dir.canonicalize().ok();
             let target = if path.is_empty() {
                 workspace_canonical.clone()
             } else {
                 workspace.join(&path).canonicalize()?
             };
 
-            if !target.starts_with(&workspace_canonical) || !target.is_dir() {
+            // Allow access if target is within workspace OR within uploads dir (symlinked)
+            let in_workspace = target.starts_with(&workspace_canonical);
+            let in_uploads = uploads_canonical.as_ref().map_or(false, |u| target.starts_with(u));
+            if (!in_workspace && !in_uploads) || !target.is_dir() {
                 return Ok::<_, anyhow::Error>(vec![]);
             }
 
@@ -411,7 +416,8 @@ impl EngineState {
                 if file_browse.is_hidden_file(&name) || file_browse.is_hidden_dir(&name) {
                     continue;
                 }
-                let metadata = entry.metadata()?;
+                // Use std::fs::metadata to follow symlinks (DirEntry::metadata does not on Unix)
+                let metadata = std::fs::metadata(entry.path()).or_else(|_| entry.metadata())?;
                 items.push(FileInfo {
                     name,
                     is_dir: metadata.is_dir(),
