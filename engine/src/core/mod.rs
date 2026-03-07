@@ -48,6 +48,7 @@ use crate::action::execute::execute_action;
 use crate::external::llm::{InferenceStream, LlmClient, RecvResult, StreamItem};
 use crate::inference::Action;
 use crate::persist::instance;
+use crate::persist::hooks::HooksCaller;
 use crate::persist::settings::GlobalSettingsStore;
 use crate::policy::action_output;
 use crate::prompt::build_beat_request;
@@ -354,6 +355,8 @@ pub struct Alice {
     pub stream_poll_interval_ms: u64,
     /// Global settings store for hot-reloading channels each beat.
     pub global_settings_store: Option<GlobalSettingsStore>,
+    /// Hooks caller for external extension points (contacts, relay, skills).
+    pub hooks_caller: Option<Arc<HooksCaller>>,
 }
 
 impl Alice {
@@ -366,6 +369,7 @@ impl Alice {
         llm_client: Arc<LlmClient>,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: Option<GlobalSettingsStore>,
+        hooks_caller: Option<Arc<HooksCaller>>,
     ) -> Result<Self> {
         let user_id = instance.user_id().to_string();
 
@@ -429,6 +433,7 @@ impl Alice {
                 .poll_interval_ms,
             env_config,
             global_settings_store,
+            hooks_caller,
         })
     }
 
@@ -663,7 +668,7 @@ impl Alice {
             .chat
             .lock()
             .unwrap()
-            .write_agent_reply(&self.instance.id, message, &timestamp)
+            .write_agent_reply(&self.instance.id, message, &timestamp, "")
             .ok();
 
         warn!("[ANOMALY-{}] {}", self.instance.id, message);
@@ -749,7 +754,17 @@ impl Alice {
         let mut tx = Transaction::new(&self.instance.id);
 
         // 3. Build inference request
-        let request = build_beat_request(self, self.host.as_deref());
+        // Fetch contacts and extra skills from hooks (silent degradation on failure)
+        let (contacts_info, extra_skills) = match &self.hooks_caller {
+            Some(caller) => {
+                let contacts = caller.format_contacts_for_prompt(&self.instance.id);
+                let skills = caller.fetch_skills(&self.instance.id);
+                (contacts, skills)
+            }
+            None => (String::new(), String::new()),
+        };
+
+        let request = build_beat_request(self, self.host.as_deref(), contacts_info, extra_skills);
 
         // 5. Set up inference log
         let (log_path, log_timestamp) =
@@ -1079,7 +1094,7 @@ mod tests {
         let log_dir = tmp.path().join("logs");
         let llm_client = Arc::new(LlmClient::new(vec![Default::default()]));
         let env_config = Arc::new(crate::policy::EnvConfig::from_env());
-        let alice = Alice::new(instance, log_dir, llm_client, env_config, None).unwrap();
+        let alice = Alice::new(instance, log_dir, llm_client, env_config, None, None).unwrap();
         (alice, tmp)
     }
 

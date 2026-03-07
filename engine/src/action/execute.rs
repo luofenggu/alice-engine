@@ -101,8 +101,45 @@ fn execute_send_msg(
     info!("[ACTION-{}] send_msg to {}", tx.instance_id, recipient);
 
     if recipient != alice.user_id {
+        // Try relay via hooks if available
+        if let Some(ref hooks_caller) = alice.hooks_caller {
+            match hooks_caller.relay_message(&alice.instance.id, recipient, content) {
+                Ok(response) if response.success => {
+                    info!(
+                        "[ACTION-{}] send_msg relayed to '{}' via hooks",
+                        tx.instance_id, recipient
+                    );
+                    let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
+                    alice
+                        .instance
+                        .chat
+                        .lock()
+                        .unwrap()
+                        .write_agent_reply(&alice.instance.id, content, &timestamp, recipient)
+                        .context("Failed to write relayed agent reply")?;
+                    return Ok(out::send_success(&timestamp));
+                }
+                Ok(response) => {
+                    warn!(
+                        "[ACTION-{}] send_msg relay rejected for '{}': {}",
+                        tx.instance_id,
+                        recipient,
+                        response.message.unwrap_or_default()
+                    );
+                    return Ok(out::send_failed_unknown_recipient(recipient));
+                }
+                Err(e) => {
+                    warn!(
+                        "[ACTION-{}] send_msg relay failed for '{}': {}",
+                        tx.instance_id, recipient, e
+                    );
+                    return Ok(out::send_failed_unknown_recipient(recipient));
+                }
+            }
+        }
+
         warn!(
-            "[ACTION-{}] send_msg rejected: recipient '{}' != user_id '{}'",
+            "[ACTION-{}] send_msg rejected: recipient '{}' != user_id '{}' (no relay configured)",
             tx.instance_id, recipient, alice.user_id
         );
         return Ok(out::send_failed_unknown_recipient(recipient));
@@ -114,7 +151,7 @@ fn execute_send_msg(
         .chat
         .lock()
         .unwrap()
-        .write_agent_reply(&alice.instance.id, content, &timestamp)
+        .write_agent_reply(&alice.instance.id, content, &timestamp, "")
         .context("Failed to write agent reply")?;
 
     Ok(out::send_success(&timestamp))
@@ -453,6 +490,7 @@ mod tests {
             tmp.path().join("logs"),
             llm_client,
             env_config,
+            None,
             None,
         )
         .unwrap();

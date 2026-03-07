@@ -62,6 +62,12 @@ pub struct BeatRequest {
     pub current_content: String,
     pub skill_content: String,
     pub unread_count: usize,
+    /// Contacts info string to inject into environment section (from hooks).
+    pub contacts_info: String,
+    /// Extra skills content from hooks, merged into skill section.
+    pub extra_skills: String,
+    /// HTTP port for local API references (e.g. vision API).
+    pub http_port: u16,
 }
 
 /// Snapshot of memory state at the time of prompt rendering.
@@ -119,10 +125,15 @@ impl BeatRequest {
                 Some(name) if !name.is_empty() => format!("{}（{}）", name, self.instance_id),
                 _ => self.instance_id.clone(),
             };
-            if self.user_id.is_empty() {
+            let base = if self.user_id.is_empty() {
                 format!("你是{}", name_part)
             } else {
                 format!("你是{}，所属用户：{}", name_part, self.user_id)
+            };
+            if self.contacts_info.is_empty() {
+                base
+            } else {
+                format!("{}\n{}", base, self.contacts_info)
             }
         };
 
@@ -180,18 +191,25 @@ impl BeatRequest {
 
     /// Build skill section: default skill (app guide) + instance custom skill.
     fn build_skill_section(&self) -> String {
-        let default_skill = make_reserved_skill(self.host.as_deref(), &self.instance_id);
+        let default_skill = make_reserved_skill(self.host.as_deref(), &self.instance_id, self.http_port);
 
-        let combined = match (
-            default_skill.is_empty(),
-            self.skill_content.trim().is_empty(),
-        ) {
-            (true, true) => return String::new(),
-            (false, true) => default_skill,
-            (true, false) => self.skill_content.clone(),
-            (false, false) => format!("{}\n\n{}", default_skill, self.skill_content),
-        };
+        // Merge: default_skill + instance skill_content + extra_skills (from hooks)
+        let mut parts: Vec<&str> = Vec::new();
+        if !default_skill.is_empty() {
+            parts.push(&default_skill);
+        }
+        if !self.skill_content.trim().is_empty() {
+            parts.push(&self.skill_content);
+        }
+        if !self.extra_skills.trim().is_empty() {
+            parts.push(&self.extra_skills);
+        }
 
+        if parts.is_empty() {
+            return String::new();
+        }
+
+        let combined = parts.join("\n\n");
         format!("### skill ###\n{}\n", combined)
     }
 }
@@ -372,24 +390,20 @@ fn make_memory_status(
 /// Build host info line (just the public address, if available).
 fn make_host_line(host: Option<&str>) -> String {
     match host {
-        Some(h) if !h.is_empty() => {
-            let host_display = h.split(':').next().unwrap_or(h);
-            messages::host_info(host_display)
-        }
+        Some(h) if !h.is_empty() => messages::host_info(h),
         _ => String::new(),
     }
 }
 
 /// Build reserved skill section (app guide + vision API + uploads).
 /// Returns empty string if no host is configured.
-fn make_reserved_skill(host: Option<&str>, instance_id: &str) -> String {
+fn make_reserved_skill(host: Option<&str>, instance_id: &str, port: u16) -> String {
     match host {
         Some(h) if !h.is_empty() => {
-            let host_display = h.split(':').next().unwrap_or(h);
             RESERVED_SKILL_TEMPLATE
-                .replace("{host}", host_display)
-                .replace("{host_port}", h)
+                .replace("{host}", h)
                 .replace("{instance}", instance_id)
+                .replace("{port}", &port.to_string())
         }
         _ => String::new(),
     }
@@ -483,7 +497,7 @@ mod tests {
     fn test_make_host_line() {
         assert_eq!(
             make_host_line(Some("1.2.3.4:8080")),
-            messages::host_info("1.2.3.4")
+            messages::host_info("1.2.3.4:8080")
         );
         assert_eq!(make_host_line(None), "");
         assert_eq!(make_host_line(Some("")), "");
@@ -491,8 +505,8 @@ mod tests {
 
     #[test]
     fn test_make_reserved_skill_no_host() {
-        assert_eq!(make_reserved_skill(None, "test"), "");
-        assert_eq!(make_reserved_skill(Some(""), "test"), "");
+        assert_eq!(make_reserved_skill(None, "test", 8081), "");
+        assert_eq!(make_reserved_skill(Some(""), "test", 8081), "");
     }
 
     #[test]

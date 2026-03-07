@@ -121,7 +121,7 @@ Then visit `http://your-server-ip:8081` and log in with your password.
 | `ALICE_HTTP_PORT` | HTTP port | `8081` |
 | `ALICE_BASE_DIR` | Data directory | `.` (current dir) |
 | `ALICE_USER_ID` | Owner user ID | `default` |
-| `ALICE_HOST` | Public hostname (for display) | — |
+| `ALICE_HOST` | Public endpoint for user-facing URLs (e.g. `example.com`, `1.2.3.4`, `1.2.3.4:8080`) | — |
 
 ## How It Works
 

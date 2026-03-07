@@ -36,6 +36,7 @@ use tracing::{error, info, warn};
 
 use crate::core::signal::SignalHub;
 use crate::core::Alice;
+use crate::persist::hooks::{HooksCaller, HooksStore};
 use crate::persist::instance::InstanceStore;
 use crate::util::Counter;
 
@@ -90,6 +91,8 @@ pub struct AliceEngine {
     global_settings_store: crate::persist::GlobalSettingsStore,
     /// Shared LLM client — all instances share the same channel rotation pool.
     llm_client: Arc<crate::external::llm::LlmClient>,
+    /// Shared hooks caller for all instances.
+    hooks_caller: Arc<HooksCaller>,
     /// Temporary buffer for instances during restore (drained to threads in run()).
     instances: Vec<(String, Alice)>,
 }
@@ -106,6 +109,21 @@ impl AliceEngine {
     ) -> Self {
         let pid_file = env_config.pid_file_path(&instances_base);
         let instance_store = InstanceStore::new(instances_base.clone());
+
+        // Load hooks config from hooks.json (next to instances dir)
+        let hooks_json_path = instances_base
+            .parent()
+            .unwrap_or(&instances_base)
+            .join("hooks.json");
+        let hooks_config = match HooksStore::open(&hooks_json_path) {
+            Ok(store) => store.load().unwrap_or_default(),
+            Err(e) => {
+                warn!("[HOOKS] Failed to open hooks.json: {}, using defaults", e);
+                Default::default()
+            }
+        };
+        let hooks_caller = Arc::new(HooksCaller::new(hooks_config));
+
         Self {
             instances_base,
             logs_dir,
@@ -115,6 +133,7 @@ impl AliceEngine {
             env_config,
             global_settings_store,
             llm_client,
+            hooks_caller,
             instances: Vec::new(),
         }
     }
@@ -163,6 +182,7 @@ impl AliceEngine {
             self.llm_client.clone(),
             self.env_config.clone(),
             Some(self.global_settings_store.clone()),
+            Some(self.hooks_caller.clone()),
         )?;
 
         alice.instance_name = settings.name.clone();

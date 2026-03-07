@@ -11,6 +11,7 @@
 //!
 
 pub mod chat;
+pub mod hooks;
 pub mod instance;
 pub mod memory;
 pub mod settings;
