@@ -48,9 +48,21 @@ pub struct ContactInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContactsResponse {
+    #[serde(default)]
+    pub contacts: Vec<ContactInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillsResponse {
     #[serde(default)]
-    pub skills: String,
+    pub skills: Vec<SkillInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,8 +203,9 @@ impl HooksCaller {
         match self.client.get(&request_url).send() {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    match resp.json::<Vec<ContactInfo>>() {
-                        Ok(contacts) => {
+                    match resp.json::<ContactsResponse>() {
+                        Ok(resp_body) => {
+                            let contacts = resp_body.contacts;
                             let mut cache = self.contacts_cache.lock().unwrap();
                             *cache = Some(CacheEntry {
                                 value: contacts.clone(),
@@ -267,7 +280,11 @@ impl HooksCaller {
                 if resp.status().is_success() {
                     match resp.json::<SkillsResponse>() {
                         Ok(skills_resp) => {
-                            let skills = skills_resp.skills;
+                            let skills = skills_resp.skills
+                                .iter()
+                                .map(|s| format!("### {}\n{}", s.name, s.content))
+                                .collect::<Vec<_>>()
+                                .join("\n\n");
                             let mut cache = self.skills_cache.lock().unwrap();
                             *cache = Some(CacheEntry {
                                 value: skills.clone(),
