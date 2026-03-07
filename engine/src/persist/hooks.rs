@@ -344,9 +344,11 @@ impl HooksCaller {
             .map_err(|e| anyhow::anyhow!("relay request failed: {}", e))?;
 
         if resp.status().is_success() {
-            let relay_resp = resp
-                .json::<RelayResponse>()
-                .map_err(|e| anyhow::anyhow!("relay response parse error: {}", e))?;
+            // HTTP 2xx means relay succeeded — don't depend on response body format
+            let relay_resp = RelayResponse {
+                success: true,
+                message: None,
+            };
             Ok(relay_resp)
         } else {
             let status = resp.status();
