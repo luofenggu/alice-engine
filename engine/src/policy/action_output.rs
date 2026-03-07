@@ -178,8 +178,8 @@ pub fn read_msg_entry(
 ) -> String {
     if role == "system" {
         return format!(
-            "[系统通知 MSG:{}]\n\n{}\n",
-            timestamp, content
+            "[系统通知] [MSG:{}]{}\n\n{}\n",
+            timestamp, MSG_READ_CONTEXT, content
         );
     }
     let warning = match owner_id {
