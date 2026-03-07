@@ -521,6 +521,7 @@ const EMBEDDED_INDEX: &str = include_str!("../../../html-frontend/index.html");
 const EMBEDDED_SETUP: &str = include_str!("../../../html-frontend/setup.html");
 const EMBEDDED_LOGIN: &str = include_str!("../../../html-frontend/login.html");
 const EMBEDDED_KNOWLEDGE: &str = include_str!("../../../html-frontend/knowledge.html");
+const EMBEDDED_FILES: &str = include_str!("../../../html-frontend/files.html");
 
 /// Fallback handler: serve HTML from disk (dev mode) or embedded (release).
 async fn html_fallback(
@@ -569,6 +570,11 @@ async fn html_fallback(
         "knowledge.html" => (
             [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
             EMBEDDED_KNOWLEDGE,
+        )
+            .into_response(),
+        "files.html" => (
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            EMBEDDED_FILES,
         )
             .into_response(),
         _ => StatusCode::NOT_FOUND.into_response(),
