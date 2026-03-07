@@ -1217,7 +1217,7 @@ async function loadHistory(name) {
         const allMsgsWithId = res.messages.filter(m => m.id);
         const lastMsgId = allMsgsWithId.length > 0 ? Math.max(...allMsgsWithId.map(m => m.id)) : 0;
         messages[name] = {
-            msgs: res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp })),
+            msgs: res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp, sender: m.sender, recipient: m.recipient })),
             total: res.messages.length,
             earliestId: res.messages.length > 0 ? res.messages[0].id : 0,
             fullyLoaded: !res.has_more,
@@ -1257,7 +1257,7 @@ async function loadMoreHistory() {
     if (loaderEl) loaderEl.remove();
 
     if (res && Array.isArray(res.messages) && res.messages.length > 0) {
-        const older = res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp }));
+        const older = res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp, sender: m.sender, recipient: m.recipient }));
         data.msgs = older.concat(data.msgs);
         data.earliestId = res.messages.length > 0 ? res.messages[0].id : data.earliestId;
         data.fullyLoaded = !res.has_more;
@@ -1568,7 +1568,7 @@ async function pollReplies() {
             // Deduplicate: skip if message with same id already exists in data or DOM
             if (id && data.msgs.some(m => m.id === id)) return;
             if (id && document.querySelector('[data-msg-id="' + id + '"]')) return;
-            data.msgs.push({ id: id, role: r.role || 'agent', content: content, timestamp: timestamp });
+            data.msgs.push({ id: id, role: r.role || 'agent', content: content, timestamp: timestamp, sender: r.sender, recipient: r.recipient });
             if (id && id > data.lastMsgId) data.lastMsgId = id;
             added++;
         });
