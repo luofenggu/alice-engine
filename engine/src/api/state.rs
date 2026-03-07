@@ -344,6 +344,12 @@ impl EngineState {
 
     /// Observe instance inference status.
     pub async fn observe(&self, instance_id: String) -> ObserveResult {
+        // Get user_id from instance settings
+        let user_id = self.instance_store
+            .open(&instance_id)
+            .map(|inst| inst.user_id())
+            .unwrap_or_default();
+
         match self.signal_hub.get_status(&instance_id) {
             Some(status) => {
                 let engine_online = if status.inferring {
@@ -376,9 +382,13 @@ impl EngineState {
                     recent_actions: vec![],
                     idle_timeout_secs: status.idle_timeout_secs.map(|v| v as i64),
                     idle_since: status.idle_since.map(|v| v as i64),
+                    user_id: user_id.clone(),
                 }
             }
-            None => ObserveResult::default(),
+            None => ObserveResult {
+                user_id,
+                ..ObserveResult::default()
+            },
         }
     }
 

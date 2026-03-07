@@ -1002,6 +1002,7 @@ const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) || ("ontouchst
     }
 })();
 let currentInstance = null;
+let userId = null;
 let engineVersion = document.body.dataset.version || 'dev';
 let messages = {}; // {name: {msgs: [], total: 0, earliestIndex: Infinity, fullyLoaded: false}}
 let loadingMore = false;
@@ -1721,20 +1722,35 @@ function addCopyButtons(container) {
 
 function createMessageElement(m) {
     const div = document.createElement('div');
-    div.className = 'msg ' + m.role;
     if (m.id) div.setAttribute('data-msg-id', m.id);
-    // Cross-instance message detection
+    // Message direction based on sender (not role)
     const sender = m.sender || '';
     const recipient = m.recipient || '';
     let crossTitle = null;
-    if (sender && sender !== currentInstance && m.role !== 'user') {
+    let isAgentSide = false;
+    if (userId && sender === userId) {
+        // User's own message → right side
+        div.className = 'msg user';
+    } else if (sender === currentInstance || (!sender && m.role === 'agent')) {
+        // Agent's own reply → left side
+        if (recipient && recipient !== userId && recipient !== '') {
+            div.className = 'msg agent to-other';
+            crossTitle = '📤 发给 ' + recipient;
+        } else {
+            div.className = 'msg agent';
+        }
+        isAgentSide = true;
+    } else if (sender && sender !== userId) {
+        // Message from another instance → left side + from-other
         div.className = 'msg agent from-other';
         crossTitle = '📩 来自 ' + sender;
-    } else if (recipient && recipient !== '') {
-        div.className = 'msg agent to-other';
-        crossTitle = '📤 发给 ' + recipient;
+        isAgentSide = true;
+    } else {
+        // Fallback: use role
+        div.className = 'msg ' + m.role;
+        if (m.role === 'agent') isAgentSide = true;
     }
-    if (m.role === 'agent' || crossTitle) {
+    if (isAgentSide || crossTitle) {
         div.innerHTML = renderMarkdown(m.content);
         addCopyButtons(div);
         div.querySelectorAll('.file-link[data-filepath]').forEach(function(link) {
@@ -2006,6 +2022,8 @@ async function pollInference() {
     if (!data || typeof data !== 'object') return;
     // Update inferring state for adaptive polling
     isInstanceInferring = !!data.inferring;
+    // Extract user_id from observe response
+    if (data.user_id) userId = data.user_id;
     // Update inference icon and label based on state
     const content = document.getElementById('inferenceContent');
     const label = document.getElementById('inferenceLabel');
