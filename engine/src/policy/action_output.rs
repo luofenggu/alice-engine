@@ -167,24 +167,18 @@ pub fn inbox_empty() -> String {
 }
 
 /// Format a single read message entry.
-/// If the sender is not the owner, prepend a warning line.
-/// System messages use a special format with [系统通知] prefix.
+/// Unified format for all message types (user, system, agent relay).
+/// If `is_known_sender` is false, prepend a warning line.
 pub fn read_msg_entry(
     sender: &str,
     timestamp: &str,
     content: &str,
-    owner_id: Option<&str>,
-    role: &str,
+    is_known_sender: bool,
 ) -> String {
-    if role == "system" {
-        return format!(
-            "[系统通知] [MSG:{}]{}\n\n{}\n",
-            timestamp, MSG_READ_CONTEXT, content
-        );
-    }
-    let warning = match owner_id {
-        Some(owner) if sender != owner => format!("⚠️ 此消息来自非所属用户的发送者：{}\n", sender),
-        _ => String::new(),
+    let warning = if is_known_sender {
+        String::new()
+    } else {
+        format!("⚠️ 此消息来自未知发送者：{}\n", sender)
     };
     format!(
         "{}{} [MSG:{}]{}\n\n{}\n",

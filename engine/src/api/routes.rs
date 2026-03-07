@@ -50,6 +50,7 @@ pub struct FilePathQuery {
 #[derive(Deserialize)]
 pub struct SendMessageBody {
     pub content: String,
+    pub sender: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -123,7 +124,7 @@ async fn handle_send_message(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<SendMessageBody>,
 ) -> Response {
-    json_ok(state.send_message(id, body.content).await)
+    json_ok(state.send_message(id, body.content, body.sender).await)
 }
 
 #[post("/api/instances/{id}/system-messages")]

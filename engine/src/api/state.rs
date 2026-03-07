@@ -244,13 +244,15 @@ impl EngineState {
     }
 
     /// Send a user message to an instance.
-    pub async fn send_message(&self, instance_id: String, content: String) -> ActionResult {
+    /// If `sender` is provided, use it as the message sender (for relay/cross-instance messaging).
+    /// Otherwise, use the authenticated user_id.
+    pub async fn send_message(&self, instance_id: String, content: String, sender: Option<String>) -> ActionResult {
         let content = content.trim().to_string();
         if content.is_empty() {
             return ActionResult::err(crate::policy::messages::empty_message());
         }
 
-        let user_id = self.user_id.clone();
+        let effective_sender = sender.unwrap_or_else(|| self.user_id.clone());
         let store = self.instance_store.clone();
         let name = instance_id.clone();
 
@@ -258,8 +260,8 @@ impl EngineState {
             let instance = store.open(&name)?;
             let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
             let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
-            let id = ch.write_user_message(&user_id, &content, &timestamp)?;
-            info!("[MSG] API: message sent to {}, id={}", name, id);
+            let id = ch.write_user_message(&effective_sender, &content, &timestamp)?;
+            info!("[MSG] API: message sent to {} from {}, id={}", name, effective_sender, id);
             Ok::<_, anyhow::Error>(id)
         })
         .await;

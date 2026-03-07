@@ -79,14 +79,27 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
         return Ok(out::inbox_empty());
     }
 
+    // Build known sender set: user_id + contacts IDs
+    let contact_ids: Vec<String> = alice
+        .hooks_caller
+        .as_ref()
+        .map(|hc| {
+            hc.fetch_contacts(&alice.instance.id)
+                .into_iter()
+                .map(|c| c.id)
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut result = String::new();
     for msg in &messages {
+        let is_known = msg.sender == alice.user_id
+            || contact_ids.iter().any(|id| id == &msg.sender);
         result.push_str(&out::read_msg_entry(
             &msg.sender,
             &msg.timestamp,
             &msg.content,
-            Some(&alice.user_id),
-            &msg.role,
+            is_known,
         ));
     }
 
