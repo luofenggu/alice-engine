@@ -1003,9 +1003,9 @@ function frontendLog(level, type, message) {
     }
     const res = await fetch('api/auth/check');
         const data = await res.json();
-        if (!data.authenticated) { window.location.href = '/login'; return; }
+        if (!data.authenticated) { window.location.href = 'login'; return; }
         if (data.startTime) { systemStartTime = data.startTime; }
-    } catch(e) { window.location.href = '/login'; return; }
+    } catch(e) { window.location.href = 'login'; return; }
     frontendLog('INFO', 'page_load', 'client=' + clientId + ' ua=' + navigator.userAgent.substring(0, 80));
     refreshInstances();
     setInterval(refreshInstances, 5000);
@@ -1027,7 +1027,7 @@ async function api(method, path, body) {
         opts.headers = {'Content-Type': 'application/json'};
     }
     const res = await fetch(path, opts);
-    if (res.status === 401) { window.location.href = '/login'; return null; }
+    if (res.status === 401) { window.location.href = 'login'; return null; }
     const text = await res.text();
     try { return JSON.parse(text); } catch(e) { return text; }
 }
@@ -1035,7 +1035,7 @@ async function api(method, path, body) {
 async function doLogout() {
     frontendLog('INFO', 'logout', 'client=' + clientId);
     await fetch('api/logout');
-    window.location.href = '/login';
+    window.location.href = 'login';
 }
 
 /* @SEC: js-instances — refresh/create/delete/switch */

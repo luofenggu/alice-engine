@@ -105,7 +105,7 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: -
 
     async function apiFetch(url, options = {}) {
         const res = await fetch(url, options);
-        if (res.status === 401) { window.location.href = '/login'; return null; }
+        if (res.status === 401) { window.location.href = 'login'; return null; }
         return res.json();
     }
 
@@ -122,7 +122,7 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: -
     }
 
     async function loadInstances() {
-        const data = await apiFetch('/api/instances');
+        const data = await apiFetch('api/instances');
         if (data === null || data === undefined) return;
         const list = document.getElementById('instanceList');
         list.innerHTML = '';
@@ -130,7 +130,7 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: -
         for (const inst of data) {
             let size = 0;
             try {
-                const kData = await apiFetch(`/api/instances/${inst.id}/knowledge`);
+                const kData = await apiFetch(`api/instances/${inst.id}/knowledge`);
                 const kContent = typeof kData === 'string' ? kData : (kData && kData.content || '');
                 size = new TextEncoder().encode(kContent).length;
             } catch(e) {}
@@ -164,7 +164,7 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: -
         loadInstances();
         const contentEl = document.getElementById('contentArea');
         contentEl.innerHTML = '<div class="loading"><div class="spinner"></div><span>加载中...</span></div>';
-        const data = await apiFetch(`/api/instances/${inst.id}/knowledge`);
+        const data = await apiFetch(`api/instances/${inst.id}/knowledge`);
         if (data === null || data === undefined) return;
         const content = typeof data === 'string' ? data : (data.content || ''); renderRawKnowledge(content, contentEl);
     }
