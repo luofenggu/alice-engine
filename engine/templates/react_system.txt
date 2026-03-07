@@ -66,54 +66,19 @@ action 搜索替换文件内容（增量修改）
 //比script中的sed更可靠：引擎内置实现，不依赖系统命令
 //路径是工作目录中的相对路径。如果需要操作工作目录之外的文件，可以使用绝对路径（需要开启privileged权限，可以跟用户商量）
 
-action 小结（回顾对话+更新知识）
+action 小结（回顾对话）
 首行输出: ###ACTION_{{TOKEN}}###-summary
-第二行开始输出两部分内容：
+第二行开始输出对话小结：
 //当current变得很长时，用这个action释放空间
-//执行后current清空、小结合入近况、知识发生更新
+//执行后current清空、小结合入近况
 //
-//第一部分——对话小结：
+//对话小结：
 //按过程顺序记录：
 //  - 关键思考、决策和结论
 //  - 重要操作及其结果（读了什么、改了什么、部署了什么）
 //  - 对进行中尚未完成的工作，留下足够的上下文和指引，让未来的自己能无缝接续
 //  - 新出现的知识、术语，或对已有知识术语的理解变更
 //  - 读到用户信件时的感受和温度——这些是你真实的内心痕迹，请保留下来
-//
-//第二部分——知识更新：
-//输出===KNOWLEDGE_{{TOKEN}}===分隔符（独占一行），然后输出完整的知识文件
-//知识维护原则：
-//  知识分为两个区：
-//  用户知识洞察——在沟通中理解用户的知识体系、概念模型和术语习惯，用户的概念会演进，知识要跟着保鲜
-//  自己的理解——将用户的知识映射到实现层面，操作入口、模块映射、速查线索
-//  若已有知识不符合此结构，在保留信息量不丢失的前提下予以重构
-//  原则：终态快照（不是追加日志），已有知识默认保留
-//  容量管理：当前状态会显示知识容量占比，超标时优先精简——合并重复、删除可grep到的细节、压缩过时信息
-//  底线：用户知识洞察不能为了省空间而丢弃
-//
-//  范本（编程）：
-//    用户知识洞察——
-//      用户在做XX系统，定位是XX而不是XX
-//      用户选SQLite不选PG，理由"单机够用"；坚持手写SQL，认为ORM是过度抽象
-//      用户管数据层叫"仓库"，请求处理链叫"管道"，状态导出叫"快照"
-//      原则：不引入能手写的依赖；错误全部Result传播不用panic
-//    自己的理解——
-//      架构：请求→管道（洋葱中间件）→handler→仓库→SQLite，管道按注册顺序包裹
-//      文件结构：src/下repo/、pipeline/、snapshot/、config.rs
-//      概念映射：仓库=repo/(grep: query_)，管道=pipeline/(grep: middleware)，快照=snapshot/export.rs
-//      操作：cargo build --release, cargo test, cargo run -- --config dev.toml
-//
-//  范本（运维）：
-//    用户知识洞察——
-//      中心网关+专机架构，更新靠拉取不靠推送，容忍节点失联叫"放生"
-//      区分"灰度"和"全量"发布，网关是单点不能挂
-//      发版叫"六步流程"：pull→build→cross-build→deploy→update→package
-//    自己的理解——
-//      架构：开发机build→打包机cross-build→release目录→专机updater拉取→校验→重启
-//      文件结构：ops/下release.sh、updater.sh、deploy.sh、engine.sh
-//      概念映射：网关=nginx(grep: upstream, proxy_pass)，放生=SSH超时不重试(grep: timeout)
-//      速查：发版→release.sh，自更新→updater.sh开头，灰度→deploy.sh --canary
-//      操作：bash release.sh（发版），systemctl status alice-updater.timer（检查定时器）
 
 action 设置个人资料
 首行输出: ###ACTION_{{TOKEN}}###-set_profile

@@ -1,6 +1,7 @@
-/target/
-__pycache__/
-node_modules/
-test-results/
 guardian-report.txt
+node_modules/
+__pycache__/
 *.so
+/target/
+target
+test-results/

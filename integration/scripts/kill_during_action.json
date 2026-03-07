@@ -1,0 +1,6 @@
+[
+  {
+    "response": "{ACTION_TOKEN}-script\ntouch {SIGNAL_FILE} && sleep 60\n\n{ACTION_TOKEN}-idle\n"
+  }
+]
+

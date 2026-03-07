@@ -7,26 +7,16 @@ pub struct CaptureRequest {
     pub summary_content: String,
 }
 
+const CAPTURE_SYSTEM: &str = include_str!("../../templates/capture_system.txt");
+
 impl CaptureRequest {
     pub fn render(&self) -> Vec<ChatMessage> {
-        let system = r#"你是一个知识维护者。你的任务是基于当前知识、近况、当前增量和本次小结，产出新的完整知识文件。
-
-要求：
-- 输出完整知识文件，不要解释，不要加代码块
-- 删除语义要克制：不能因为“本轮没提到”就删
-- 优先删除或压缩：重复内容、可grep细节、一次性过程、过时冗余
-- 保留“用户知识洞察”
-- 结构保持为：
-  - 用户知识洞察——
-  - 自己的理解——
-- 如果知识过长，必须主动压缩合并，在容量上限内完成"#;
-
         let user = format!(
             "## 当前知识\n{}\n\n## 近况\n{}\n\n## 当前增量\n{}\n\n## 本次小结\n{}\n",
             self.knowledge_content, self.recent_content, self.current_content, self.summary_content
         );
 
-        vec![ChatMessage::system(system), ChatMessage::user(&user)]
+        vec![ChatMessage::system(CAPTURE_SYSTEM), ChatMessage::user(&user)]
     }
 }
 
@@ -50,4 +40,21 @@ mod tests {
         assert!(user.contains("## 当前增量\nC"));
         assert!(user.contains("## 本次小结\nS"));
     }
+
+    #[test]
+    fn system_prompt_contains_key_concepts() {
+        let req = CaptureRequest {
+            knowledge_content: "".into(),
+            recent_content: "".into(),
+            current_content: "".into(),
+            summary_content: "".into(),
+        };
+        let msgs = req.render();
+        let system = &msgs[0].content;
+        assert!(system.contains("接话"));
+        assert!(system.contains("起手"));
+        assert!(system.contains("用户知识洞察"));
+        assert!(system.contains("自己的理解"));
+    }
 }
+

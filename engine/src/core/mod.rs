@@ -931,10 +931,22 @@ impl Alice {
         // the instance is truly idle, not here at beat() end. This prevents the frontend
         // from seeing brief "idle" flickers between consecutive beats in a reasoning chain.
 
-        for record in &tx.action_records {
-            if let crate::inference::Action::Summary { content } = &record.action {
-                spawn_capture_task(self, content, &self.log_dir);
+        // Capture: use only the last Summary action (multiple summaries can occur if agent
+        // outputs more than one in a single inference; only the last one has meaningful content
+        // since earlier ones clear current, making subsequent summaries see empty current).
+        if let Some(last_summary) = tx.action_records.iter().rev().find_map(|r| {
+            if let crate::inference::Action::Summary { content } = &r.action {
+                Some(content.as_str())
+            } else {
+                None
             }
+        }) {
+            info!(
+                "[CAPTURE-{}] Triggering capture from last summary ({} summaries total)",
+                self.instance.id,
+                tx.action_records.iter().filter(|r| matches!(&r.action, crate::inference::Action::Summary { .. })).count()
+            );
+            spawn_capture_task(self, last_summary, &self.log_dir);
         }
 
         info!(
