@@ -459,6 +459,13 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_msg_ids_system_message() {
+        let text = "[系统通知] [MSG:20260307103449]发来一条消息：\n\n[验证] system消息测试\n";
+        let ids = extract_msg_ids(text);
+        assert_eq!(ids, vec!["20260307103449"]);
+    }
+
+    #[test]
     fn test_make_memory_status_basic() {
         let status = make_memory_status("test-id", Some("TestBot"), 1000, 2000, 3000, 4000);
         assert!(status.contains("TestBot"));
