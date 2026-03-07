@@ -327,6 +327,29 @@ body {
     border: 1px solid var(--border);
     border-bottom-left-radius: 6px;
 }
+.msg.agent.from-other {
+    border-left: 3px solid rgba(46, 204, 113, 0.5);
+    padding-top: 0;
+}
+.msg.agent.to-other {
+    border-left: 3px solid rgba(241, 196, 15, 0.5);
+    padding-top: 0;
+}
+.msg-cross-title {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 16px;
+    margin: 0 -16px 8px -16px;
+    border-radius: 16px 16px 0 0;
+}
+.msg.agent.from-other .msg-cross-title {
+    background: rgba(46, 204, 113, 0.12);
+    color: rgba(46, 204, 113, 0.8);
+}
+.msg.agent.to-other .msg-cross-title {
+    background: rgba(241, 196, 15, 0.12);
+    color: rgba(241, 196, 15, 0.8);
+}
 
 .no-instance {
     flex: 1;
@@ -1700,7 +1723,18 @@ function createMessageElement(m) {
     const div = document.createElement('div');
     div.className = 'msg ' + m.role;
     if (m.id) div.setAttribute('data-msg-id', m.id);
-    if (m.role === 'agent') {
+    // Cross-instance message detection
+    const sender = m.sender || '';
+    const recipient = m.recipient || '';
+    let crossTitle = null;
+    if (sender && sender !== currentInstance && m.role !== 'user') {
+        div.className = 'msg agent from-other';
+        crossTitle = '📩 来自 ' + sender;
+    } else if (recipient && recipient !== '') {
+        div.className = 'msg agent to-other';
+        crossTitle = '📤 发给 ' + recipient;
+    }
+    if (m.role === 'agent' || crossTitle) {
         div.innerHTML = renderMarkdown(m.content);
         addCopyButtons(div);
         div.querySelectorAll('.file-link[data-filepath]').forEach(function(link) {
@@ -1709,6 +1743,13 @@ function createMessageElement(m) {
         });
     } else {
         div.appendChild(parseMessageContent(m.content));
+    }
+    // Insert cross-instance title bar at the top (after content rendering to avoid innerHTML overwrite)
+    if (crossTitle) {
+        const titleBar = document.createElement('div');
+        titleBar.className = 'msg-cross-title';
+        titleBar.textContent = crossTitle;
+        div.insertBefore(titleBar, div.firstChild);
     }
     const footer = document.createElement('div');
     footer.className = 'msg-footer';
