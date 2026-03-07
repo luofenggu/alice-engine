@@ -145,12 +145,23 @@ Agents can:
 
 All endpoints under `/api/`. Set `AUTH_SECRET` to enable authentication via session cookie.
 
+### Authentication
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/login` | Login page |
+| POST | `/login` | Authenticate (form: `password`) |
+| GET | `/api/logout` | Logout, clear session cookie |
+| GET | `/api/auth/check` | Check authentication status |
+| POST | `/api/setup` | Initial setup (body: `{api_key, model}`) |
+| POST | `/api/frontend-error` | Report frontend error (body: `{error_type?, message?, source?}`) |
+
 ### Instances
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/instances` | List all instances |
-| POST | `/api/instances` | Create instance |
+| POST | `/api/instances` | Create instance (body: `{name?, settings?}`) |
 | GET | `/api/instances/{id}` | Get instance details |
 | DELETE | `/api/instances/{id}` | Delete instance |
 
@@ -158,8 +169,8 @@ All endpoints under `/api/`. Set `AUTH_SECRET` to enable authentication via sess
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/instances/{id}/messages` | Get messages (query: `before_id`, `limit`) |
-| POST | `/api/instances/{id}/messages` | Send message |
+| GET | `/api/instances/{id}/messages` | Get messages (query: `before_id`, `after_id`, `limit`) |
+| POST | `/api/instances/{id}/messages` | Send message (body: `{content}`) |
 | GET | `/api/instances/{id}/replies` | Poll new messages (query: `after_id`) |
 
 ### Instance Management
@@ -168,8 +179,11 @@ All endpoints under `/api/`. Set `AUTH_SECRET` to enable authentication via sess
 |--------|------|-------------|
 | GET | `/api/instances/{id}/observe` | Observe instance state |
 | POST | `/api/instances/{id}/interrupt` | Interrupt current inference |
-| GET | `/api/instances/{id}/files/list` | List workspace files |
+| GET | `/api/instances/{id}/files/list` | List workspace files (query: `path?`) |
 | GET | `/api/instances/{id}/files/read` | Read workspace file (query: `path`) |
+| DELETE | `/api/instances/{id}/files/delete` | Delete workspace file (query: `path`) |
+| POST | `/api/instances/{id}/upload` | Upload file (multipart form data) |
+| POST | `/api/instances/{id}/vision` | Analyze image (body: `{prompt, image_url}`) |
 | GET | `/api/instances/{id}/knowledge` | Get instance knowledge |
 | GET | `/api/instances/{id}/skill` | Get skill |
 | PUT | `/api/instances/{id}/skill` | Update skill |
