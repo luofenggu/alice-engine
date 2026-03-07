@@ -957,7 +957,7 @@ body {
     </div>
 <!-- @SEC: html-input -->
     <div class="chat-input" id="chatInput" style="display:none;">
-        <textarea id="msgInput" placeholder="Enter发送 / Shift+Enter换行" enterkeyhint="send" onkeydown="handleKeydown(event)" oninput="autoResize(this)"></textarea>
+        <textarea id="msgInput" placeholder="回车换行 / Ctrl+Enter发送" enterkeyhint="enter" onkeydown="handleKeydown(event)" oninput="autoResize(this)"></textarea>
         <button class="plus-btn" id="plusBtn" onclick="document.getElementById('chatFileInput').click()" title="Upload file">+</button>
         <input type="file" id="chatFileInput" multiple style="display:none" onchange="uploadFromChat(this.files)">
     </div>
@@ -1392,7 +1392,7 @@ async function sendMessage() {
 }
 
 function handleKeydown(event) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         sendMessage();
     }
