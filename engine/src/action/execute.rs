@@ -11,6 +11,7 @@ use tracing::{info, warn};
 use crate::core::{Alice, Transaction};
 use crate::external::shell::{resolve_action_path, Shell};
 use crate::inference::{Action, ReplaceBlock};
+use crate::persist::hooks::ContactInfo;
 use crate::policy::action_output as out;
 
 /// Create a Shell instance with appropriate sandboxing for the given Alice.
@@ -92,6 +93,28 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
     Ok(result)
 }
 
+/// Resolve a recipient string to an instance ID using the contacts list.
+/// Supports: direct ID match, exact name match, or "名称(id)" format extraction.
+fn resolve_recipient_id(recipient: &str, contacts: &[ContactInfo]) -> Option<String> {
+    // 1. Direct ID match
+    if contacts.iter().any(|c| c.id == recipient) {
+        return Some(recipient.to_string());
+    }
+    // 2. Exact name match
+    if let Some(c) = contacts.iter().find(|c| c.name.as_deref() == Some(recipient)) {
+        return Some(c.id.clone());
+    }
+    // 3. Extract ID from "名称(id)" format (e.g. "进化三号（产品）(48f5fd)")
+    if let Some(start) = recipient.rfind('(') {
+        if let Some(id) = recipient[start + 1..].strip_suffix(')') {
+            if !id.is_empty() && contacts.iter().any(|c| c.id == id) {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn execute_send_msg(
     alice: &mut Alice,
     tx: &mut Transaction,
@@ -103,11 +126,22 @@ fn execute_send_msg(
     if recipient != alice.user_id {
         // Try relay via hooks if available
         if let Some(ref hooks_caller) = alice.hooks_caller {
-            match hooks_caller.relay_message(&alice.instance.id, recipient, content) {
+            // Resolve recipient name to instance ID
+            let contacts = hooks_caller.fetch_contacts(&alice.instance.id);
+            let resolved = resolve_recipient_id(recipient, &contacts)
+                .unwrap_or_else(|| recipient.to_string());
+            if resolved != recipient {
+                info!(
+                    "[ACTION-{}] resolved recipient '{}' -> '{}'",
+                    tx.instance_id, recipient, resolved
+                );
+            }
+
+            match hooks_caller.relay_message(&alice.instance.id, &resolved, content) {
                 Ok(response) if response.success => {
                     info!(
                         "[ACTION-{}] send_msg relayed to '{}' via hooks",
-                        tx.instance_id, recipient
+                        tx.instance_id, resolved
                     );
                     let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
                     alice
@@ -115,7 +149,7 @@ fn execute_send_msg(
                         .chat
                         .lock()
                         .unwrap()
-                        .write_agent_reply(&alice.instance.id, content, &timestamp, recipient)
+                        .write_agent_reply(&alice.instance.id, content, &timestamp, &resolved)
                         .context("Failed to write relayed agent reply")?;
                     return Ok(out::send_success(&timestamp));
                 }
@@ -123,7 +157,7 @@ fn execute_send_msg(
                     warn!(
                         "[ACTION-{}] send_msg relay rejected for '{}': {}",
                         tx.instance_id,
-                        recipient,
+                        resolved,
                         response.message.unwrap_or_default()
                     );
                     return Ok(out::send_failed_unknown_recipient(recipient));
@@ -131,7 +165,7 @@ fn execute_send_msg(
                 Err(e) => {
                     warn!(
                         "[ACTION-{}] send_msg relay failed for '{}': {}",
-                        tx.instance_id, recipient, e
+                        tx.instance_id, resolved, e
                     );
                     return Ok(out::send_failed_unknown_recipient(recipient));
                 }

@@ -957,7 +957,7 @@ body {
     </div>
 <!-- @SEC: html-input -->
     <div class="chat-input" id="chatInput" style="display:none;">
-        <textarea id="msgInput" placeholder="" enterkeyhint="send" onkeydown="handleKeydown(event)" oninput="autoResize(this)"></textarea>
+        <textarea id="msgInput" placeholder="" enterkeyhint="send" onkeydown="handleKeydown(event)" oninput="autoResize(this)" id-input="msgInput"></textarea>
         <button class="plus-btn" id="plusBtn" onclick="document.getElementById('chatFileInput').click()" title="Upload file">+</button>
         <input type="file" id="chatFileInput" multiple style="display:none" onchange="uploadFromChat(this.files)">
     </div>
@@ -965,6 +965,19 @@ body {
 
 <script>
 /* @SEC: js-init — global vars + auth check */
+const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) || ("ontouchstart" in window && window.innerWidth < 768);
+(function() {
+    const ta = document.getElementById('msgInput');
+    if (ta) {
+        if (isMobile) {
+            ta.setAttribute('enterkeyhint', 'send');
+            ta.placeholder = '';
+        } else {
+            ta.setAttribute('enterkeyhint', 'enter');
+            ta.placeholder = 'Ctrl+Enter 发送';
+        }
+    }
+})();
 let currentInstance = null;
 let engineVersion = document.body.dataset.version || 'dev';
 let messages = {}; // {name: {msgs: [], total: 0, earliestIndex: Infinity, fullyLoaded: false}}
@@ -1392,9 +1405,18 @@ async function sendMessage() {
 }
 
 function handleKeydown(event) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
+    if (event.key === 'Enter') {
+        if (isMobile) {
+            if (!event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        } else {
+            if (event.ctrlKey || event.metaKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
     }
 }
 
