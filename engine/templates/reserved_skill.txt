@@ -74,7 +74,7 @@
 当你需要理解图片内容时，可以在脚本中调用本机的多模态API：
 
 ```bash
-curl -s -X POST http://{host_port}/api/instances/{instance}/vision \
+curl -s -X POST http://{host}/api/instances/{instance}/vision \
   -H "Content-Type: application/json" \
   -d '{"prompt":"描述这张图片的内容","image_url":"图片的URL"}'
 ```

@@ -372,10 +372,7 @@ fn make_memory_status(
 /// Build host info line (just the public address, if available).
 fn make_host_line(host: Option<&str>) -> String {
     match host {
-        Some(h) if !h.is_empty() => {
-            let host_display = h.split(':').next().unwrap_or(h);
-            messages::host_info(host_display)
-        }
+        Some(h) if !h.is_empty() => messages::host_info(h),
         _ => String::new(),
     }
 }
@@ -385,10 +382,8 @@ fn make_host_line(host: Option<&str>) -> String {
 fn make_reserved_skill(host: Option<&str>, instance_id: &str) -> String {
     match host {
         Some(h) if !h.is_empty() => {
-            let host_display = h.split(':').next().unwrap_or(h);
             RESERVED_SKILL_TEMPLATE
-                .replace("{host}", host_display)
-                .replace("{host_port}", h)
+                .replace("{host}", h)
                 .replace("{instance}", instance_id)
         }
         _ => String::new(),
@@ -483,7 +478,7 @@ mod tests {
     fn test_make_host_line() {
         assert_eq!(
             make_host_line(Some("1.2.3.4:8080")),
-            messages::host_info("1.2.3.4")
+            messages::host_info("1.2.3.4:8080")
         );
         assert_eq!(make_host_line(None), "");
         assert_eq!(make_host_line(Some("")), "");
