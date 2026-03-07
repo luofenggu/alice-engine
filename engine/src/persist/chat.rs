@@ -26,6 +26,8 @@ pub struct Message {
     pub timestamp: String,
     pub read_status: String,
     pub msg_type: String,
+    /// Recipient instance ID. Empty string means sent to user (default).
+    pub recipient: String,
 }
 
 impl Message {
@@ -148,11 +150,25 @@ impl ChatHistory {
                 content TEXT NOT NULL DEFAULT '',
                 timestamp TEXT NOT NULL DEFAULT '',
                 read_status TEXT NOT NULL DEFAULT '',
-                msg_type TEXT NOT NULL DEFAULT ''
+                msg_type TEXT NOT NULL DEFAULT '',
+                recipient TEXT NOT NULL DEFAULT ''
             );
 ",
         )
         .context("failed to create chat tables")?;
+
+        // Migration: add recipient column if missing (for existing DBs)
+        let has_recipient: bool = conn
+            .prepare("SELECT recipient FROM messages LIMIT 0")
+            .is_ok();
+        if !has_recipient {
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN recipient TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .context("failed to add recipient column")?;
+            info!("[DB] Migration: added recipient column to messages table");
+        }
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
@@ -184,6 +200,7 @@ impl ChatHistory {
             timestamp,
             Message::STATUS_READ,
             Message::TYPE_CHAT,
+            "",
         )?;
         Ok(())
     }
@@ -291,6 +308,7 @@ impl ChatHistory {
             timestamp,
             Message::STATUS_UNREAD,
             Message::TYPE_CHAT,
+            "",
         )?;
         info!(
             "[MSG] User message written: id={}, sender={}, type={}",
@@ -360,6 +378,7 @@ impl ChatHistory {
         sender: &str,
         content: &str,
         timestamp: &str,
+        recipient: &str,
     ) -> Result<()> {
         self.insert_message(
             sender,
@@ -368,8 +387,13 @@ impl ChatHistory {
             timestamp,
             Message::STATUS_UNREAD,
             Message::TYPE_CHAT,
+            recipient,
         )?;
-        info!("[MSG] Agent reply written: sender={}", sender);
+        info!(
+            "[MSG] Agent reply written: sender={}, recipient={}",
+            sender,
+            if recipient.is_empty() { "user" } else { recipient }
+        );
         Ok(())
     }
 
@@ -387,6 +411,7 @@ impl ChatHistory {
             timestamp,
             Message::STATUS_UNREAD,
             Message::TYPE_CHAT,
+            "",
         )?;
         info!(
             "[MSG] System message written: id={}, type={}",
@@ -494,10 +519,11 @@ impl ChatHistory {
         timestamp: &str,
         read_status: &str,
         msg_type: &str,
+        recipient: &str,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO messages (sender, role, content, timestamp, read_status, msg_type) VALUES (?, ?, ?, ?, ?, ?)",
-            rusqlite::params![sender, role, content, timestamp, read_status, msg_type],
+            "INSERT INTO messages (sender, role, content, timestamp, read_status, msg_type, recipient) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![sender, role, content, timestamp, read_status, msg_type, recipient],
         ).context("failed to insert message")?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -603,7 +629,7 @@ mod tests {
     fn test_agent_reply_outbox() {
         let mut ch = setup();
 
-        ch.write_agent_reply("alice", "hello user!", "20260220120000")
+        ch.write_agent_reply("alice", "hello user!", "20260220120000", "")
             .unwrap();
 
         let replies = ch.read_unread_agent_replies().unwrap();

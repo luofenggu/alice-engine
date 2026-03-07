@@ -10,6 +10,7 @@ use tracing::{error, info};
 
 use crate::api::types::*;
 use crate::core::signal::SignalHub;
+use crate::persist::hooks::{HooksCaller, HooksConfig, HooksStore};
 use crate::persist::instance::InstanceStore;
 use crate::persist::{GlobalSettingsStore, Settings};
 use std::sync::atomic::AtomicBool;
@@ -42,6 +43,10 @@ pub struct EngineState {
     pub http_client: reqwest::Client,
     /// Shared LLM client for channel rotation (used by vision, etc.)
     pub llm_client: Arc<crate::external::llm::LlmClient>,
+    /// Hooks store for persistent hook configuration.
+    pub hooks_store: HooksStore,
+    /// Shared hooks caller for all instances (contains config + cache).
+    pub hooks_caller: Arc<HooksCaller>,
 }
 
 impl EngineState {
@@ -70,7 +75,7 @@ impl EngineState {
             .map(|s| s.api_key.as_ref().map_or(false, |k| !k.is_empty()))
             .unwrap_or(false);
         Self {
-            instance_store: InstanceStore::new(instances_dir),
+            instance_store: InstanceStore::new(instances_dir.clone()),
             logs_dir,
             html_dir,
             user_id,
@@ -83,6 +88,11 @@ impl EngineState {
             setup_completed: AtomicBool::new(setup_done),
             http_client: reqwest::Client::new(),
             llm_client,
+            hooks_store: HooksStore::open(instances_dir.parent().unwrap_or(&instances_dir).join("hooks.json")).unwrap_or_else(|e| {
+                tracing::warn!("[HOOKS] Failed to open hooks.json: {}, using defaults", e);
+                HooksStore::open(instances_dir.parent().unwrap_or(&instances_dir).join("hooks.json")).expect("hooks store")
+            }),
+            hooks_caller: Arc::new(HooksCaller::new(HooksConfig::default())),
         }
     }
 

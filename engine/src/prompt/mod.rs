@@ -64,7 +64,12 @@ pub fn extract_session_block_data(
 /// Reads memory, chat, config from Alice and assembles a BeatRequest struct
 /// with raw data. The caller passes this to LlmClient which handles
 /// rendering and inference internally.
-pub fn build_beat_request(alice: &Alice, host: Option<&str>) -> BeatRequest {
+pub fn build_beat_request(
+    alice: &Alice,
+    host: Option<&str>,
+    contacts_info: String,
+    extra_skills: String,
+) -> BeatRequest {
     let knowledge_content = load_knowledge_raw(alice);
 
     let history_content = alice.instance.memory.history.read().unwrap_or_default();
@@ -91,6 +96,9 @@ pub fn build_beat_request(alice: &Alice, host: Option<&str>) -> BeatRequest {
         session_blocks,
         current_content,
         unread_count: unread_count.try_into().unwrap_or(0),
+        contacts_info,
+        extra_skills,
+        http_port: alice.env_config.http_port,
     }
 }
 
@@ -194,6 +202,7 @@ mod tests {
             llm_client,
             env_config,
             None,
+            None,
         )
         .unwrap();
         (alice, tmp)
@@ -214,7 +223,7 @@ mod tests {
             .chat
             .lock()
             .unwrap()
-            .write_agent_reply("alice", "hi back", "20260223155600")
+            .write_agent_reply("alice", "hi back", "20260223155600", "")
             .unwrap();
 
         let block_entries = vec![crate::persist::SessionBlockEntry {
@@ -254,7 +263,7 @@ mod tests {
     #[test]
     fn test_build_beat_request_empty_memory() {
         let (alice, _tmp) = setup_alice();
-        let mut request = build_beat_request(&alice, None);
+        let mut request = build_beat_request(&alice, None, String::new(), String::new());
         request.action_token = "abc".to_string();
         let (system, user, _) = request.render();
         assert!(system.contains("###ACTION_abc###-"));
@@ -281,7 +290,7 @@ mod tests {
             .append_session_block("20260223120000", jsonl)
             .unwrap();
 
-        let request = build_beat_request(&alice, None);
+        let request = build_beat_request(&alice, None, String::new(), String::new());
         let (_, user, _) = request.render();
         assert!(user.contains("24007 [20260223120000]: hi there"));
         assert!(user.contains("[总结] User said hi"));
@@ -309,7 +318,7 @@ mod tests {
             .knowledge
             .write("# 泛准则\n- 谨慎加信任")
             .unwrap();
-        let request = build_beat_request(&alice, None);
+        let request = build_beat_request(&alice, None, String::new(), String::new());
         let (_, user, _) = request.render();
         assert!(user.contains("### 要点与知识 ###"));
         assert!(user.contains("谨慎加信任"));

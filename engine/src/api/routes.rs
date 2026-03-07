@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use super::http_protocol;
 use super::state::EngineState;
+use crate::persist::hooks::HooksConfig;
 use crate::persist::Settings;
 
 // ── Helper Functions ──
@@ -470,6 +471,26 @@ async fn handle_upload(
     Json(serde_json::json!({ "files": uploaded })).into_response()
 }
 
+// ── Hooks Registration ──
+
+#[post("/api/hooks")]
+async fn handle_register_hooks(
+    State(state): State<Arc<EngineState>>,
+    Json(config): Json<HooksConfig>,
+) -> Response {
+    match state.hooks_store.register(&config) {
+        Ok(merged) => {
+            state.hooks_caller.update_config(merged);
+            tracing::info!("[HOOKS] Hooks registered/updated successfully");
+            json_ok(crate::api::types::ActionResult::ok_empty())
+        }
+        Err(e) => {
+            tracing::warn!("[HOOKS] Failed to register hooks: {}", e);
+            json_ok(crate::api::types::ActionResult::err(e.to_string()))
+        }
+    }
+}
+
 // ── Router Builders ──
 
 /// Auth check — returns authenticated status (already passed auth middleware).
@@ -521,6 +542,7 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_UPLOAD, post(handle_upload))
         .route(ROUTE_HANDLE_VISION, post(handle_vision))
         .route(ROUTE_HANDLE_AUTH_CHECK, get(handle_auth_check))
+        .route(ROUTE_HANDLE_REGISTER_HOOKS, post(handle_register_hooks))
 }
 
 /// Public API routes — no auth required.
