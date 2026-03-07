@@ -56,6 +56,8 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub timestamp: String,
+    pub sender: String,
+    pub recipient: String,
 }
 
 impl From<&Message> for ChatMessage {
@@ -65,6 +67,8 @@ impl From<&Message> for ChatMessage {
             role: m.role.clone(),
             content: m.content.clone(),
             timestamp: m.timestamp.clone(),
+            sender: m.sender.clone(),
+            recipient: m.recipient.clone(),
         }
     }
 }
@@ -218,15 +222,17 @@ impl ChatHistory {
             None => {
                 // Last N messages
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, role, content, timestamp FROM messages ORDER BY id DESC LIMIT ?",
+                    "SELECT id, sender, role, content, timestamp, recipient FROM messages ORDER BY id DESC LIMIT ?",
                 )?;
                 let rows: Vec<ChatMessage> = stmt
                     .query_map([limit], |row| {
                         Ok(ChatMessage {
                             id: row.get(0)?,
-                            role: row.get(1)?,
-                            content: row.get(2)?,
-                            timestamp: row.get(3)?,
+                            sender: row.get(1)?,
+                            role: row.get(2)?,
+                            content: row.get(3)?,
+                            timestamp: row.get(4)?,
+                            recipient: row.get(5)?,
                         })
                     })?
                     .filter_map(|r| r.ok())
@@ -238,15 +244,17 @@ impl ChatHistory {
             Some(id) => {
                 // Messages with id < before, last N
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, role, content, timestamp FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?"
+                    "SELECT id, sender, role, content, timestamp, recipient FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?"
                 )?;
                 let rows: Vec<ChatMessage> = stmt
                     .query_map(rusqlite::params![id, limit], |row| {
                         Ok(ChatMessage {
                             id: row.get(0)?,
-                            role: row.get(1)?,
-                            content: row.get(2)?,
-                            timestamp: row.get(3)?,
+                            sender: row.get(1)?,
+                            role: row.get(2)?,
+                            content: row.get(3)?,
+                            timestamp: row.get(4)?,
+                            recipient: row.get(5)?,
                         })
                     })?
                     .filter_map(|r| r.ok())
@@ -450,17 +458,17 @@ impl ChatHistory {
     }
 
     /// Get agent replies with id > after_id (for polling without read_status).
-    /// Returns Vec<(id, role, content, timestamp)>.
+    /// Returns Vec<(id, sender, role, content, timestamp, recipient)>.
     pub fn get_agent_replies_after(
         &self,
         after_id: i64,
-    ) -> Result<Vec<(i64, String, String, String)>> {
+    ) -> Result<Vec<(i64, String, String, String, String, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, role, content, timestamp FROM messages WHERE role = ? AND id > ? ORDER BY id"
+            "SELECT id, sender, role, content, timestamp, recipient FROM messages WHERE role = ? AND id > ? ORDER BY id"
         )?;
-        let replies: Vec<(i64, String, String, String)> = stmt
+        let replies: Vec<(i64, String, String, String, String, String)> = stmt
             .query_map(rusqlite::params![Message::ROLE_AGENT, after_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -472,13 +480,13 @@ impl ChatHistory {
         &self,
         after_id: i64,
         limit: i64,
-    ) -> Result<Vec<(i64, String, String, String)>> {
+    ) -> Result<Vec<(i64, String, String, String, String, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, role, content, timestamp FROM messages WHERE id > ? ORDER BY id LIMIT ?",
+            "SELECT id, sender, role, content, timestamp, recipient FROM messages WHERE id > ? ORDER BY id LIMIT ?",
         )?;
-        let rows: Vec<(i64, String, String, String)> = stmt
+        let rows: Vec<(i64, String, String, String, String, String)> = stmt
             .query_map(rusqlite::params![after_id, limit], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -662,7 +670,7 @@ mod tests {
 
         let after = ch.get_messages_after(1, 100).unwrap();
         assert_eq!(after.len(), 2);
-        assert_eq!(after[0].2, "msg2");
-        assert_eq!(after[1].2, "msg3");
+        assert_eq!(after[0].3, "msg2");
+        assert_eq!(after[1].3, "msg3");
     }
 }

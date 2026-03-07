@@ -201,11 +201,13 @@ impl EngineState {
                 let rows = ch.get_messages_after(after, limit)?;
                 let messages: Vec<MessageInfo> = rows
                     .into_iter()
-                    .map(|(id, role, content, timestamp)| MessageInfo {
+                    .map(|(id, sender, role, content, timestamp, recipient)| MessageInfo {
                         id,
                         role,
                         content,
                         timestamp,
+                        sender,
+                        recipient,
                     })
                     .collect();
                 let has_more = messages.len() >= limit as usize;
@@ -220,6 +222,8 @@ impl EngineState {
                         role: m.role.clone(),
                         content: m.content.clone(),
                         timestamp: m.timestamp.clone(),
+                        sender: m.sender.clone(),
+                        recipient: m.recipient.clone(),
                     })
                     .collect();
                 Ok(MessagesResult {
@@ -318,11 +322,13 @@ impl EngineState {
         match result {
             Ok(Ok(replies)) => replies
                 .into_iter()
-                .map(|(id, role, content, timestamp)| MessageInfo {
+                .map(|(id, sender, role, content, timestamp, recipient)| MessageInfo {
                     id,
                     role,
                     content,
                     timestamp,
+                    sender,
+                    recipient,
                 })
                 .collect(),
             Ok(Err(e)) => {

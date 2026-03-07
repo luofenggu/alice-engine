@@ -33,6 +33,8 @@ pub struct MessageInfo {
     pub role: String,
     pub content: String,
     pub timestamp: String,
+    pub sender: String,
+    pub recipient: String,
 }
 
 /// 消息查询结果
