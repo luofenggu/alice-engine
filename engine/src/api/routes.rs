@@ -125,6 +125,15 @@ async fn handle_send_message(
     json_ok(state.send_message(id, body.content).await)
 }
 
+#[post("/api/instances/{id}/system-messages")]
+async fn handle_send_system_message(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<SendMessageBody>,
+) -> Response {
+    json_ok(state.send_system_message(id, body.content).await)
+}
+
 #[get("/api/instances/{id}/replies")]
 async fn handle_get_replies(
     State(state): State<Arc<EngineState>>,
@@ -485,6 +494,10 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
             get(handle_get_messages).post(handle_send_message),
         )
         .route(ROUTE_HANDLE_GET_REPLIES, get(handle_get_replies))
+        .route(
+            ROUTE_HANDLE_SEND_SYSTEM_MESSAGE,
+            post(handle_send_system_message),
+        )
         .route(ROUTE_HANDLE_OBSERVE, get(handle_observe))
         .route(ROUTE_HANDLE_INTERRUPT, post(handle_interrupt))
         .route(

@@ -85,6 +85,7 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
             &msg.timestamp,
             &msg.content,
             Some(&alice.user_id),
+            &msg.role,
         ));
     }
 

@@ -33,6 +33,8 @@ impl Message {
     const ROLE_USER: &'static str = "user";
     /// Role value: agent/assistant message
     const ROLE_AGENT: &'static str = "agent";
+
+    const ROLE_SYSTEM: &'static str = "system";
     /// Read status: already consumed
     const STATUS_READ: &'static str = "read";
     /// Read status: waiting to be consumed
@@ -90,6 +92,7 @@ impl From<&Message> for RangeMessage {
 pub struct InboxMessage {
     pub id: i64,
     pub sender: String,
+    pub role: String,
     pub content: String,
     pub timestamp: String,
     pub msg_type: String,
@@ -100,6 +103,7 @@ impl From<&Message> for InboxMessage {
         InboxMessage {
             id: m.id,
             sender: m.sender.clone(),
+            role: m.role.clone(),
             content: m.content.clone(),
             timestamp: m.timestamp.clone(),
             msg_type: m.msg_type.clone(),
@@ -302,18 +306,19 @@ impl ChatHistory {
     /// @TRACE: MSG
     pub fn read_unread_user_messages(&mut self) -> Result<Vec<InboxMessage>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, sender, content, timestamp, msg_type FROM messages WHERE role = ? AND read_status = ?"
+            "SELECT id, sender, role, content, timestamp, msg_type FROM messages WHERE role IN ('user', 'system') AND read_status = ?"
         )?;
         let inbox: Vec<InboxMessage> = stmt
             .query_map(
-                rusqlite::params![Message::ROLE_USER, Message::STATUS_UNREAD],
+                rusqlite::params![Message::STATUS_UNREAD],
                 |row| {
                     Ok(InboxMessage {
                         id: row.get(0)?,
                         sender: row.get(1)?,
-                        content: row.get(2)?,
-                        timestamp: row.get(3)?,
-                        msg_type: row.get(4)?,
+                        role: row.get(2)?,
+                        content: row.get(3)?,
+                        timestamp: row.get(4)?,
+                        msg_type: row.get(5)?,
                     })
                 },
             )?
@@ -322,14 +327,13 @@ impl ChatHistory {
 
         if !inbox.is_empty() {
             self.conn.execute(
-                "UPDATE messages SET read_status = ? WHERE role = ? AND read_status = ?",
+                "UPDATE messages SET read_status = ? WHERE role IN ('user', 'system') AND read_status = ?",
                 rusqlite::params![
                     Message::STATUS_READ,
-                    Message::ROLE_USER,
                     Message::STATUS_UNREAD
                 ],
             )?;
-            info!("[MSG] Read {} unread user messages", inbox.len());
+            info!("[MSG] Read {} unread messages (user+system)", inbox.len());
         }
 
         Ok(inbox)
@@ -340,8 +344,8 @@ impl ChatHistory {
         let count: i64 = self
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM messages WHERE role = ? AND read_status = ?",
-                rusqlite::params![Message::ROLE_USER, Message::STATUS_UNREAD],
+                "SELECT COUNT(*) FROM messages WHERE role IN ('user', 'system') AND read_status = ?",
+                rusqlite::params![Message::STATUS_UNREAD],
                 |row| row.get(0),
             )
             .unwrap_or(0);
@@ -367,6 +371,29 @@ impl ChatHistory {
         )?;
         info!("[MSG] Agent reply written: sender={}", sender);
         Ok(())
+    }
+
+    /// Write a system message (role=system, read_status=unread).
+    /// System messages are delivered to the agent's inbox alongside user messages.
+    pub fn write_system_message(
+        &mut self,
+        content: &str,
+        timestamp: &str,
+    ) -> Result<i64> {
+        let id = self.insert_message(
+            "system",
+            Message::ROLE_SYSTEM,
+            content,
+            timestamp,
+            Message::STATUS_UNREAD,
+            Message::TYPE_CHAT,
+        )?;
+        info!(
+            "[MSG] System message written: id={}, type={}",
+            id,
+            Message::TYPE_CHAT
+        );
+        Ok(id)
     }
 
     /// Read all unread agent replies and mark them as read.
@@ -521,14 +548,14 @@ mod tests {
         let mut ch = setup();
         ch.append("user1", "user", "hello", "20260220120000")
             .unwrap();
-        ch.append("agent", "assistant", "hi there", "20260220120001")
+        ch.append("agent", "agent", "hi there", "20260220120001")
             .unwrap();
 
         let result = ch.query(10, None).unwrap();
         assert_eq!(result.total, 2);
         assert_eq!(result.messages.len(), 2);
         assert_eq!(result.messages[0].role, "user");
-        assert_eq!(result.messages[1].role, "assistant");
+        assert_eq!(result.messages[1].role, "agent");
     }
 
     #[test]
