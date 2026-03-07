@@ -261,6 +261,37 @@ impl EngineState {
         }
     }
 
+    /// Send a system message to an instance (no auth required for sender identity).
+    pub async fn send_system_message(
+        &self,
+        instance_id: String,
+        content: String,
+    ) -> ActionResult {
+        let content = content.trim().to_string();
+        if content.is_empty() {
+            return ActionResult::err(crate::policy::messages::empty_message());
+        }
+
+        let store = self.instance_store.clone();
+        let name = instance_id.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&name)?;
+            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
+            let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
+            let id = ch.write_system_message(&content, &timestamp)?;
+            info!("[MSG] API: system message sent to {}, id={}", name, id);
+            Ok::<_, anyhow::Error>(id)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(id)) => ActionResult::ok(id.to_string()),
+            Ok(Err(e)) => ActionResult::err(e.to_string()),
+            Err(e) => ActionResult::err(e.to_string()),
+        }
+    }
+
     /// Get agent replies after a given message ID (polling).
     pub async fn get_replies_after(&self, instance_id: String, after_id: i64) -> Vec<MessageInfo> {
         let store = self.instance_store.clone();
