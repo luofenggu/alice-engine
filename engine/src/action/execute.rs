@@ -85,6 +85,7 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
         .as_ref()
         .map(|hc| {
             hc.fetch_contacts(&alice.instance.id)
+                .unwrap_or_default()
                 .into_iter()
                 .map(|c| c.id)
                 .collect()
@@ -138,64 +139,96 @@ fn execute_send_msg(
 ) -> Result<String> {
     info!("[ACTION-{}] send_msg to {}", tx.instance_id, recipient);
 
-    // Try relay if recipient is in contacts list
-    if let Some(ref hooks_caller) = alice.hooks_caller {
-        let contacts = hooks_caller.fetch_contacts(&alice.instance.id);
-        if let Some(resolved) = resolve_recipient_id(recipient, &contacts) {
-            if resolved != recipient {
-                info!(
-                    "[ACTION-{}] resolved recipient '{}' -> '{}'",
-                    tx.instance_id, recipient, resolved
-                );
-            }
-
-            match hooks_caller.relay_message(&alice.instance.id, &resolved, content) {
-                Ok(response) if response.success => {
-                    info!(
-                        "[ACTION-{}] send_msg relayed to '{}' via hooks",
-                        tx.instance_id, resolved
-                    );
-                    let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
-                    alice
-                        .instance
-                        .chat
-                        .lock()
-                        .unwrap()
-                        .write_agent_reply(&alice.instance.id, content, &timestamp, &resolved)
-                        .context("Failed to write relayed agent reply")?;
-                    return Ok(out::send_success(&timestamp));
-                }
-                Ok(response) => {
-                    warn!(
-                        "[ACTION-{}] send_msg relay rejected for '{}': {}",
-                        tx.instance_id,
-                        resolved,
-                        response.message.unwrap_or_default()
-                    );
-                    return Ok(out::send_failed_unknown_recipient(recipient));
-                }
-                Err(e) => {
-                    warn!(
-                        "[ACTION-{}] send_msg relay failed for '{}': {}",
-                        tx.instance_id, resolved, e
-                    );
-                    return Ok(out::send_failed_unknown_recipient(recipient));
-                }
-            }
-        }
+    // Send to user directly (recipient is "user" or empty)
+    if recipient == "user" || recipient.is_empty() {
+        let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
+        alice
+            .instance
+            .chat
+            .lock()
+            .unwrap()
+            .write_agent_reply(&alice.instance.id, content, &timestamp, "")
+            .context("Failed to write agent reply")?;
+        return Ok(out::send_success(&timestamp));
     }
 
-    // Not in contacts → internal send (to user)
-    let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
-    alice
-        .instance
-        .chat
-        .lock()
-        .unwrap()
-        .write_agent_reply(&alice.instance.id, content, &timestamp, "")
-        .context("Failed to write agent reply")?;
+    // Non-user recipient: must go through contacts lookup
+    let hooks_caller = match alice.hooks_caller.as_ref() {
+        Some(hc) => hc,
+        None => {
+            warn!(
+                "[ACTION-{}] send_msg to '{}' failed: no hooks_caller available",
+                tx.instance_id, recipient
+            );
+            return Ok(out::send_failed_service_unavailable(recipient));
+        }
+    };
 
-    Ok(out::send_success(&timestamp))
+    // Fetch contacts list
+    let contacts = match hooks_caller.fetch_contacts(&alice.instance.id) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                "[ACTION-{}] send_msg to '{}' failed: contacts fetch error: {}",
+                tx.instance_id, recipient, e
+            );
+            return Ok(out::send_failed_service_unavailable(recipient));
+        }
+    };
+
+    // Resolve recipient ID from contacts
+    let resolved = match resolve_recipient_id(recipient, &contacts) {
+        Some(id) => id,
+        None => {
+            warn!(
+                "[ACTION-{}] send_msg to '{}' failed: recipient not in contacts",
+                tx.instance_id, recipient
+            );
+            return Ok(out::send_failed_recipient_not_found(recipient, &contacts));
+        }
+    };
+
+    if resolved != recipient {
+        info!(
+            "[ACTION-{}] resolved recipient '{}' -> '{}'",
+            tx.instance_id, recipient, resolved
+        );
+    }
+
+    // Relay message
+    match hooks_caller.relay_message(&alice.instance.id, &resolved, content) {
+        Ok(response) if response.success => {
+            info!(
+                "[ACTION-{}] send_msg relayed to '{}' via hooks",
+                tx.instance_id, resolved
+            );
+            let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
+            alice
+                .instance
+                .chat
+                .lock()
+                .unwrap()
+                .write_agent_reply(&alice.instance.id, content, &timestamp, &resolved)
+                .context("Failed to write relayed agent reply")?;
+            Ok(out::send_success(&timestamp))
+        }
+        Ok(response) => {
+            warn!(
+                "[ACTION-{}] send_msg relay rejected for '{}': {}",
+                tx.instance_id,
+                resolved,
+                response.message.unwrap_or_default()
+            );
+            Ok(out::send_failed_relay_error(recipient))
+        }
+        Err(e) => {
+            warn!(
+                "[ACTION-{}] send_msg relay failed for '{}': {}",
+                tx.instance_id, resolved, e
+            );
+            Ok(out::send_failed_relay_error(recipient))
+        }
+    }
 }
 
 fn execute_thinking(_alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<String> {
@@ -648,10 +681,10 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_send_msg() {
+    fn test_execute_send_msg_to_user() {
         let (mut alice, mut tx, _tmp) = setup();
         let action = Action::SendMsg {
-            recipient: "user1".to_string(),
+            recipient: "user".to_string(),
             content: "hello user!".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
@@ -668,6 +701,20 @@ mod tests {
             .unwrap();
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].1, "hello user!");
+    }
+
+    #[test]
+    fn test_execute_send_msg_no_hooks_caller_fails() {
+        let (mut alice, mut tx, _tmp) = setup();
+        // alice.hooks_caller is None by default in test setup
+        let action = Action::SendMsg {
+            recipient: "some_agent".to_string(),
+            content: "hello agent!".to_string(),
+        };
+        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        assert!(result.contains("发送失败"));
+        assert!(result.contains("通讯服务"));
+        assert!(!result.contains("send success"));
     }
 
     #[test]

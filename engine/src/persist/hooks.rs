@@ -178,13 +178,14 @@ impl HooksCaller {
     // -----------------------------------------------------------------------
 
     /// Fetch contacts list. Returns cached result if within TTL.
-    /// On failure, logs warning and returns empty vec (silent degradation).
-    pub fn fetch_contacts(&self, instance_id: &str) -> Vec<ContactInfo> {
+    /// On failure, returns Err with description (caller decides how to handle).
+    /// Returns Ok(empty vec) when no contacts_url is configured (normal case).
+    pub fn fetch_contacts(&self, instance_id: &str) -> Result<Vec<ContactInfo>, String> {
         let url = {
             let cfg = self.config.lock().unwrap();
             match &cfg.contacts_url {
                 Some(u) => u.clone(),
-                None => return Vec::new(),
+                None => return Ok(Vec::new()),
             }
         };
 
@@ -193,7 +194,7 @@ impl HooksCaller {
             let cache = self.contacts_cache.lock().unwrap();
             if let Some(entry) = cache.as_ref() {
                 if entry.is_valid() {
-                    return entry.value.clone();
+                    return Ok(entry.value.clone());
                 }
             }
         }
@@ -211,28 +212,28 @@ impl HooksCaller {
                                 value: contacts.clone(),
                                 fetched_at: Instant::now(),
                             });
-                            contacts
+                            Ok(contacts)
                         }
                         Err(e) => {
                             tracing::warn!("[HOOKS] contacts parse error: {}", e);
-                            Vec::new()
+                            Err(format!("contacts parse error: {}", e))
                         }
                     }
                 } else {
                     tracing::warn!("[HOOKS] contacts hook returned {}", resp.status());
-                    Vec::new()
+                    Err(format!("contacts hook returned {}", resp.status()))
                 }
             }
             Err(e) => {
                 tracing::warn!("[HOOKS] contacts hook request failed: {}", e);
-                Vec::new()
+                Err(format!("contacts request failed: {}", e))
             }
         }
     }
 
     /// Format contacts into a prompt-friendly string.
     pub fn format_contacts_for_prompt(&self, instance_id: &str) -> String {
-        let contacts = self.fetch_contacts(instance_id);
+        let contacts = self.fetch_contacts(instance_id).unwrap_or_default();
         if contacts.is_empty() {
             return String::new();
         }
@@ -428,7 +429,7 @@ mod tests {
     #[test]
     fn test_hooks_caller_no_config_returns_empty() {
         let caller = HooksCaller::new(HooksConfig::default());
-        let contacts = caller.fetch_contacts("test-instance");
+        let contacts = caller.fetch_contacts("test-instance").unwrap();
         assert!(contacts.is_empty());
 
         let skills = caller.fetch_skills("test-instance");

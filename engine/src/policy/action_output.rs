@@ -199,10 +199,39 @@ pub fn read_msg_entry(
     )
 }
 
-/// Format send failure for unknown recipient.
-pub fn send_failed_unknown_recipient(recipient: &str) -> String {
+/// Format send failure: recipient not found in contacts list.
+pub fn send_failed_recipient_not_found(recipient: &str, contacts: &[crate::persist::hooks::ContactInfo]) -> String {
+    if contacts.is_empty() {
+        format!(
+            "发送失败：收件人 \"{}\" 不在你的联系人列表中。当前没有可用联系人\n",
+            recipient
+        )
+    } else {
+        let names: Vec<String> = contacts.iter().map(|c| {
+            match &c.name {
+                Some(name) if !name.is_empty() => format!("{}({})", name, c.id),
+                _ => c.id.clone(),
+            }
+        }).collect();
+        format!(
+            "发送失败：收件人 \"{}\" 不在你的联系人列表中。当前可用联系人：{}\n",
+            recipient, names.join(", ")
+        )
+    }
+}
+
+/// Format send failure: communication service unavailable.
+pub fn send_failed_service_unavailable(recipient: &str) -> String {
     format!(
-        "send failed: unknown recipient '{}'. You can only send messages to your user.\n",
+        "发送失败：通讯服务暂时不可用，无法发送消息给 \"{}\"。请稍后重试\n",
+        recipient
+    )
+}
+
+/// Format send failure: relay error.
+pub fn send_failed_relay_error(recipient: &str) -> String {
+    format!(
+        "发送失败：消息转发给 \"{}\" 时出错，通讯服务可能异常。请稍后重试\n",
         recipient
     )
 }
