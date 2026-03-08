@@ -168,10 +168,30 @@ async fn main() -> anyhow::Result<()> {
     // If hub mode, spawn async initialization (refresh instances + register hooks)
     if let Some(ref hub) = hub_state {
         let hub_clone = hub.clone();
+        let state_clone = engine_state.clone();
         tokio::spawn(async move {
             tracing::info!("[HUB] Initializing hub mode...");
             hub_clone.refresh_instances().await;
             alice_engine::hub::hooks::register_hooks_on_engines(&hub_clone).await;
+
+            // Register hooks on self (host engine also needs contacts/relay)
+            let self_port = hub_clone.self_port;
+            let hooks_body = serde_json::json!({
+                "contacts_url": format!("http://localhost:{}/api/hub/contacts/{{instance_id}}", self_port),
+                "send_msg_relay_url": format!("http://localhost:{}/api/hub/relay", self_port)
+            });
+            let cookie = format!("{}={}", state_clone.session_cookie_name, state_clone.session_token);
+            let url = format!("http://localhost:{}/api/hooks", self_port);
+            match state_clone.http_client.post(&url)
+                .header("Cookie", cookie)
+                .json(&hooks_body)
+                .send()
+                .await
+            {
+                Ok(resp) => tracing::info!("[HUB] Self hooks registration: {}", resp.status()),
+                Err(e) => tracing::warn!("[HUB] Failed to register hooks on self: {}", e),
+            }
+
             tracing::info!("[HUB] Hub initialization complete");
         });
     }
