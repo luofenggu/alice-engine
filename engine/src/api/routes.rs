@@ -621,13 +621,14 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_REGISTER_HOOKS, post(handle_register_hooks))
         .route(ROUTE_HANDLE_RELAY_MESSAGE, post(handle_relay_message))
         // Hub hook callback routes
-        .route(ROUTE_HANDLE_HUB_CONTACTS, get(handle_hub_contacts))
-        .route(ROUTE_HANDLE_HUB_RELAY, post(handle_hub_relay))
 }
 
 /// Public API routes — no auth required.
 pub fn public_api_routes() -> Router<Arc<EngineState>> {
-    Router::new().route(ROUTE_HANDLE_PUBLIC_STATIC, get(handle_public_static))
+    Router::new()
+        .route(ROUTE_HANDLE_PUBLIC_STATIC, get(handle_public_static))
+        .route(ROUTE_HANDLE_HUB_CONTACTS, get(handle_hub_contacts))
+        .route(ROUTE_HANDLE_HUB_RELAY, post(handle_hub_relay))
 }
 
 // ── Embedded HTML (compiled into binary) ──
