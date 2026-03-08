@@ -52,7 +52,7 @@ pub struct BeatRequest {
     pub action_token: String,
     pub instance_id: String,
     pub instance_name: Option<String>,
-    pub user_id: String,
+
     pub shell_env: String,
     pub host: Option<String>,
     pub system_start_time: chrono::DateTime<chrono::Local>,
@@ -125,11 +125,7 @@ impl BeatRequest {
                 Some(name) if !name.is_empty() => format!("{}（{}）", name, self.instance_id),
                 _ => self.instance_id.clone(),
             };
-            let base = if self.user_id.is_empty() {
-                format!("你是{}", name_part)
-            } else {
-                format!("你是{}，所属用户：{}", name_part, self.user_id)
-            };
+            let base = format!("你是{}", name_part);
             if self.contacts_info.is_empty() {
                 base
             } else {

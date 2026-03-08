@@ -21,8 +21,7 @@ pub struct EngineState {
     pub instance_store: InstanceStore,
     /// Logs directory.
     pub logs_dir: PathBuf,
-    /// User ID for messages.
-    pub user_id: String,
+
     /// Signal hub for inter-thread communication (interrupt, switch-model).
     pub signal_hub: SignalHub,
     /// Engine configuration (file browse rules, LLM policy, etc.)
@@ -54,7 +53,6 @@ impl EngineState {
         instances_dir: PathBuf,
         logs_dir: PathBuf,
         html_dir: PathBuf,
-        user_id: String,
         signal_hub: SignalHub,
         engine_config: crate::policy::EngineConfig,
         env_config: Arc<crate::policy::EnvConfig>,
@@ -78,7 +76,6 @@ impl EngineState {
             instance_store: InstanceStore::new(instances_dir.clone()),
             logs_dir,
             html_dir,
-            user_id,
             signal_hub,
             engine_config,
             env_config,
@@ -147,7 +144,7 @@ impl EngineState {
 
         match self
             .instance_store
-            .create(&self.user_id, name_opt, None, initial_settings.as_ref())
+            .create(name_opt, None, initial_settings.as_ref())
         {
             Ok(instance) => {
                 info!(
@@ -248,15 +245,13 @@ impl EngineState {
     }
 
     /// Send a user message to an instance.
-    /// If `sender` is provided, use it as the message sender (for relay/cross-instance messaging).
-    /// Otherwise, use the authenticated user_id.
-    pub async fn send_message(&self, instance_id: String, content: String, sender: Option<String>) -> ActionResult {
+    /// Always role=user, sender is empty (user messages don't need sender identification).
+    pub async fn send_message(&self, instance_id: String, content: String) -> ActionResult {
         let content = content.trim().to_string();
         if content.is_empty() {
             return ActionResult::err(crate::policy::messages::empty_message());
         }
 
-        let effective_sender = sender.unwrap_or_else(|| self.user_id.clone());
         let store = self.instance_store.clone();
         let name = instance_id.clone();
 
@@ -264,8 +259,39 @@ impl EngineState {
             let instance = store.open(&name)?;
             let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
             let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
-            let id = ch.write_user_message(&effective_sender, &content, &timestamp)?;
-            info!("[MSG] API: message sent to {} from {}, id={}", name, effective_sender, id);
+            let id = ch.write_user_message("user", &content, &timestamp)?;
+            info!("[MSG] API: user message sent to {}, id={}", name, id);
+            Ok::<_, anyhow::Error>(id)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(id)) => ActionResult::ok(id.to_string()),
+            Ok(Err(e)) => ActionResult::err(e.to_string()),
+            Err(e) => ActionResult::err(e.to_string()),
+        }
+    }
+
+    /// Send a relay message to an instance (from another agent).
+    /// Always role=agent, sender is required.
+    pub async fn send_relay_message(&self, instance_id: String, sender: String, content: String) -> ActionResult {
+        let content = content.trim().to_string();
+        if content.is_empty() {
+            return ActionResult::err(crate::policy::messages::empty_message());
+        }
+        if sender.is_empty() {
+            return ActionResult::err("sender is required for relay messages".to_string());
+        }
+
+        let store = self.instance_store.clone();
+        let name = instance_id.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&name)?;
+            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
+            let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
+            let id = ch.write_agent_reply(&sender, &content, &timestamp, "")?;
+            info!("[MSG] API: relay message sent to {} from {}, id={}", name, sender, id);
             Ok::<_, anyhow::Error>(id)
         })
         .await;
@@ -344,11 +370,7 @@ impl EngineState {
 
     /// Observe instance inference status.
     pub async fn observe(&self, instance_id: String) -> ObserveResult {
-        // Get user_id from instance settings
-        let user_id = self.instance_store
-            .open(&instance_id)
-            .map(|inst| inst.user_id())
-            .unwrap_or_default();
+
 
         match self.signal_hub.get_status(&instance_id) {
             Some(status) => {
@@ -382,13 +404,9 @@ impl EngineState {
                     recent_actions: vec![],
                     idle_timeout_secs: status.idle_timeout_secs.map(|v| v as i64),
                     idle_since: status.idle_since.map(|v| v as i64),
-                    user_id: user_id.clone(),
                 }
             }
-            None => ObserveResult {
-                user_id,
-                ..ObserveResult::default()
-            },
+            None => ObserveResult::default(),
         }
     }
 

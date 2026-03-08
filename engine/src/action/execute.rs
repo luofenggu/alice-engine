@@ -72,14 +72,14 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
         .chat
         .lock()
         .unwrap()
-        .read_unread_user_messages()
+        .read_unread_user_messages(&alice.instance.id)
         .context("Failed to read unread messages")?;
 
     if messages.is_empty() {
         return Ok(out::inbox_empty());
     }
 
-    // Build known sender set: user_id + contacts IDs
+    // Build known sender set: "user" (owner) + contacts IDs
     let contact_ids: Vec<String> = alice
         .hooks_caller
         .as_ref()
@@ -93,7 +93,7 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
 
     let mut result = String::new();
     for msg in &messages {
-        let is_known = msg.sender == alice.user_id
+        let is_known = msg.sender.is_empty() || msg.sender == "user"
             || contact_ids.iter().any(|id| id == &msg.sender);
         result.push_str(&out::read_msg_entry(
             &msg.sender,
@@ -136,13 +136,10 @@ fn execute_send_msg(
 ) -> Result<String> {
     info!("[ACTION-{}] send_msg to {}", tx.instance_id, recipient);
 
-    if recipient != alice.user_id {
-        // Try relay via hooks if available
-        if let Some(ref hooks_caller) = alice.hooks_caller {
-            // Resolve recipient name to instance ID
-            let contacts = hooks_caller.fetch_contacts(&alice.instance.id);
-            let resolved = resolve_recipient_id(recipient, &contacts)
-                .unwrap_or_else(|| recipient.to_string());
+    // Try relay if recipient is in contacts list
+    if let Some(ref hooks_caller) = alice.hooks_caller {
+        let contacts = hooks_caller.fetch_contacts(&alice.instance.id);
+        if let Some(resolved) = resolve_recipient_id(recipient, &contacts) {
             if resolved != recipient {
                 info!(
                     "[ACTION-{}] resolved recipient '{}' -> '{}'",
@@ -184,14 +181,9 @@ fn execute_send_msg(
                 }
             }
         }
-
-        warn!(
-            "[ACTION-{}] send_msg rejected: recipient '{}' != user_id '{}' (no relay configured)",
-            tx.instance_id, recipient, alice.user_id
-        );
-        return Ok(out::send_failed_unknown_recipient(recipient));
     }
 
+    // Not in contacts → internal send (to user)
     let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
     alice
         .instance
@@ -496,7 +488,7 @@ fn execute_create_instance(
     };
     let store = crate::persist::instance::InstanceStore::new(instances_dir.to_path_buf());
     let instance = store
-        .create(&alice.user_id, Some(name), knowledge_opt, None)
+        .create(Some(name), knowledge_opt, None)
         .context("Failed to create instance")?;
 
     info!(
@@ -647,7 +639,7 @@ mod tests {
                 .chat
                 .lock()
                 .unwrap()
-                .count_unread_user_messages()
+                .count_unread_user_messages("test_instance")
                 .unwrap(),
             0
         );

@@ -298,8 +298,6 @@ impl Transaction {
 pub struct Alice {
     /// Instance persistent state (settings, memory, chat, workspace).
     pub instance: instance::Instance,
-    /// User ID this instance belongs to (cached from settings).
-    pub user_id: String,
     /// Log directory path
     pub log_dir: PathBuf,
     /// Environment configuration (shared, read-only after startup).
@@ -371,8 +369,6 @@ impl Alice {
         global_settings_store: Option<GlobalSettingsStore>,
         hooks_caller: Option<Arc<HooksCaller>>,
     ) -> Result<Self> {
-        let user_id = instance.user_id().to_string();
-
         // Read settings overrides before instance is moved into struct
         let mem_cfg = &crate::policy::EngineConfig::get().memory;
         let settings = instance.settings.load().ok();
@@ -398,14 +394,12 @@ impl Alice {
             .unwrap_or(mem_cfg.safety_cooldown_secs);
 
         info!(
-            "[INSTANCE-{}] Alice created for user {} at {}",
+            "[INSTANCE-{}] Alice created at {}",
             instance.id,
-            user_id,
             instance.instance_dir.display()
         );
         Ok(Self {
             instance,
-            user_id,
             log_dir,
             current_infer_log_path: None,
             llm_client,
@@ -605,7 +599,7 @@ impl Alice {
             .chat
             .lock()
             .unwrap()
-            .count_unread_user_messages()
+            .count_unread_user_messages(&self.instance.id)
             .unwrap_or(0)
     }
 
@@ -1105,7 +1099,6 @@ mod tests {
             alice.instance.id,
             tmp.path().file_name().unwrap().to_str().unwrap()
         );
-        assert_eq!(alice.user_id, "user1");
         assert!(alice.current_infer_log_path.is_none());
         assert_eq!(
             alice.instance.memory.memory_dir(),

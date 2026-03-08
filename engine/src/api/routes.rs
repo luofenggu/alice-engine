@@ -50,7 +50,12 @@ pub struct FilePathQuery {
 #[derive(Deserialize)]
 pub struct SendMessageBody {
     pub content: String,
-    pub sender: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct RelayMessageBody {
+    pub sender: String,
+    pub content: String,
 }
 
 #[derive(Deserialize)]
@@ -124,7 +129,16 @@ async fn handle_send_message(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<SendMessageBody>,
 ) -> Response {
-    json_ok(state.send_message(id, body.content, body.sender).await)
+    json_ok(state.send_message(id, body.content).await)
+}
+
+#[post("/api/instances/{id}/messages/relay")]
+async fn handle_relay_message(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<RelayMessageBody>,
+) -> Response {
+    json_ok(state.send_relay_message(id, body.sender, body.content).await)
 }
 
 #[post("/api/instances/{id}/system-messages")]
@@ -544,6 +558,7 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_VISION, post(handle_vision))
         .route(ROUTE_HANDLE_AUTH_CHECK, get(handle_auth_check))
         .route(ROUTE_HANDLE_REGISTER_HOOKS, post(handle_register_hooks))
+        .route(ROUTE_HANDLE_RELAY_MESSAGE, post(handle_relay_message))
 }
 
 /// Public API routes — no auth required.

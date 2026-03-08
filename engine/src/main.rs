@@ -138,7 +138,6 @@ async fn main() -> anyhow::Result<()> {
         instances_dir.clone(),
         logs_dir.clone(),
         html_dir,
-        env_config.user_id.clone(),
         signal_hub.clone(),
         engine_config,
         env_config.clone(),

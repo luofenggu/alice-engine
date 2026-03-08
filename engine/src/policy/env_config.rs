@@ -18,8 +18,7 @@ pub struct EnvConfig {
     pub instances_dir: Option<String>,
     /// Log storage directory (`ALICE_LOGS_DIR`).
     pub logs_dir: Option<String>,
-    /// User ID (`ALICE_USER_ID`, default: `"user"`).
-    pub user_id: String,
+
     /// PID file path (`ALICE_PID_FILE`).
     pub pid_file: Option<PathBuf>,
     /// Public host address (`ALICE_HOST`).
@@ -72,7 +71,7 @@ impl EnvConfig {
             base_dir: std::env::var("ALICE_BASE_DIR").ok(),
             instances_dir: std::env::var("ALICE_INSTANCES_DIR").ok(),
             logs_dir: std::env::var("ALICE_LOGS_DIR").ok(),
-            user_id: std::env::var("ALICE_USER_ID").unwrap_or_else(|_| "user".to_string()),
+
             pid_file: std::env::var("ALICE_PID_FILE").ok().map(PathBuf::from),
             host: std::env::var("ALICE_HOST").ok().filter(|s| !s.is_empty()),
             shell_env: std::env::var("ALICE_SHELL_ENV")

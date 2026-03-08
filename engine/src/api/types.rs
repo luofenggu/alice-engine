@@ -70,8 +70,6 @@ pub struct ObserveResult {
     pub recent_actions: Vec<String>,
     pub idle_timeout_secs: Option<i64>,
     pub idle_since: Option<i64>,
-    #[serde(default)]
-    pub user_id: String,
 }
 
 // ============================================================

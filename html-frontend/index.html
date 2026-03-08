@@ -1002,7 +1002,7 @@ const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) || ("ontouchst
     }
 })();
 let currentInstance = null;
-let userId = null;
+
 let engineVersion = document.body.dataset.version || 'dev';
 let messages = {}; // {name: {msgs: [], total: 0, earliestIndex: Infinity, fullyLoaded: false}}
 let loadingMore = false;
@@ -1723,32 +1723,28 @@ function addCopyButtons(container) {
 function createMessageElement(m) {
     const div = document.createElement('div');
     if (m.id) div.setAttribute('data-msg-id', m.id);
-    // Message direction based on sender (not role)
+    // Message direction based on role
     const sender = m.sender || '';
     const recipient = m.recipient || '';
     let crossTitle = null;
     let isAgentSide = false;
-    if (userId && sender === userId) {
-        // User's own message → right side
+    if (m.role === 'user') {
+        // User message → right side
         div.className = 'msg user';
-    } else if (sender === currentInstance || (!sender && m.role === 'agent')) {
-        // Agent's own reply → left side
-        if (recipient && recipient !== userId && recipient !== '') {
+    } else {
+        // Agent message (including from other agents) → left side
+        isAgentSide = true;
+        if (sender && sender !== currentInstance) {
+            // From another agent
+            div.className = 'msg agent from-other';
+            crossTitle = '📩 来自 ' + sender;
+        } else if (recipient && recipient !== '') {
+            // Sent to another agent
             div.className = 'msg agent to-other';
             crossTitle = '📤 发给 ' + recipient;
         } else {
             div.className = 'msg agent';
         }
-        isAgentSide = true;
-    } else if (sender && sender !== userId) {
-        // Message from another instance → left side + from-other
-        div.className = 'msg agent from-other';
-        crossTitle = '📩 来自 ' + sender;
-        isAgentSide = true;
-    } else {
-        // Fallback: use role
-        div.className = 'msg ' + m.role;
-        if (m.role === 'agent') isAgentSide = true;
     }
     if (isAgentSide || crossTitle) {
         div.innerHTML = renderMarkdown(m.content);
@@ -2022,8 +2018,7 @@ async function pollInference() {
     if (!data || typeof data !== 'object') return;
     // Update inferring state for adaptive polling
     isInstanceInferring = !!data.inferring;
-    // Extract user_id from observe response
-    if (data.user_id) userId = data.user_id;
+
     // Update inference icon and label based on state
     const content = document.getElementById('inferenceContent');
     const label = document.getElementById('inferenceLabel');

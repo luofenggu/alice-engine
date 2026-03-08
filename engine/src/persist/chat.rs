@@ -303,40 +303,55 @@ impl ChatHistory {
         chrono::Local::now().format("%Y%m%d%H%M%S").to_string()
     }
 
+    /// Unified message write function.
+    /// All message types (user/agent/system) go through this single entry point.
+    pub fn write_message(
+        &mut self,
+        role: &str,
+        sender: &str,
+        content: &str,
+        timestamp: &str,
+        recipient: &str,
+    ) -> Result<i64> {
+        let id = self.insert_message(
+            sender,
+            role,
+            content,
+            timestamp,
+            Message::STATUS_UNREAD,
+            Message::TYPE_CHAT,
+            recipient,
+        )?;
+        info!(
+            "[MSG] Message written: id={}, role={}, sender={}, recipient={}",
+            id,
+            role,
+            sender,
+            if recipient.is_empty() { "user" } else { recipient }
+        );
+        Ok(id)
+    }
+
     pub fn write_user_message(
         &mut self,
         sender: &str,
         content: &str,
         timestamp: &str,
     ) -> Result<i64> {
-        let id = self.insert_message(
-            sender,
-            Message::ROLE_USER,
-            content,
-            timestamp,
-            Message::STATUS_UNREAD,
-            Message::TYPE_CHAT,
-            "",
-        )?;
-        info!(
-            "[MSG] User message written: id={}, sender={}, type={}",
-            id,
-            sender,
-            Message::TYPE_CHAT
-        );
-        Ok(id)
+        self.write_message(Message::ROLE_USER, sender, content, timestamp, "")
     }
 
-    /// Read all unread user messages (inbox) and mark them as read.
+    /// Read all unread inbox messages and mark them as read.
+    /// Reads all unread messages except agent messages sent by self.
     ///
     /// @TRACE: MSG
-    pub fn read_unread_user_messages(&mut self) -> Result<Vec<InboxMessage>> {
+    pub fn read_unread_user_messages(&mut self, self_instance_id: &str) -> Result<Vec<InboxMessage>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, sender, role, content, timestamp, msg_type FROM messages WHERE role IN ('user', 'system') AND read_status = ?"
+            "SELECT id, sender, role, content, timestamp, msg_type FROM messages WHERE read_status = ? AND NOT (role = 'agent' AND sender = ?)"
         )?;
         let inbox: Vec<InboxMessage> = stmt
             .query_map(
-                rusqlite::params![Message::STATUS_UNREAD],
+                rusqlite::params![Message::STATUS_UNREAD, self_instance_id],
                 |row| {
                     Ok(InboxMessage {
                         id: row.get(0)?,
@@ -353,25 +368,26 @@ impl ChatHistory {
 
         if !inbox.is_empty() {
             self.conn.execute(
-                "UPDATE messages SET read_status = ? WHERE role IN ('user', 'system') AND read_status = ?",
+                "UPDATE messages SET read_status = ? WHERE read_status = ? AND NOT (role = 'agent' AND sender = ?)",
                 rusqlite::params![
                     Message::STATUS_READ,
-                    Message::STATUS_UNREAD
+                    Message::STATUS_UNREAD,
+                    self_instance_id
                 ],
             )?;
-            info!("[MSG] Read {} unread messages (user+system)", inbox.len());
+            info!("[MSG] Read {} unread messages", inbox.len());
         }
 
         Ok(inbox)
     }
 
-    /// Count unread user messages.
-    pub fn count_unread_user_messages(&self) -> Result<i64> {
+    /// Count unread inbox messages (excluding agent messages sent by self).
+    pub fn count_unread_user_messages(&self, self_instance_id: &str) -> Result<i64> {
         let count: i64 = self
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM messages WHERE role IN ('user', 'system') AND read_status = ?",
-                rusqlite::params![Message::STATUS_UNREAD],
+                "SELECT COUNT(*) FROM messages WHERE read_status = ? AND NOT (role = 'agent' AND sender = ?)",
+                rusqlite::params![Message::STATUS_UNREAD, self_instance_id],
                 |row| row.get(0),
             )
             .unwrap_or(0);
@@ -387,22 +403,8 @@ impl ChatHistory {
         content: &str,
         timestamp: &str,
         recipient: &str,
-    ) -> Result<()> {
-        self.insert_message(
-            sender,
-            Message::ROLE_AGENT,
-            content,
-            timestamp,
-            Message::STATUS_UNREAD,
-            Message::TYPE_CHAT,
-            recipient,
-        )?;
-        info!(
-            "[MSG] Agent reply written: sender={}, recipient={}",
-            sender,
-            if recipient.is_empty() { "user" } else { recipient }
-        );
-        Ok(())
+    ) -> Result<i64> {
+        self.write_message(Message::ROLE_AGENT, sender, content, timestamp, recipient)
     }
 
     /// Write a system message (role=system, read_status=unread).
@@ -412,21 +414,7 @@ impl ChatHistory {
         content: &str,
         timestamp: &str,
     ) -> Result<i64> {
-        let id = self.insert_message(
-            "system",
-            Message::ROLE_SYSTEM,
-            content,
-            timestamp,
-            Message::STATUS_UNREAD,
-            Message::TYPE_CHAT,
-            "",
-        )?;
-        info!(
-            "[MSG] System message written: id={}, type={}",
-            id,
-            Message::TYPE_CHAT
-        );
-        Ok(id)
+        self.write_message(Message::ROLE_SYSTEM, "system", content, timestamp, "")
     }
 
     /// Read all unread agent replies and mark them as read.
@@ -620,16 +608,16 @@ mod tests {
         ch.write_user_message("24007", "are you there?", "20260220120001")
             .unwrap();
 
-        assert_eq!(ch.count_unread_user_messages().unwrap(), 2);
+        assert_eq!(ch.count_unread_user_messages("test_instance").unwrap(), 2);
 
-        let msgs = ch.read_unread_user_messages().unwrap();
+        let msgs = ch.read_unread_user_messages("test_instance").unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].content, "hello agent");
         assert_eq!(msgs[1].content, "are you there?");
 
-        assert_eq!(ch.count_unread_user_messages().unwrap(), 0);
+        assert_eq!(ch.count_unread_user_messages("test_instance").unwrap(), 0);
 
-        let msgs2 = ch.read_unread_user_messages().unwrap();
+        let msgs2 = ch.read_unread_user_messages("test_instance").unwrap();
         assert!(msgs2.is_empty());
     }
 
