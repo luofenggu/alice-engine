@@ -72,9 +72,7 @@ impl Settings {
         if self.model.is_none() {
             self.model = fallback.model.clone();
         }
-        if self.user_id.is_none() {
-            self.user_id = fallback.user_id.clone();
-        }
+
         if self.privileged.is_none() {
             self.privileged = fallback.privileged;
         }
@@ -136,7 +134,7 @@ impl Settings {
                 .default_model
                 .clone()
                 .or_else(|| Some(llm.default_model.clone())),
-            user_id: Some(env.user_id.clone()),
+            user_id: None,
             privileged: None,
             max_beats: None,
             session_blocks_limit: Some(mem.session_blocks_limit),

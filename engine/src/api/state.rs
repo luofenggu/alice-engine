@@ -10,6 +10,7 @@ use tracing::{error, info};
 
 use crate::api::types::*;
 use crate::core::signal::SignalHub;
+use crate::persist::hooks::{HooksCaller, HooksStore};
 use crate::persist::instance::InstanceStore;
 use crate::persist::{GlobalSettingsStore, Settings};
 use std::sync::atomic::AtomicBool;
@@ -20,8 +21,7 @@ pub struct EngineState {
     pub instance_store: InstanceStore,
     /// Logs directory.
     pub logs_dir: PathBuf,
-    /// User ID for messages.
-    pub user_id: String,
+
     /// Signal hub for inter-thread communication (interrupt, switch-model).
     pub signal_hub: SignalHub,
     /// Engine configuration (file browse rules, LLM policy, etc.)
@@ -42,6 +42,12 @@ pub struct EngineState {
     pub http_client: reqwest::Client,
     /// Shared LLM client for channel rotation (used by vision, etc.)
     pub llm_client: Arc<crate::external::llm::LlmClient>,
+    /// Hooks store for persistent hook configuration.
+    pub hooks_store: HooksStore,
+    /// Shared hooks caller for all instances (contains config + cache).
+    pub hooks_caller: Arc<HooksCaller>,
+    /// Hub state (only present when ALICE_HUB=true, master mode).
+    pub hub: Option<Arc<crate::hub::HubState>>,
 }
 
 impl EngineState {
@@ -49,12 +55,12 @@ impl EngineState {
         instances_dir: PathBuf,
         logs_dir: PathBuf,
         html_dir: PathBuf,
-        user_id: String,
         signal_hub: SignalHub,
         engine_config: crate::policy::EngineConfig,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: GlobalSettingsStore,
         llm_client: Arc<crate::external::llm::LlmClient>,
+        hub: Option<Arc<crate::hub::HubState>>,
     ) -> Self {
         let session_token = if env_config.auth_secret.is_empty() {
             String::new()
@@ -69,11 +75,20 @@ impl EngineState {
             .load()
             .map(|s| s.api_key.as_ref().map_or(false, |k| !k.is_empty()))
             .unwrap_or(false);
+        let hooks_store = HooksStore::open(instances_dir.parent().unwrap_or(&instances_dir).join("hooks.json")).unwrap_or_else(|e| {
+            tracing::warn!("[HOOKS] Failed to open hooks.json: {}, using defaults", e);
+            HooksStore::open(instances_dir.parent().unwrap_or(&instances_dir).join("hooks.json")).expect("hooks store")
+        });
+        let initial_hooks_config = hooks_store.load().unwrap_or_default();
+        if !initial_hooks_config.is_empty() {
+            tracing::info!("[HOOKS] Loaded hooks config from disk");
+        }
+        let hooks_caller = Arc::new(HooksCaller::new(initial_hooks_config));
+
         Self {
-            instance_store: InstanceStore::new(instances_dir),
+            instance_store: InstanceStore::new(instances_dir.clone()),
             logs_dir,
             html_dir,
-            user_id,
             signal_hub,
             engine_config,
             env_config,
@@ -83,6 +98,9 @@ impl EngineState {
             setup_completed: AtomicBool::new(setup_done),
             http_client: reqwest::Client::new(),
             llm_client,
+            hooks_store,
+            hooks_caller,
+            hub,
         }
     }
 
@@ -137,7 +155,7 @@ impl EngineState {
 
         match self
             .instance_store
-            .create(&self.user_id, name_opt, None, initial_settings.as_ref())
+            .create(name_opt, None, initial_settings.as_ref())
         {
             Ok(instance) => {
                 info!(
@@ -191,11 +209,13 @@ impl EngineState {
                 let rows = ch.get_messages_after(after, limit)?;
                 let messages: Vec<MessageInfo> = rows
                     .into_iter()
-                    .map(|(id, role, content, timestamp)| MessageInfo {
+                    .map(|(id, sender, role, content, timestamp, recipient)| MessageInfo {
                         id,
                         role,
                         content,
                         timestamp,
+                        sender,
+                        recipient,
                     })
                     .collect();
                 let has_more = messages.len() >= limit as usize;
@@ -210,6 +230,8 @@ impl EngineState {
                         role: m.role.clone(),
                         content: m.content.clone(),
                         timestamp: m.timestamp.clone(),
+                        sender: m.sender.clone(),
+                        recipient: m.recipient.clone(),
                     })
                     .collect();
                 Ok(MessagesResult {
@@ -234,13 +256,13 @@ impl EngineState {
     }
 
     /// Send a user message to an instance.
+    /// Always role=user, sender is empty (user messages don't need sender identification).
     pub async fn send_message(&self, instance_id: String, content: String) -> ActionResult {
         let content = content.trim().to_string();
         if content.is_empty() {
             return ActionResult::err(crate::policy::messages::empty_message());
         }
 
-        let user_id = self.user_id.clone();
         let store = self.instance_store.clone();
         let name = instance_id.clone();
 
@@ -248,8 +270,70 @@ impl EngineState {
             let instance = store.open(&name)?;
             let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
             let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
-            let id = ch.write_user_message(&user_id, &content, &timestamp)?;
-            info!("[MSG] API: message sent to {}, id={}", name, id);
+            let id = ch.write_user_message("user", &content, &timestamp)?;
+            info!("[MSG] API: user message sent to {}, id={}", name, id);
+            Ok::<_, anyhow::Error>(id)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(id)) => ActionResult::ok(id.to_string()),
+            Ok(Err(e)) => ActionResult::err(e.to_string()),
+            Err(e) => ActionResult::err(e.to_string()),
+        }
+    }
+
+    /// Send a relay message to an instance (from another agent).
+    /// Always role=agent, sender is required.
+    pub async fn send_relay_message(&self, instance_id: String, sender: String, content: String) -> ActionResult {
+        let content = content.trim().to_string();
+        if content.is_empty() {
+            return ActionResult::err(crate::policy::messages::empty_message());
+        }
+        if sender.is_empty() {
+            return ActionResult::err("sender is required for relay messages".to_string());
+        }
+
+        let store = self.instance_store.clone();
+        let name = instance_id.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&name)?;
+            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
+            let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
+            let id = ch.write_agent_reply(&sender, &content, &timestamp, "")?;
+            info!("[MSG] API: relay message sent to {} from {}, id={}", name, sender, id);
+            Ok::<_, anyhow::Error>(id)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(id)) => ActionResult::ok(id.to_string()),
+            Ok(Err(e)) => ActionResult::err(e.to_string()),
+            Err(e) => ActionResult::err(e.to_string()),
+        }
+    }
+
+    /// Send a system message to an instance (no auth required for sender identity).
+    pub async fn send_system_message(
+        &self,
+        instance_id: String,
+        content: String,
+    ) -> ActionResult {
+        let content = content.trim().to_string();
+        if content.is_empty() {
+            return ActionResult::err(crate::policy::messages::empty_message());
+        }
+
+        let store = self.instance_store.clone();
+        let name = instance_id.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let instance = store.open(&name)?;
+            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
+            let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
+            let id = ch.write_system_message(&content, &timestamp)?;
+            info!("[MSG] API: system message sent to {}, id={}", name, id);
             Ok::<_, anyhow::Error>(id)
         })
         .await;
@@ -275,11 +359,13 @@ impl EngineState {
         match result {
             Ok(Ok(replies)) => replies
                 .into_iter()
-                .map(|(id, role, content, timestamp)| MessageInfo {
+                .map(|(id, sender, role, content, timestamp, recipient)| MessageInfo {
                     id,
                     role,
                     content,
                     timestamp,
+                    sender,
+                    recipient,
                 })
                 .collect(),
             Ok(Err(e)) => {
@@ -295,6 +381,8 @@ impl EngineState {
 
     /// Observe instance inference status.
     pub async fn observe(&self, instance_id: String) -> ObserveResult {
+
+
         match self.signal_hub.get_status(&instance_id) {
             Some(status) => {
                 let engine_online = if status.inferring {

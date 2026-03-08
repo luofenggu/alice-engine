@@ -132,19 +132,69 @@ async fn main() -> anyhow::Result<()> {
     let llm_client = Arc::new(alice_engine::external::llm::LlmClient::new(llm_configs));
     tracing::info!("Shared LLM client created with {} channel(s)", llm_client.all_configs().len());
 
-    // Create engine state (shared between HTTP server and engine)
+    // Create engine config
     let engine_config = alice_engine::policy::EngineConfig::load();
+
+    // ── Hub mode: initialize if ALICE_HUB=true ──
+    let hub_state = if env_config.hub_enabled {
+        use alice_engine::hub::{HubState, config::HubConfigStore};
+
+        let hub_config_path = base_dir.join("hub.json");
+        let hub_config_store = HubConfigStore::open(&hub_config_path)
+            .expect("Failed to open hub.json");
+        let hub_config = hub_config_store.load()
+            .expect("Failed to load hub config");
+
+        let hub = Arc::new(HubState::new(hub_config, hub_config_store, http_port));
+        tracing::info!("[HUB] Hub mode enabled with {} engine(s)", hub.engines.len());
+        Some(hub)
+    } else {
+        None
+    };
+
+    // Create engine state (shared between HTTP server and engine)
     let engine_state = Arc::new(EngineState::new(
         instances_dir.clone(),
         logs_dir.clone(),
         html_dir,
-        env_config.user_id.clone(),
         signal_hub.clone(),
         engine_config,
         env_config.clone(),
         global_settings_store.clone(),
         llm_client.clone(),
+        hub_state.clone(),
     ));
+
+    // If hub mode, spawn async initialization (refresh instances + register hooks)
+    if let Some(ref hub) = hub_state {
+        let hub_clone = hub.clone();
+        let state_clone = engine_state.clone();
+        tokio::spawn(async move {
+            tracing::info!("[HUB] Initializing hub mode...");
+            hub_clone.refresh_instances().await;
+            alice_engine::hub::hooks::register_hooks_on_engines(&hub_clone).await;
+
+            // Register hooks on self (host engine also needs contacts/relay)
+            let self_port = hub_clone.self_port;
+            let hooks_body = serde_json::json!({
+                "contacts_url": format!("http://localhost:{}/api/hub/contacts/{{instance_id}}", self_port),
+                "send_msg_relay_url": format!("http://localhost:{}/api/hub/relay", self_port)
+            });
+            let cookie = format!("{}={}", state_clone.session_cookie_name, state_clone.session_token);
+            let url = format!("http://localhost:{}/api/hooks", self_port);
+            match state_clone.http_client.post(&url)
+                .header("Cookie", cookie)
+                .json(&hooks_body)
+                .send()
+                .await
+            {
+                Ok(resp) => tracing::info!("[HUB] Self hooks registration: {}", resp.status()),
+                Err(e) => tracing::warn!("[HUB] Failed to register hooks on self: {}", e),
+            }
+
+            tracing::info!("[HUB] Hub initialization complete");
+        });
+    }
 
     // Build HTTP router (routes, auth, embedded HTML — all in api/)
     let app = routes::build_router(engine_state.clone());

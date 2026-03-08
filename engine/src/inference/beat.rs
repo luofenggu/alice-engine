@@ -25,6 +25,7 @@ use crate::policy::EngineConfig;
 
 /// A single chat message (raw data, not yet formatted).
 pub struct PromptMessage {
+    pub role: String,
     pub sender: String,
     pub timestamp: String,
     pub content: String,
@@ -52,7 +53,7 @@ pub struct BeatRequest {
     pub action_token: String,
     pub instance_id: String,
     pub instance_name: Option<String>,
-    pub user_id: String,
+
     pub shell_env: String,
     pub host: Option<String>,
     pub system_start_time: chrono::DateTime<chrono::Local>,
@@ -62,6 +63,12 @@ pub struct BeatRequest {
     pub current_content: String,
     pub skill_content: String,
     pub unread_count: usize,
+    /// Contacts info string to inject into environment section (from hooks).
+    pub contacts_info: String,
+    /// Extra skills content from hooks, merged into skill section.
+    pub extra_skills: String,
+    /// HTTP port for local API references (e.g. vision API).
+    pub http_port: u16,
 }
 
 /// Snapshot of memory state at the time of prompt rendering.
@@ -119,10 +126,11 @@ impl BeatRequest {
                 Some(name) if !name.is_empty() => format!("{}（{}）", name, self.instance_id),
                 _ => self.instance_id.clone(),
             };
-            if self.user_id.is_empty() {
-                format!("你是{}", name_part)
+            let base = format!("你是{}", name_part);
+            if self.contacts_info.is_empty() {
+                base
             } else {
-                format!("你是{}，所属用户：{}", name_part, self.user_id)
+                format!("{}\n{}", base, self.contacts_info)
             }
         };
 
@@ -161,7 +169,7 @@ impl BeatRequest {
 
         let mut sections = Vec::new();
         for block in &self.session_blocks {
-            let rendered = format_session_entries(&block.entries);
+            let rendered = format_session_entries(&block.entries, &self.instance_id);
             if !rendered.is_empty() {
                 sections.push(format!("[{}]\n{}", block.block_name, rendered));
             }
@@ -180,18 +188,25 @@ impl BeatRequest {
 
     /// Build skill section: default skill (app guide) + instance custom skill.
     fn build_skill_section(&self) -> String {
-        let default_skill = make_reserved_skill(self.host.as_deref(), &self.instance_id);
+        let default_skill = make_reserved_skill(self.host.as_deref(), &self.instance_id, self.http_port);
 
-        let combined = match (
-            default_skill.is_empty(),
-            self.skill_content.trim().is_empty(),
-        ) {
-            (true, true) => return String::new(),
-            (false, true) => default_skill,
-            (true, false) => self.skill_content.clone(),
-            (false, false) => format!("{}\n\n{}", default_skill, self.skill_content),
-        };
+        // Merge: default_skill + instance skill_content + extra_skills (from hooks)
+        let mut parts: Vec<&str> = Vec::new();
+        if !default_skill.is_empty() {
+            parts.push(&default_skill);
+        }
+        if !self.skill_content.trim().is_empty() {
+            parts.push(&self.skill_content);
+        }
+        if !self.extra_skills.trim().is_empty() {
+            parts.push(&self.extra_skills);
+        }
 
+        if parts.is_empty() {
+            return String::new();
+        }
+
+        let combined = parts.join("\n\n");
         format!("### skill ###\n{}\n", combined)
     }
 }
@@ -211,7 +226,7 @@ impl From<&crate::persist::SessionBlockEntry> for SessionEntryData {
 
 /// Format session entries into display text.
 /// Used by render() for beat prompts and by compress for history rolling.
-pub fn format_session_entries(entries: &[SessionEntryData]) -> String {
+pub fn format_session_entries(entries: &[SessionEntryData], self_id: &str) -> String {
     let truncate_len = EngineConfig::get().memory.message_truncate_length;
 
     let mut sections = Vec::new();
@@ -225,7 +240,9 @@ pub fn format_session_entries(entries: &[SessionEntryData]) -> String {
                 msg.content.clone()
             };
             parts.push(messages::chat_message(
+                &msg.role,
                 &msg.sender,
+                self_id,
                 &msg.timestamp,
                 &content_display,
             ));
@@ -372,24 +389,20 @@ fn make_memory_status(
 /// Build host info line (just the public address, if available).
 fn make_host_line(host: Option<&str>) -> String {
     match host {
-        Some(h) if !h.is_empty() => {
-            let host_display = h.split(':').next().unwrap_or(h);
-            messages::host_info(host_display)
-        }
+        Some(h) if !h.is_empty() => messages::host_info(h),
         _ => String::new(),
     }
 }
 
 /// Build reserved skill section (app guide + vision API + uploads).
 /// Returns empty string if no host is configured.
-fn make_reserved_skill(host: Option<&str>, instance_id: &str) -> String {
+fn make_reserved_skill(host: Option<&str>, instance_id: &str, port: u16) -> String {
     match host {
         Some(h) if !h.is_empty() => {
-            let host_display = h.split(':').next().unwrap_or(h);
             RESERVED_SKILL_TEMPLATE
-                .replace("{host}", host_display)
-                .replace("{host_port}", h)
+                .replace("{host}", h)
                 .replace("{instance}", instance_id)
+                .replace("{port}", &port.to_string())
         }
         _ => String::new(),
     }
@@ -459,6 +472,13 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_msg_ids_system_message() {
+        let text = "[系统通知] [MSG:20260307103449]发来一条消息：\n\n[验证] system消息测试\n";
+        let ids = extract_msg_ids(text);
+        assert_eq!(ids, vec!["20260307103449"]);
+    }
+
+    #[test]
     fn test_make_memory_status_basic() {
         let status = make_memory_status("test-id", Some("TestBot"), 1000, 2000, 3000, 4000);
         assert!(status.contains("TestBot"));
@@ -476,7 +496,7 @@ mod tests {
     fn test_make_host_line() {
         assert_eq!(
             make_host_line(Some("1.2.3.4:8080")),
-            messages::host_info("1.2.3.4")
+            messages::host_info("1.2.3.4:8080")
         );
         assert_eq!(make_host_line(None), "");
         assert_eq!(make_host_line(Some("")), "");
@@ -484,22 +504,23 @@ mod tests {
 
     #[test]
     fn test_make_reserved_skill_no_host() {
-        assert_eq!(make_reserved_skill(None, "test"), "");
-        assert_eq!(make_reserved_skill(Some(""), "test"), "");
+        assert_eq!(make_reserved_skill(None, "test", 8081), "");
+        assert_eq!(make_reserved_skill(Some(""), "test", 8081), "");
     }
 
     #[test]
     fn test_format_session_entries_basic() {
         let entries = vec![SessionEntryData {
             messages: vec![PromptMessage {
-                sender: "user1".into(),
+                role: "user".into(),
+                sender: "user".into(),
                 timestamp: "20260303120000".into(),
                 content: "hello".into(),
             }],
             summary: "User said hello".into(),
         }];
-        let rendered = format_session_entries(&entries);
-        assert!(rendered.contains("user1"));
+        let rendered = format_session_entries(&entries, "test_self");
+        assert!(rendered.contains("user"));
         assert!(rendered.contains("hello"));
         assert!(rendered.contains("User said hello"));
     }
@@ -509,19 +530,20 @@ mod tests {
         let long_content = "x".repeat(300);
         let entries = vec![SessionEntryData {
             messages: vec![PromptMessage {
-                sender: "user1".into(),
+                role: "agent".into(),
+                sender: "test_self".into(),
                 timestamp: "20260303120000".into(),
                 content: long_content,
             }],
             summary: String::new(),
         }];
-        let rendered = format_session_entries(&entries);
+        let rendered = format_session_entries(&entries, "test_self");
         assert!(!rendered.contains(&"x".repeat(300)));
     }
 
     #[test]
     fn test_format_session_entries_empty() {
         let entries: Vec<SessionEntryData> = vec![];
-        assert_eq!(format_session_entries(&entries), "");
+        assert_eq!(format_session_entries(&entries, "test_self"), "");
     }
 }

@@ -52,7 +52,6 @@ impl Instance {
     /// but data/, memory/, workspace/ were missing until engine hot-scan.
     pub fn create(
         instances_dir: &Path,
-        user_id: &str,
         display_name: Option<&str>,
         knowledge: Option<&str>,
         initial_settings: Option<&Settings>,
@@ -94,7 +93,6 @@ impl Instance {
 
         // Write settings.json
         let mut settings_obj = Settings {
-            user_id: Some(user_id.to_string()),
             color: Some(color.to_string()),
             name: display_name.map(|n| n.to_string()),
             ..Default::default()
@@ -126,9 +124,8 @@ impl Instance {
         let chat = ChatHistory::open(&chat_db_path).context("Failed to open chat history")?;
 
         info!(
-            "[INSTANCE-{}] Created for user {} at {}",
+            "[INSTANCE-{}] Created at {}",
             id,
-            user_id,
             instance_dir.display()
         );
 
@@ -291,13 +288,6 @@ impl Instance {
         })
     }
 
-    /// Get user_id from settings.
-    pub fn user_id(&self) -> String {
-        self.settings
-            .load()
-            .map(|s| s.user_id_or_default())
-            .unwrap_or_default()
-    }
 
     /// One-time migration: keypoints.md + knowledge/*.md → knowledge.md
     fn migrate_knowledge(
@@ -421,14 +411,12 @@ impl InstanceStore {
     /// Create a new instance atomically.
     pub fn create(
         &self,
-        user_id: &str,
         display_name: Option<&str>,
         knowledge: Option<&str>,
         initial_settings: Option<&Settings>,
     ) -> Result<Instance> {
         let instance = Instance::create(
             &self.instances_dir,
-            user_id,
             display_name,
             knowledge,
             initial_settings,
@@ -529,17 +517,15 @@ mod tests {
         let instances_dir = tmp.path();
 
         let instance =
-            Instance::create(instances_dir, "user1", Some("TestBot"), None, None).unwrap();
+            Instance::create(instances_dir, Some("TestBot"), None, None).unwrap();
 
         assert_eq!(instance.id.len(), 6);
         assert!(instance.instance_dir.exists());
         assert!(instance.workspace.exists());
         assert!(instance.instance_dir.join("data").exists());
         assert!(instance.instance_dir.join("memory").exists());
-        assert_eq!(instance.user_id(), "user1");
 
         let settings = instance.settings.load().unwrap();
-        assert_eq!(settings.user_id.as_deref(), Some("user1"));
         assert_eq!(settings.name, Some("TestBot".to_string()));
         assert!(settings.color.is_some());
     }
@@ -551,7 +537,6 @@ mod tests {
 
         let instance = Instance::create(
             instances_dir,
-            "user1",
             Some("TestBot"),
             Some("# Test Knowledge\nHello world"),
             None,
@@ -570,7 +555,7 @@ mod tests {
 
         // Create first
         let created =
-            Instance::create(instances_dir, "user1", Some("TestBot"), None, None).unwrap();
+            Instance::create(instances_dir, Some("TestBot"), None, None).unwrap();
         let id = created.id.clone();
         let dir = created.instance_dir.clone();
         drop(created);
@@ -578,7 +563,6 @@ mod tests {
         // Open
         let opened = Instance::open(&dir).unwrap();
         assert_eq!(opened.id, id);
-        assert_eq!(opened.user_id(), "user1");
     }
 
     #[test]
@@ -586,7 +570,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let instances_dir = tmp.path();
 
-        let instance = Instance::create(instances_dir, "user1", None, None, None).unwrap();
+        let instance = Instance::create(instances_dir, None, None, None).unwrap();
 
         // All subdirectories should exist immediately after create
         assert!(instance.instance_dir.join("memory").exists());
@@ -669,7 +653,7 @@ mod tests {
 
         // Create an instance
         let instance = store
-            .create("user1", Some("Test Agent"), None, None)
+            .create(Some("Test Agent"), None, None)
             .unwrap();
         assert_eq!(instance.id.len(), 6);
 
@@ -685,7 +669,7 @@ mod tests {
         let store = InstanceStore::new(tmp.path().to_path_buf());
 
         let created = store
-            .create("user1", None, Some("test knowledge"), None)
+            .create(None, Some("test knowledge"), None)
             .unwrap();
         let id = created.id.clone();
         drop(created);
@@ -705,7 +689,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = InstanceStore::new(tmp.path().to_path_buf());
 
-        let instance = store.create("user1", Some("Doomed"), None, None).unwrap();
+        let instance = store.create(Some("Doomed"), None, None).unwrap();
         let id = instance.id.clone();
         drop(instance);
 

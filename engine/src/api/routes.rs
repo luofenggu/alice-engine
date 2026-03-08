@@ -14,7 +14,35 @@ use serde::Deserialize;
 
 use super::http_protocol;
 use super::state::EngineState;
+use crate::persist::hooks::HooksConfig;
 use crate::persist::Settings;
+
+// ── Hub instance_id extraction patterns ──
+
+/// Extract instance_id from URL path for hub routing.
+/// Matches: /api/instances/{id}/..., /serve/{id}/..., /public/{id}/...
+fn extract_instance_id_from_path(path: &str) -> Option<&str> {
+    if let Some(rest) = path.strip_prefix("/api/instances/") {
+        // /api/instances/{id} or /api/instances/{id}/...
+        let id = rest.split('/').next()?;
+        if !id.is_empty() {
+            return Some(id);
+        }
+    }
+    if let Some(rest) = path.strip_prefix("/serve/") {
+        let id = rest.split('/').next()?;
+        if !id.is_empty() {
+            return Some(id);
+        }
+    }
+    if let Some(rest) = path.strip_prefix("/public/") {
+        let id = rest.split('/').next()?;
+        if !id.is_empty() {
+            return Some(id);
+        }
+    }
+    None
+}
 
 // ── Helper Functions ──
 
@@ -52,6 +80,12 @@ pub struct SendMessageBody {
 }
 
 #[derive(Deserialize)]
+pub struct RelayMessageBody {
+    pub sender: String,
+    pub content: String,
+}
+
+#[derive(Deserialize)]
 pub struct CreateInstanceBody {
     pub name: Option<String>,
     pub settings: Option<Settings>,
@@ -67,7 +101,15 @@ pub struct VisionBody {
 
 #[get("/api/instances")]
 async fn handle_get_instances(State(state): State<Arc<EngineState>>) -> Response {
-    json_ok(state.get_instances().await)
+    let mut instances = state.get_instances().await;
+
+    // Hub mode: merge remote instances from all slave engines
+    if let Some(ref hub) = state.hub {
+        let remote = hub.all_instances();
+        instances.extend(remote);
+    }
+
+    json_ok(instances)
 }
 
 #[post("/api/instances")]
@@ -123,6 +165,24 @@ async fn handle_send_message(
     Json(body): Json<SendMessageBody>,
 ) -> Response {
     json_ok(state.send_message(id, body.content).await)
+}
+
+#[post("/api/instances/{id}/messages/relay")]
+async fn handle_relay_message(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<RelayMessageBody>,
+) -> Response {
+    json_ok(state.send_relay_message(id, body.sender, body.content).await)
+}
+
+#[post("/api/instances/{id}/system-messages")]
+async fn handle_send_system_message(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<SendMessageBody>,
+) -> Response {
+    json_ok(state.send_system_message(id, body.content).await)
 }
 
 #[get("/api/instances/{id}/replies")]
@@ -461,6 +521,52 @@ async fn handle_upload(
     Json(serde_json::json!({ "files": uploaded })).into_response()
 }
 
+// ── Hub Hook Callbacks ──
+
+/// Hub contacts callback: returns all instances except the requesting one.
+#[get("/api/hub/contacts/{id}")]
+async fn handle_hub_contacts(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    match &state.hub {
+        Some(hub) => crate::hub::hooks::handle_hub_contacts(hub, &state, &id).await.into_response(),
+        None => json_error(StatusCode::NOT_FOUND, "Hub not enabled"),
+    }
+}
+
+/// Hub relay callback: route a message to the target instance.
+#[post("/api/hub/relay")]
+async fn handle_hub_relay(
+    State(state): State<Arc<EngineState>>,
+    Json(body): Json<crate::persist::hooks::RelayRequest>,
+) -> Response {
+    match &state.hub {
+        Some(hub) => crate::hub::hooks::handle_hub_relay(hub, &state, body).await.into_response(),
+        None => json_error(StatusCode::NOT_FOUND, "Hub not enabled"),
+    }
+}
+
+// ── Hooks Registration ──
+
+#[post("/api/hooks")]
+async fn handle_register_hooks(
+    State(state): State<Arc<EngineState>>,
+    Json(config): Json<HooksConfig>,
+) -> Response {
+    match state.hooks_store.register(&config) {
+        Ok(merged) => {
+            state.hooks_caller.update_config(merged);
+            tracing::info!("[HOOKS] Hooks registered/updated successfully");
+            json_ok(crate::api::types::ActionResult::ok_empty())
+        }
+        Err(e) => {
+            tracing::warn!("[HOOKS] Failed to register hooks: {}", e);
+            json_ok(crate::api::types::ActionResult::err(e.to_string()))
+        }
+    }
+}
+
 // ── Router Builders ──
 
 /// Auth check — returns authenticated status (already passed auth middleware).
@@ -485,6 +591,10 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
             get(handle_get_messages).post(handle_send_message),
         )
         .route(ROUTE_HANDLE_GET_REPLIES, get(handle_get_replies))
+        .route(
+            ROUTE_HANDLE_SEND_SYSTEM_MESSAGE,
+            post(handle_send_system_message),
+        )
         .route(ROUTE_HANDLE_OBSERVE, get(handle_observe))
         .route(ROUTE_HANDLE_INTERRUPT, post(handle_interrupt))
         .route(
@@ -508,11 +618,17 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_UPLOAD, post(handle_upload))
         .route(ROUTE_HANDLE_VISION, post(handle_vision))
         .route(ROUTE_HANDLE_AUTH_CHECK, get(handle_auth_check))
+        .route(ROUTE_HANDLE_REGISTER_HOOKS, post(handle_register_hooks))
+        .route(ROUTE_HANDLE_RELAY_MESSAGE, post(handle_relay_message))
+        // Hub hook callback routes
 }
 
 /// Public API routes — no auth required.
 pub fn public_api_routes() -> Router<Arc<EngineState>> {
-    Router::new().route(ROUTE_HANDLE_PUBLIC_STATIC, get(handle_public_static))
+    Router::new()
+        .route(ROUTE_HANDLE_PUBLIC_STATIC, get(handle_public_static))
+        .route(ROUTE_HANDLE_HUB_CONTACTS, get(handle_hub_contacts))
+        .route(ROUTE_HANDLE_HUB_RELAY, post(handle_hub_relay))
 }
 
 // ── Embedded HTML (compiled into binary) ──
@@ -521,6 +637,7 @@ const EMBEDDED_INDEX: &str = include_str!("../../../html-frontend/index.html");
 const EMBEDDED_SETUP: &str = include_str!("../../../html-frontend/setup.html");
 const EMBEDDED_LOGIN: &str = include_str!("../../../html-frontend/login.html");
 const EMBEDDED_KNOWLEDGE: &str = include_str!("../../../html-frontend/knowledge.html");
+const EMBEDDED_FILES: &str = include_str!("../../../html-frontend/files.html");
 
 /// Fallback handler: serve HTML from disk (dev mode) or embedded (release).
 async fn html_fallback(
@@ -571,8 +688,63 @@ async fn html_fallback(
             EMBEDDED_KNOWLEDGE,
         )
             .into_response(),
+        "files.html" => (
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            EMBEDDED_FILES,
+        )
+            .into_response(),
         _ => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// Hub proxy middleware — intercepts requests for remote instances and proxies them.
+///
+/// When hub mode is active, this middleware checks if the target instance_id
+/// lives on a slave engine. If so, the request is proxied transparently.
+/// Local instances and non-instance routes pass through normally.
+async fn hub_proxy_middleware(
+    State(state): State<Arc<EngineState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    // Only active in hub mode
+    let hub = match &state.hub {
+        Some(h) => h,
+        None => return next.run(req).await,
+    };
+
+    let path = req.uri().path().to_string();
+
+    // Check if this request targets a specific instance
+    if let Some(instance_id) = extract_instance_id_from_path(&path) {
+        // Check if this instance is remote (on a slave engine)
+        if let Some(route) = hub.route(instance_id) {
+            // Check it's not a local instance (local instances are handled normally)
+            // Local instances won't be in the hub routing table
+            // Decompose request into parts for proxy
+            let method = req.method().clone();
+            let path_str = req.uri().path().to_string();
+            let query_str = req.uri().query().map(|q| q.to_string());
+            let headers = req.headers().clone();
+            let body_bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+                .await
+                .unwrap_or_default();
+            return crate::hub::proxy::proxy_to_engine(
+                &hub.client,
+                &route,
+                &hub.build_auth_cookie(&route),
+                method,
+                &path_str,
+                query_str.as_deref(),
+                &headers,
+                body_bytes,
+            )
+            .await;
+        }
+    }
+
+    // Not a remote instance request — proceed normally
+    next.run(req).await
 }
 
 /// Build the complete application router.
@@ -583,7 +755,7 @@ pub fn build_router(engine_state: Arc<EngineState>) -> Router {
     use crate::api::auth;
     use axum::routing::{get, post};
 
-    Router::new()
+    let mut router = Router::new()
         // Login/logout (auth middleware whitelist covers /login)
         .route(
             auth::ROUTE_HANDLE_LOGIN_PAGE,
@@ -600,7 +772,18 @@ pub fn build_router(engine_state: Arc<EngineState>) -> Router {
         // Public API routes (auth middleware whitelist covers /public/)
         .merge(public_api_routes())
         // HTML fallback: disk (dev) → embedded (release)
-        .fallback(html_fallback)
+        .fallback(html_fallback);
+
+    // Hub proxy middleware: intercept remote instance requests before auth
+    // (hub handles its own auth via slave engine tokens)
+    if engine_state.hub.is_some() {
+        router = router.layer(axum::middleware::from_fn_with_state(
+            engine_state.clone(),
+            hub_proxy_middleware,
+        ));
+    }
+
+    router
         // Auth middleware (applied to all routes, whitelist inside)
         .layer(axum::middleware::from_fn_with_state(
             engine_state.clone(),

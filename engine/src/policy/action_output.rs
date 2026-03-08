@@ -167,27 +167,71 @@ pub fn inbox_empty() -> String {
 }
 
 /// Format a single read message entry.
-/// If the sender is not the owner, prepend a warning line.
+/// Unified format for all message types (user, system, agent relay).
+/// If `is_known_sender` is false, prepend a warning line.
 pub fn read_msg_entry(
+    role: &str,
     sender: &str,
+    self_id: &str,
     timestamp: &str,
     content: &str,
-    owner_id: Option<&str>,
+    is_known_sender: bool,
 ) -> String {
-    let warning = match owner_id {
-        Some(owner) if sender != owner => format!("⚠️ 此消息来自非所属用户的发送者：{}\n", sender),
-        _ => String::new(),
+    let prefix = match role {
+        "user" => "user".to_string(),
+        "system" => "system".to_string(),
+        _ => {
+            if sender == self_id {
+                format!("you[{}]", self_id)
+            } else {
+                format!("agent[{}]", sender)
+            }
+        }
+    };
+    let warning = if is_known_sender {
+        String::new()
+    } else {
+        format!("⚠️ 此消息来自未知发送者：{}\n", sender)
     };
     format!(
         "{}{} [MSG:{}]{}\n\n{}\n",
-        warning, sender, timestamp, MSG_READ_CONTEXT, content
+        warning, prefix, timestamp, MSG_READ_CONTEXT, content
     )
 }
 
-/// Format send failure for unknown recipient.
-pub fn send_failed_unknown_recipient(recipient: &str) -> String {
+/// Format send failure: recipient not found in contacts list.
+pub fn send_failed_recipient_not_found(recipient: &str, contacts: &[crate::persist::hooks::ContactInfo]) -> String {
+    if contacts.is_empty() {
+        format!(
+            "发送失败：收件人 \"{}\" 不在你的联系人列表中。当前没有可用联系人\n",
+            recipient
+        )
+    } else {
+        let names: Vec<String> = contacts.iter().map(|c| {
+            match &c.name {
+                Some(name) if !name.is_empty() => format!("{}({})", name, c.id),
+                _ => c.id.clone(),
+            }
+        }).collect();
+        format!(
+            "发送失败：收件人 \"{}\" 不在你的联系人列表中。当前可用联系人：{}\n",
+            recipient, names.join(", ")
+        )
+    }
+}
+
+/// Format send failure: communication service unavailable.
+pub fn send_failed_service_unavailable(recipient: &str) -> String {
     format!(
-        "send failed: unknown recipient '{}'. You can only send messages to your user.\n",
+        "发送失败：通讯服务暂时不可用，无法发送消息给 \"{}\"。请稍后重试\n",
+        recipient
+    )
+}
+
+/// Format send failure: relay error.
+pub fn send_failed_relay_error(recipient: &str) -> String {
+    format!(
+        "发送失败：消息转发给 \"{}\" 时出错，通讯服务可能异常。请稍后重试\n",
         recipient
     )
 }

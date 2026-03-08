@@ -327,6 +327,29 @@ body {
     border: 1px solid var(--border);
     border-bottom-left-radius: 6px;
 }
+.msg.agent.from-other {
+    border-left: 3px solid rgba(46, 204, 113, 0.5);
+    padding-top: 0;
+}
+.msg.agent.to-other {
+    border-left: 3px solid rgba(241, 196, 15, 0.5);
+    padding-top: 0;
+}
+.msg-cross-title {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 16px;
+    margin: 0 -16px 8px -16px;
+    border-radius: 16px 16px 0 0;
+}
+.msg.agent.from-other .msg-cross-title {
+    background: rgba(46, 204, 113, 0.12);
+    color: rgba(46, 204, 113, 0.8);
+}
+.msg.agent.to-other .msg-cross-title {
+    background: rgba(241, 196, 15, 0.12);
+    color: rgba(241, 196, 15, 0.8);
+}
 
 .no-instance {
     flex: 1;
@@ -957,7 +980,7 @@ body {
     </div>
 <!-- @SEC: html-input -->
     <div class="chat-input" id="chatInput" style="display:none;">
-        <textarea id="msgInput" placeholder="Enter发送 / Shift+Enter换行" enterkeyhint="send" onkeydown="handleKeydown(event)" oninput="autoResize(this)"></textarea>
+        <textarea id="msgInput" placeholder="" enterkeyhint="send" onkeydown="handleKeydown(event)" oninput="autoResize(this)" id-input="msgInput"></textarea>
         <button class="plus-btn" id="plusBtn" onclick="document.getElementById('chatFileInput').click()" title="Upload file">+</button>
         <input type="file" id="chatFileInput" multiple style="display:none" onchange="uploadFromChat(this.files)">
     </div>
@@ -965,7 +988,21 @@ body {
 
 <script>
 /* @SEC: js-init — global vars + auth check */
+const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) || ("ontouchstart" in window && window.innerWidth < 768);
+(function() {
+    const ta = document.getElementById('msgInput');
+    if (ta) {
+        if (isMobile) {
+            ta.setAttribute('enterkeyhint', 'send');
+            ta.placeholder = '';
+        } else {
+            ta.setAttribute('enterkeyhint', 'enter');
+            ta.placeholder = 'Ctrl+Enter 发送';
+        }
+    }
+})();
 let currentInstance = null;
+
 let engineVersion = document.body.dataset.version || 'dev';
 let messages = {}; // {name: {msgs: [], total: 0, earliestIndex: Infinity, fullyLoaded: false}}
 let loadingMore = false;
@@ -1180,7 +1217,7 @@ async function loadHistory(name) {
         const allMsgsWithId = res.messages.filter(m => m.id);
         const lastMsgId = allMsgsWithId.length > 0 ? Math.max(...allMsgsWithId.map(m => m.id)) : 0;
         messages[name] = {
-            msgs: res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp })),
+            msgs: res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp, sender: m.sender, recipient: m.recipient })),
             total: res.messages.length,
             earliestId: res.messages.length > 0 ? res.messages[0].id : 0,
             fullyLoaded: !res.has_more,
@@ -1220,7 +1257,7 @@ async function loadMoreHistory() {
     if (loaderEl) loaderEl.remove();
 
     if (res && Array.isArray(res.messages) && res.messages.length > 0) {
-        const older = res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp }));
+        const older = res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp, sender: m.sender, recipient: m.recipient }));
         data.msgs = older.concat(data.msgs);
         data.earliestId = res.messages.length > 0 ? res.messages[0].id : data.earliestId;
         data.fullyLoaded = !res.has_more;
@@ -1392,9 +1429,18 @@ async function sendMessage() {
 }
 
 function handleKeydown(event) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
+    if (event.key === 'Enter') {
+        if (isMobile) {
+            if (!event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        } else {
+            if (event.ctrlKey || event.metaKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
     }
 }
 
@@ -1522,7 +1568,7 @@ async function pollReplies() {
             // Deduplicate: skip if message with same id already exists in data or DOM
             if (id && data.msgs.some(m => m.id === id)) return;
             if (id && document.querySelector('[data-msg-id="' + id + '"]')) return;
-            data.msgs.push({ id: id, role: r.role || 'agent', content: content, timestamp: timestamp });
+            data.msgs.push({ id: id, role: r.role || 'agent', content: content, timestamp: timestamp, sender: r.sender, recipient: r.recipient });
             if (id && id > data.lastMsgId) data.lastMsgId = id;
             added++;
         });
@@ -1676,9 +1722,31 @@ function addCopyButtons(container) {
 
 function createMessageElement(m) {
     const div = document.createElement('div');
-    div.className = 'msg ' + m.role;
     if (m.id) div.setAttribute('data-msg-id', m.id);
-    if (m.role === 'agent') {
+    // Message direction based on role
+    const sender = m.sender || '';
+    const recipient = m.recipient || '';
+    let crossTitle = null;
+    let isAgentSide = false;
+    if (m.role === 'user') {
+        // User message → right side
+        div.className = 'msg user';
+    } else {
+        // Agent message (including from other agents) → left side
+        isAgentSide = true;
+        if (sender && sender !== currentInstance) {
+            // From another agent
+            div.className = 'msg agent from-other';
+            crossTitle = '📩 来自 ' + sender;
+        } else if (recipient && recipient !== '') {
+            // Sent to another agent
+            div.className = 'msg agent to-other';
+            crossTitle = '📤 发给 ' + recipient;
+        } else {
+            div.className = 'msg agent';
+        }
+    }
+    if (isAgentSide || crossTitle) {
         div.innerHTML = renderMarkdown(m.content);
         addCopyButtons(div);
         div.querySelectorAll('.file-link[data-filepath]').forEach(function(link) {
@@ -1687,6 +1755,13 @@ function createMessageElement(m) {
         });
     } else {
         div.appendChild(parseMessageContent(m.content));
+    }
+    // Insert cross-instance title bar at the top (after content rendering to avoid innerHTML overwrite)
+    if (crossTitle) {
+        const titleBar = document.createElement('div');
+        titleBar.className = 'msg-cross-title';
+        titleBar.textContent = crossTitle;
+        div.insertBefore(titleBar, div.firstChild);
     }
     const footer = document.createElement('div');
     footer.className = 'msg-footer';
@@ -1943,6 +2018,7 @@ async function pollInference() {
     if (!data || typeof data !== 'object') return;
     // Update inferring state for adaptive polling
     isInstanceInferring = !!data.inferring;
+
     // Update inference icon and label based on state
     const content = document.getElementById('inferenceContent');
     const label = document.getElementById('inferenceLabel');
