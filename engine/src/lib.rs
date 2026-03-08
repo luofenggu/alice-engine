@@ -34,6 +34,7 @@ pub mod policy;
 
 pub mod api;
 pub mod engine;
+pub mod hub;
 pub mod persist;
 pub mod prompt;
 pub mod util;

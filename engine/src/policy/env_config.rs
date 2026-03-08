@@ -46,6 +46,8 @@ pub struct EnvConfig {
     pub html_dir: Option<String>,
     /// HTTP listen port (`ALICE_HTTP_PORT`, default: 8081).
     pub http_port: u16,
+    /// Hub mode — this engine acts as a master hub (`ALICE_HUB`).
+    pub hub_enabled: bool,
 }
 
 impl EnvConfig {
@@ -99,6 +101,9 @@ impl EnvConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(8081),
+            hub_enabled: std::env::var("ALICE_HUB")
+                .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
+                .unwrap_or(false),
         }
     }
 

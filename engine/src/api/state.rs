@@ -46,6 +46,8 @@ pub struct EngineState {
     pub hooks_store: HooksStore,
     /// Shared hooks caller for all instances (contains config + cache).
     pub hooks_caller: Arc<HooksCaller>,
+    /// Hub state (only present when ALICE_HUB=true, master mode).
+    pub hub: Option<Arc<crate::hub::HubState>>,
 }
 
 impl EngineState {
@@ -58,6 +60,7 @@ impl EngineState {
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: GlobalSettingsStore,
         llm_client: Arc<crate::external::llm::LlmClient>,
+        hub: Option<Arc<crate::hub::HubState>>,
     ) -> Self {
         let session_token = if env_config.auth_secret.is_empty() {
             String::new()
@@ -90,6 +93,7 @@ impl EngineState {
                 HooksStore::open(instances_dir.parent().unwrap_or(&instances_dir).join("hooks.json")).expect("hooks store")
             }),
             hooks_caller: Arc::new(HooksCaller::new(HooksConfig::default())),
+            hub,
         }
     }
 
