@@ -10,7 +10,7 @@ use tracing::{error, info};
 
 use crate::api::types::*;
 use crate::core::signal::SignalHub;
-use crate::persist::hooks::{HooksCaller, HooksConfig, HooksStore};
+use crate::persist::hooks::{HooksCaller, HooksStore};
 use crate::persist::instance::InstanceStore;
 use crate::persist::{GlobalSettingsStore, Settings};
 use std::sync::atomic::AtomicBool;
@@ -75,6 +75,16 @@ impl EngineState {
             .load()
             .map(|s| s.api_key.as_ref().map_or(false, |k| !k.is_empty()))
             .unwrap_or(false);
+        let hooks_store = HooksStore::open(instances_dir.parent().unwrap_or(&instances_dir).join("hooks.json")).unwrap_or_else(|e| {
+            tracing::warn!("[HOOKS] Failed to open hooks.json: {}, using defaults", e);
+            HooksStore::open(instances_dir.parent().unwrap_or(&instances_dir).join("hooks.json")).expect("hooks store")
+        });
+        let initial_hooks_config = hooks_store.load().unwrap_or_default();
+        if !initial_hooks_config.is_empty() {
+            tracing::info!("[HOOKS] Loaded hooks config from disk");
+        }
+        let hooks_caller = Arc::new(HooksCaller::new(initial_hooks_config));
+
         Self {
             instance_store: InstanceStore::new(instances_dir.clone()),
             logs_dir,
@@ -88,11 +98,8 @@ impl EngineState {
             setup_completed: AtomicBool::new(setup_done),
             http_client: reqwest::Client::new(),
             llm_client,
-            hooks_store: HooksStore::open(instances_dir.parent().unwrap_or(&instances_dir).join("hooks.json")).unwrap_or_else(|e| {
-                tracing::warn!("[HOOKS] Failed to open hooks.json: {}, using defaults", e);
-                HooksStore::open(instances_dir.parent().unwrap_or(&instances_dir).join("hooks.json")).expect("hooks store")
-            }),
-            hooks_caller: Arc::new(HooksCaller::new(HooksConfig::default())),
+            hooks_store,
+            hooks_caller,
             hub,
         }
     }
