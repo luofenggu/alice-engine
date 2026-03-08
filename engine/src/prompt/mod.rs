@@ -39,6 +39,7 @@ pub fn extract_session_block_data(
             {
                 for msg in &db_messages {
                     messages.push(PromptMessage {
+                        role: msg.role.clone(),
                         sender: msg.sender.clone(),
                         timestamp: msg.timestamp.clone(),
                         content: msg.content.clone(),
@@ -292,7 +293,7 @@ mod tests {
 
         let request = build_beat_request(&alice, None, String::new(), String::new());
         let (_, user, _) = request.render();
-        assert!(user.contains("24007 [20260223120000]: hi there"));
+        assert!(user.contains("user [20260223120000]: hi there"));
         assert!(user.contains("[总结] User said hi"));
     }
 

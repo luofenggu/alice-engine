@@ -96,7 +96,9 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
         let is_known = msg.sender.is_empty() || msg.sender == "user"
             || contact_ids.iter().any(|id| id == &msg.sender);
         result.push_str(&out::read_msg_entry(
+            &msg.role,
             &msg.sender,
+            &alice.instance.id,
             &msg.timestamp,
             &msg.content,
             is_known,

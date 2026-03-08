@@ -221,8 +221,19 @@ pub fn host_info(host: &str) -> String {
     format!("公网地址：{}", host)
 }
 
-pub fn chat_message(sender: &str, timestamp: &str, content: &str) -> String {
-    format!("{} [{}]: {}", sender, timestamp, content)
+pub fn chat_message(role: &str, sender: &str, self_id: &str, timestamp: &str, content: &str) -> String {
+    let prefix = match role {
+        "user" => "user".to_string(),
+        "system" => "system".to_string(),
+        _ => {
+            if sender == self_id {
+                format!("you[{}]", self_id)
+            } else {
+                format!("agent[{}]", sender)
+            }
+        }
+    };
+    format!("{} [{}]: {}", prefix, timestamp, content)
 }
 
 pub fn knowledge_section(content: &str) -> String {

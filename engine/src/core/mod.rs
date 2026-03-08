@@ -474,7 +474,7 @@ impl Alice {
         }
 
         let entries = crate::prompt::extract_session_block_data(&block_entries, self);
-        let rendered_block = crate::inference::beat::format_session_entries(&entries);
+        let rendered_block = crate::inference::beat::format_session_entries(&entries, &self.instance.id);
 
         // Read current history
         let current_history = self.instance.memory.history.read()?;
@@ -550,7 +550,7 @@ impl Alice {
 
         let session_entries: Vec<crate::inference::beat::SessionEntryData> =
             entries.iter().map(Into::into).collect();
-        let rendered_block = crate::inference::beat::format_session_entries(&session_entries);
+        let rendered_block = crate::inference::beat::format_session_entries(&session_entries, &self.instance.id);
 
         // 2. Read current history (from memory handle)
         let current_history = self.instance.memory.history.read()?;

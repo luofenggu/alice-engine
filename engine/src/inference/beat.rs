@@ -25,6 +25,7 @@ use crate::policy::EngineConfig;
 
 /// A single chat message (raw data, not yet formatted).
 pub struct PromptMessage {
+    pub role: String,
     pub sender: String,
     pub timestamp: String,
     pub content: String,
@@ -168,7 +169,7 @@ impl BeatRequest {
 
         let mut sections = Vec::new();
         for block in &self.session_blocks {
-            let rendered = format_session_entries(&block.entries);
+            let rendered = format_session_entries(&block.entries, &self.instance_id);
             if !rendered.is_empty() {
                 sections.push(format!("[{}]\n{}", block.block_name, rendered));
             }
@@ -225,7 +226,7 @@ impl From<&crate::persist::SessionBlockEntry> for SessionEntryData {
 
 /// Format session entries into display text.
 /// Used by render() for beat prompts and by compress for history rolling.
-pub fn format_session_entries(entries: &[SessionEntryData]) -> String {
+pub fn format_session_entries(entries: &[SessionEntryData], self_id: &str) -> String {
     let truncate_len = EngineConfig::get().memory.message_truncate_length;
 
     let mut sections = Vec::new();
@@ -239,7 +240,9 @@ pub fn format_session_entries(entries: &[SessionEntryData]) -> String {
                 msg.content.clone()
             };
             parts.push(messages::chat_message(
+                &msg.role,
                 &msg.sender,
+                self_id,
                 &msg.timestamp,
                 &content_display,
             ));
@@ -509,14 +512,15 @@ mod tests {
     fn test_format_session_entries_basic() {
         let entries = vec![SessionEntryData {
             messages: vec![PromptMessage {
-                sender: "user1".into(),
+                role: "user".into(),
+                sender: "user".into(),
                 timestamp: "20260303120000".into(),
                 content: "hello".into(),
             }],
             summary: "User said hello".into(),
         }];
-        let rendered = format_session_entries(&entries);
-        assert!(rendered.contains("user1"));
+        let rendered = format_session_entries(&entries, "test_self");
+        assert!(rendered.contains("user"));
         assert!(rendered.contains("hello"));
         assert!(rendered.contains("User said hello"));
     }
@@ -526,19 +530,20 @@ mod tests {
         let long_content = "x".repeat(300);
         let entries = vec![SessionEntryData {
             messages: vec![PromptMessage {
-                sender: "user1".into(),
+                role: "agent".into(),
+                sender: "test_self".into(),
                 timestamp: "20260303120000".into(),
                 content: long_content,
             }],
             summary: String::new(),
         }];
-        let rendered = format_session_entries(&entries);
+        let rendered = format_session_entries(&entries, "test_self");
         assert!(!rendered.contains(&"x".repeat(300)));
     }
 
     #[test]
     fn test_format_session_entries_empty() {
         let entries: Vec<SessionEntryData> = vec![];
-        assert_eq!(format_session_entries(&entries), "");
+        assert_eq!(format_session_entries(&entries, "test_self"), "");
     }
 }

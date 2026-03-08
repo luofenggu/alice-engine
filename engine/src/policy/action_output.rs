@@ -170,11 +170,24 @@ pub fn inbox_empty() -> String {
 /// Unified format for all message types (user, system, agent relay).
 /// If `is_known_sender` is false, prepend a warning line.
 pub fn read_msg_entry(
+    role: &str,
     sender: &str,
+    self_id: &str,
     timestamp: &str,
     content: &str,
     is_known_sender: bool,
 ) -> String {
+    let prefix = match role {
+        "user" => "user".to_string(),
+        "system" => "system".to_string(),
+        _ => {
+            if sender == self_id {
+                format!("you[{}]", self_id)
+            } else {
+                format!("agent[{}]", sender)
+            }
+        }
+    };
     let warning = if is_known_sender {
         String::new()
     } else {
@@ -182,7 +195,7 @@ pub fn read_msg_entry(
     };
     format!(
         "{}{} [MSG:{}]{}\n\n{}\n",
-        warning, sender, timestamp, MSG_READ_CONTEXT, content
+        warning, prefix, timestamp, MSG_READ_CONTEXT, content
     )
 }
 
