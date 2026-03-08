@@ -530,7 +530,7 @@ async fn handle_hub_contacts(
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     match &state.hub {
-        Some(hub) => crate::hub::hooks::handle_hub_contacts(hub, &id).await.into_response(),
+        Some(hub) => crate::hub::hooks::handle_hub_contacts(hub, &state, &id).await.into_response(),
         None => json_error(StatusCode::NOT_FOUND, "Hub not enabled"),
     }
 }

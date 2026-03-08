@@ -19,22 +19,35 @@ use crate::persist::hooks::{ContactInfo, ContactsResponse, RelayRequest, RelayRe
 /// Called from routes.rs handler which extracts State and Path.
 pub async fn handle_hub_contacts(
     hub: &HubState,
+    state: &crate::api::state::EngineState,
     instance_id: &str,
 ) -> Response {
-    // Collect all instances except the requesting one
-    let all_instances = hub.all_instances();
-    let contacts: Vec<ContactInfo> = all_instances
-        .iter()
-        .filter(|inst| inst.id.as_str() != instance_id)
-        .map(|inst| ContactInfo {
-            id: inst.id.clone(),
-            name: if inst.name != inst.id {
-                Some(inst.name.clone())
-            } else {
-                None
-            },
-        })
-        .collect();
+    // Collect remote instances (from slave engines)
+    let remote_instances = hub.all_instances();
+
+    // Collect local instances (on this hub engine)
+    let local_instances = state.get_instances().await;
+
+    // Merge and deduplicate by id
+    let mut seen = std::collections::HashSet::new();
+    let mut contacts: Vec<ContactInfo> = Vec::new();
+
+    for inst in remote_instances.iter() {
+        if inst.id.as_str() != instance_id && seen.insert(inst.id.clone()) {
+            contacts.push(ContactInfo {
+                id: inst.id.clone(),
+                name: if inst.name != inst.id { Some(inst.name.clone()) } else { None },
+            });
+        }
+    }
+    for inst in local_instances.iter() {
+        if inst.id.as_str() != instance_id && seen.insert(inst.id.clone()) {
+            contacts.push(ContactInfo {
+                id: inst.id.clone(),
+                name: if inst.name != inst.id { Some(inst.name.clone()) } else { None },
+            });
+        }
+    }
 
     Json(ContactsResponse { contacts }).into_response()
 }
