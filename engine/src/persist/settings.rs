@@ -424,4 +424,51 @@ mod tests {
             "Temperature inherited from global (unchanged)"
         );
     }
+
+    #[test]
+    fn test_hot_reload_channel_merge_instance_priority() {
+        // Reproduces bug: hot-reload merge used global as base (priority),
+        // instance as fallback. Correct: instance takes priority, global as fallback.
+
+        let global = Settings {
+            api_key: Some("global-key".into()),
+            model: Some("global-model".into()),
+            temperature: Some(0.5),
+            extra_channels: Some(vec![
+                Channel { api_key: "global-extra-key".into(), model: "global-extra-model".into() },
+            ]),
+            ..Default::default()
+        };
+
+        let instance = Settings {
+            model: Some("instance-model".into()),
+            extra_channels: Some(vec![
+                Channel { api_key: "instance-extra-key".into(), model: "instance-extra-model".into() },
+            ]),
+            ..Default::default()
+        };
+
+        // BUG behavior (global as base, instance as fallback):
+        let mut bug_merged = global.clone();
+        bug_merged.merge_fallback(&instance);
+        // Global model wins — WRONG
+        assert_eq!(bug_merged.model.as_deref(), Some("global-model"),
+            "Bug: global model takes priority over instance");
+        // Global extra_channels wins — WRONG
+        assert_eq!(bug_merged.extra_channels.as_ref().unwrap()[0].model, "global-extra-model",
+            "Bug: global extra_channels takes priority over instance");
+
+        // CORRECT behavior (instance as base, global as fallback):
+        let mut correct_merged = instance.clone();
+        correct_merged.merge_fallback(&global);
+        // Instance model wins — CORRECT
+        assert_eq!(correct_merged.model.as_deref(), Some("instance-model"),
+            "Fix: instance model takes priority over global");
+        // Instance extra_channels wins — CORRECT
+        assert_eq!(correct_merged.extra_channels.as_ref().unwrap()[0].model, "instance-extra-model",
+            "Fix: instance extra_channels takes priority over global");
+        // api_key falls back to global (instance didn't set it) — CORRECT
+        assert_eq!(correct_merged.api_key.as_deref(), Some("global-key"),
+            "Fix: api_key falls back to global when instance doesn't set it");
+    }
 }

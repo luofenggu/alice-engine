@@ -440,9 +440,9 @@ impl AliceEngine {
                     // Hot-reload all channels from global settings (shared LlmClient)
                     if let Some(ref store) = alice.global_settings_store {
                         if let Ok(global_s) = store.load() {
-                            // Merge instance settings into global for channel config
-                            let mut merged = global_s.clone();
-                            merged.merge_fallback(&s);
+                            // Merge: instance settings take priority, global as fallback
+                            let mut merged = s.clone();
+                            merged.merge_fallback(&global_s);
 
                             let primary_config = crate::external::llm::LlmConfig {
                                 model: merged.model_or_default(),
@@ -562,9 +562,10 @@ impl AliceEngine {
                     consecutive_beats.value(),
                     alice.safety_cooldown_secs,
                 ));
-                alice.last_was_idle = true;
                 consecutive_beats.reset();
                 std::thread::sleep(Duration::from_secs(alice.safety_cooldown_secs));
+                // After cooldown, resume normal operation (don't enter idle polling)
+                alice.last_was_idle = false;
                 continue;
             }
 
