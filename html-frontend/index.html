@@ -1023,9 +1023,7 @@ body {
                 <button id="interruptBtn" onclick="doInterrupt()">🛑 Stop</button>
                 <button onclick="openSettings()">⚙ Settings</button>
                 <button onclick="openChannels()">📡 Channels</button>
-                <button onclick="openKnowledge()">🧬 Knowledge</button>
-                <button onclick="openHub()">🌐 Hub</button>
-            </div>
+                <button onclick="window.location.href='knowledge.html'">🧬 Knowledge</button>
         </div>
     </div>
     <div class="chat-messages" id="chatMessages">
@@ -1033,13 +1031,6 @@ body {
             <div class="no-instance-icon">💬</div>
             <div class="no-instance-text">Create or select an instance to start</div>
         </div>
-    </div>
-    <div id="knowledgePanel" style="display:none; flex:1; overflow-y:auto; padding:16px; background:var(--bg-primary);">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-            <h3 style="color:var(--text-secondary); font-size:14px;">🧬 Knowledge</h3>
-            <button onclick="closeKnowledge()" style="background:none; border:1px solid var(--border); color:var(--text-secondary); padding:4px 12px; border-radius:6px; cursor:pointer; font-size:13px;">💬 聊天</button>
-        </div>
-        <div id="knowledgeContent" style="font-family:monospace; font-size:13px; line-height:1.6; white-space:pre-wrap; color:var(--text-primary);"></div>
     </div>
 <!-- @SEC: html-files -->
     <div class="file-browser" id="fileBrowser">
@@ -2293,30 +2284,7 @@ function toggleInference() {
 // @SEC: js-settings ===== Settings Modal =====
 var settingsMode = 'instance'; // 'instance' or 'global'
 
-function openKnowledge() {
-    if (!currentInstance) return;
-    document.getElementById('opsMenu').classList.remove('open');
-    document.getElementById('chatMessages').style.display = 'none';
-    var chatInput = document.getElementById('chatInput');
-    if (chatInput) chatInput.style.display = 'none';
-    var kPanel = document.getElementById('knowledgePanel');
-    kPanel.style.display = 'flex';
-    kPanel.style.flexDirection = 'column';
-    document.getElementById('knowledgeContent').textContent = '加载中...';
-    api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/knowledge').then(function(data) {
-        var content = typeof data === 'string' ? data : (data && data.content || '');
-        document.getElementById('knowledgeContent').textContent = content || '暂无知识';
-    }).catch(function(e) {
-        document.getElementById('knowledgeContent').textContent = '加载失败: ' + e.message;
-    });
-}
 
-function closeKnowledge() {
-    document.getElementById('knowledgePanel').style.display = 'none';
-    document.getElementById('chatMessages').style.display = '';
-    var chatInput = document.getElementById('chatInput');
-    if (chatInput) chatInput.style.display = '';
-}
 
 async function openSettings() {
     if (!currentInstance) return;
