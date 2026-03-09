@@ -225,7 +225,7 @@ pub const SETUP_PAGE_FILE: &str = "/setup.html";
 pub const AUTH_WHITELIST_STATIC: &[&str] = &["/login.html", "/setup.html", "/error-reporter.js", "/api/hub/ws"];
 
 /// Path prefixes that bypass auth.
-pub const AUTH_WHITELIST_PREFIXES: &[&str] = &["/public/"];
+pub const AUTH_WHITELIST_PREFIXES: &[&str] = &["/public/", "/api/hub/tunnel_proxy/"];
 
 /// Login redirect path.
 pub const LOGIN_PATH: &str = "/login";
