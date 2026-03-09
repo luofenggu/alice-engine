@@ -115,7 +115,7 @@ impl Settings {
         if self.shell_env.is_none() {
             self.shell_env = fallback.shell_env.clone();
         }
-        if self.extra_channels.is_none() {
+        if self.extra_channels.as_ref().map_or(true, |v| v.is_empty()) {
             self.extra_channels = fallback.extra_channels.clone();
         }
     }
@@ -470,5 +470,55 @@ mod tests {
         // api_key falls back to global (instance didn't set it) — CORRECT
         assert_eq!(correct_merged.api_key.as_deref(), Some("global-key"),
             "Fix: api_key falls back to global when instance doesn't set it");
+    }
+}
+
+#[cfg(test)]
+mod tests_empty_array_bug {
+    use super::*;
+
+    #[test]
+    fn test_merge_fallback_empty_extra_channels_inherits_from_fallback() {
+        // Bug: instance has extra_channels: Some(vec![]) (empty array from JSON),
+        // merge_fallback only checked is_none(), so empty array blocked inheritance.
+        let global = Settings {
+            extra_channels: Some(vec![
+                Channel { api_key: "global-key".into(), model: "global-model".into() },
+            ]),
+            ..Default::default()
+        };
+
+        // Case 1: extra_channels is None — should inherit
+        let mut none_instance = Settings {
+            extra_channels: None,
+            ..Default::default()
+        };
+        none_instance.merge_fallback(&global);
+        assert_eq!(none_instance.extra_channels.as_ref().unwrap().len(), 1,
+            "None extra_channels should inherit from fallback");
+
+        // Case 2: extra_channels is Some(vec![]) — should also inherit (the bug)
+        let mut empty_instance = Settings {
+            extra_channels: Some(vec![]),
+            ..Default::default()
+        };
+        empty_instance.merge_fallback(&global);
+        assert_eq!(empty_instance.extra_channels.as_ref().unwrap().len(), 1,
+            "Empty extra_channels should inherit from fallback");
+        assert_eq!(empty_instance.extra_channels.as_ref().unwrap()[0].model, "global-model",
+            "Inherited channel should be from global");
+
+        // Case 3: extra_channels has values — should NOT inherit
+        let mut set_instance = Settings {
+            extra_channels: Some(vec![
+                Channel { api_key: "inst-key".into(), model: "inst-model".into() },
+            ]),
+            ..Default::default()
+        };
+        set_instance.merge_fallback(&global);
+        assert_eq!(set_instance.extra_channels.as_ref().unwrap().len(), 1,
+            "Non-empty extra_channels should keep its own value");
+        assert_eq!(set_instance.extra_channels.as_ref().unwrap()[0].model, "inst-model",
+            "Non-empty extra_channels should not be overwritten by fallback");
     }
 }
