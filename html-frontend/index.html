@@ -288,6 +288,8 @@ body {
     gap: 14px;
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
+    position: relative;
+    z-index: 10;
 }
 .chat-header h3 {
     font-size: 17px;
@@ -1849,6 +1851,12 @@ function renderMarkdown(text) {
         if (typeof DOMPurify !== 'undefined') {
             html = DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'data-filepath'] });
         }
+        // Fix autolink URL boundaries: trim trailing non-URL chars (e.g. "}} )
+        html = html.replace(/<a href="([^"]*?)((?:&quot;|[})\]>',;])+)"([^>]*)>([^<]*)<\/a>/g, function(m, url, trail, attrs, text) {
+            var trailText = trail.replace(/&quot;/g, '"');
+            var cleanText = text.replace(/["})\]>',;]+$/, '');
+            return '<a href="' + url + '"' + attrs + '>' + cleanText + '</a>' + trailText;
+        });
         return html;
     } catch(e) {
         return escHtml(text);
