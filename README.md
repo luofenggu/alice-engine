@@ -115,12 +115,11 @@ Then visit `http://your-server-ip:8081` and log in with your password.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AUTH_SECRET` | Login password | No password (open access) |
+| `ALICE_AUTH_SECRET` | Login password | No password (open access) |
 | `ALICE_DEFAULT_API_KEY` | Default LLM API key | — |
 | `ALICE_DEFAULT_MODEL` | Default model | `openrouter@anthropic/claude-sonnet-4` |
 | `ALICE_HTTP_PORT` | HTTP port | `8081` |
 | `ALICE_BASE_DIR` | Data directory | `.` (current dir) |
-| `ALICE_USER_ID` | Owner user ID | `default` |
 | `ALICE_HOST` | Public endpoint for user-facing URLs (e.g. `example.com`, `1.2.3.4`, `1.2.3.4:8080`) | — |
 
 ## How It Works
@@ -143,7 +142,7 @@ Agents can:
 
 ## API Reference
 
-All endpoints under `/api/`. Set `AUTH_SECRET` to enable authentication via session cookie.
+All endpoints under `/api/`. Set `ALICE_AUTH_SECRET` to enable authentication via session cookie.
 
 ### Authentication
 
