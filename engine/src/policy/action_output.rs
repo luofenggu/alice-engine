@@ -398,13 +398,6 @@ pub fn hallucination_defense_interrupted(reason: &str) -> String {
     format!("---------幻觉防御中断---------\n{}\n", reason)
 }
 
-// ─── Anomaly notification ────────────────────────────────────────
-
-/// Format system anomaly notification marker.
-pub fn anomaly_notification(message: &str) -> String {
-    format!("---------系统异常通知---------\n{}\n", message)
-}
-
 // ─── Action description (doing text) ─────────────────────────────
 
 /// Build a human-readable description of an action for agent memory.

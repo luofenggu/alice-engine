@@ -684,15 +684,12 @@ impl Alice {
     /// All anomaly sources should either call this directly or bail!() to let the
     /// engine's unified error handler call it.
     pub fn notify_anomaly(&mut self, message: &str) {
-        let marker = action_output::anomaly_notification(message);
-        self.instance.memory.append_current(&marker).ok();
-
         let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
         self.instance
             .chat
             .lock()
             .unwrap()
-            .write_agent_reply(&self.instance.id, message, &timestamp, "")
+            .write_system_message(message, &timestamp)
             .ok();
 
         warn!("[ANOMALY-{}] {}", self.instance.id, message);
