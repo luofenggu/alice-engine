@@ -123,7 +123,12 @@ impl TextFile {
                     .with_context(|| format!("failed to create directory: {}", parent.display()))?;
             }
         }
-        let tmp_path = self.path.with_extension("tmp");
+        // Use random suffix to avoid tmp file collision from concurrent writes
+        let random_suffix: u32 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        let tmp_path = self.path.with_extension(format!("tmp.{}", random_suffix));
         std::fs::write(&tmp_path, content)
             .with_context(|| format!("failed to write tmp file: {}", tmp_path.display()))?;
         std::fs::rename(&tmp_path, &self.path)

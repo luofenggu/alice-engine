@@ -7,7 +7,7 @@
 
 set -e
 
-REPO_DIR="/root/alice-dev"
+REPO_DIR="/opt/alice/runtime/instances/ac56b3/workspace/alice-dev"
 RELEASE_DIR="/opt/alice/release/latest"
 RUNTIME_DIR="/opt/alice/runtime"
 

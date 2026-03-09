@@ -999,11 +999,25 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
     let (new_knowledge, usage) =
         llm_client.infer_sync_streaming(messages, &task.instance_id, Some(&task.log_path))?;
 
-    if new_knowledge.trim().is_empty() {
+    let trimmed = new_knowledge.trim();
+    if trimmed.is_empty() {
         anyhow::bail!("LLM returned empty knowledge");
     }
 
-    task.memory.knowledge.write(new_knowledge.trim())?;
+    // End-marker defense: reject truncated output
+    const KNOWLEDGE_END_MARKER: &str = "###KNOWLEDGE_END###";
+    if !trimmed.ends_with(KNOWLEDGE_END_MARKER) {
+        anyhow::bail!(
+            "Knowledge output missing end marker (likely truncated, {} bytes received)",
+            trimmed.len()
+        );
+    }
+    let clean_knowledge = trimmed[..trimmed.len() - KNOWLEDGE_END_MARKER.len()].trim();
+    if clean_knowledge.is_empty() {
+        anyhow::bail!("Knowledge content empty after stripping end marker");
+    }
+
+    task.memory.knowledge.write(clean_knowledge)?;
 
     let result = format!(
         "knowledge updated{}",
@@ -1031,13 +1045,27 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     );
     let (new_history, usage) = llm_client.infer_compress(task.request, &task.instance_id)?;
 
-    if new_history.trim().is_empty() {
+    let trimmed = new_history.trim();
+    if trimmed.is_empty() {
         anyhow::bail!("LLM returned empty history");
+    }
+
+    // End-marker defense: reject truncated output
+    const HISTORY_END_MARKER: &str = "###HISTORY_END###";
+    if !trimmed.ends_with(HISTORY_END_MARKER) {
+        anyhow::bail!(
+            "History output missing end marker (likely truncated, {} bytes received)",
+            trimmed.len()
+        );
+    }
+    let clean_history = trimmed[..trimmed.len() - HISTORY_END_MARKER.len()].trim();
+    if clean_history.is_empty() {
+        anyhow::bail!("History content empty after stripping end marker");
     }
 
     // Commit via Memory (marker → write history → delete block → clear marker)
     task.memory
-        .commit_history(new_history.trim(), &task.oldest_block)?;
+        .commit_history(clean_history, &task.oldest_block)?;
 
     let result = crate::policy::messages::roll_result(
         &task.oldest_block,
