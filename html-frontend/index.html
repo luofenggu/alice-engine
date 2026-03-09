@@ -698,6 +698,43 @@ body {
 .settings-global-btn { background: none; border: 1px solid var(--border); color: var(--text-secondary); border-radius: 6px; cursor: pointer; padding: 6px 12px; font-size: 12px; width: 100%; margin-top: 4px; }
 .settings-global-btn:hover { border-color: var(--accent); color: var(--accent); }
 
+/* @SEC: css-hub ===== Hub Modal ===== */
+.hub-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 1000; justify-content: center; align-items: center;
+}
+.hub-overlay.open { display: flex; }
+.hub-panel {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 12px; width: 80vw; max-width: 520px; max-height: 85vh;
+    overflow-y: auto; padding: 24px; color: var(--text-primary);
+}
+.hub-panel h3 { margin: 0 0 16px; font-size: 16px; }
+.hub-status-badge {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
+    padding: 12px 16px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 10px;
+}
+.hub-card {
+    margin-bottom: 16px; padding: 16px; background: var(--bg-primary);
+    border: 1px solid var(--border); border-radius: 10px;
+}
+.hub-card-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.hub-card-desc { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+.hub-card label { display: block; font-size: 12px; color: var(--text-secondary); margin: 8px 0 4px; }
+.hub-card input {
+    width: 100%; box-sizing: border-box; padding: 8px 12px; background: var(--bg-secondary);
+    border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-size: 13px;
+}
+.hub-card input:focus { border-color: var(--accent); outline: none; }
+.hub-btn {
+    padding: 8px 20px; color: #fff; border: none; border-radius: 6px;
+    cursor: pointer; font-size: 13px; font-weight: 500; margin-top: 8px;
+}
+.hub-btn:hover { opacity: 0.85; }
+.hub-btn-primary { background: var(--accent); }
+.hub-btn-blue { background: #3498db; }
+.hub-btn-danger { background: #e74c3c; }
+
 /* @SEC: css-files ===== File Browser ===== */
 .file-browser {
     flex: 1;
@@ -962,6 +999,7 @@ body {
                 <button onclick="openSettings()">⚙ Settings</button>
                 <button onclick="openChannels()">📡 Channels</button>
                 <button onclick="openKnowledge()">🧬 Knowledge</button>
+                <button onclick="openHub()">🌐 Hub</button>
             </div>
         </div>
     </div>
@@ -2378,6 +2416,127 @@ async function saveSettings() {
     }
 }
 
+// @SEC: js-hub ===== Hub Management Panel =====
+function openHub() {
+    document.getElementById('opsMenu').classList.remove('open');
+    document.getElementById('hubOverlay').classList.add('open');
+    document.getElementById('hubContent').innerHTML = '<div style="color:var(--text-muted);font-size:13px;">Loading...</div>';
+    loadHubStatus();
+}
+
+function closeHub() {
+    document.getElementById('hubOverlay').classList.remove('open');
+}
+
+async function loadHubStatus() {
+    try {
+        var data = await api('GET', 'api/hub/status');
+        renderHubContent(data);
+    } catch(e) {
+        document.getElementById('hubContent').innerHTML = '<div style="color:#e74c3c;font-size:13px;">Failed to load hub status: ' + escHtml(e.message) + '</div>';
+    }
+}
+
+function renderHubContent(status) {
+    var mode = status.mode || 'off';
+    var detail = status.detail || '';
+    var html = '';
+
+    // Status badge
+    var badgeColor = mode === 'host' ? '#27ae60' : mode === 'joined' ? '#3498db' : 'var(--text-muted)';
+    var badgeLabel = mode === 'host' ? '🟢 Host' : mode === 'joined' ? '🔵 Joined' : '⚫ Off';
+    html += '<div class="hub-status-badge">';
+    html += '<span style="font-size:16px;font-weight:600;color:' + badgeColor + ';">' + badgeLabel + '</span>';
+    if (detail) html += '<span style="font-size:13px;color:var(--text-muted);">— ' + escHtml(detail) + '</span>';
+    html += '</div>';
+
+    if (mode === 'off') {
+        // Enable Host card
+        html += '<div class="hub-card">';
+        html += '<div class="hub-card-title">🏠 Enable Host Mode</div>';
+        html += '<div class="hub-card-desc">Start as a host. Other engines can join using the token.</div>';
+        html += '<label>Join Token</label>';
+        html += '<input id="hubEnableToken" type="text" placeholder="Enter a token for slaves to join">';
+        html += '<button class="hub-btn hub-btn-primary" onclick="hubEnable()">Enable Host</button>';
+        html += '</div>';
+
+        // Join Room card
+        html += '<div class="hub-card">';
+        html += '<div class="hub-card-title">🔗 Join a Host</div>';
+        html += '<div class="hub-card-desc">Connect to an existing host engine.</div>';
+        html += '<label>Host URL</label>';
+        html += '<input id="hubJoinUrl" type="text" placeholder="http://host-ip:port">';
+        html += '<label>Join Token</label>';
+        html += '<input id="hubJoinToken" type="text" placeholder="Token provided by the host">';
+        html += '<button class="hub-btn hub-btn-blue" onclick="hubJoin()">Join</button>';
+        html += '</div>';
+
+    } else if (mode === 'host') {
+        html += '<div class="hub-card">';
+        html += '<div class="hub-card-title">🏠 Host Mode Active</div>';
+        html += '<div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">' + escHtml(detail) + '</div>';
+        html += '<button class="hub-btn hub-btn-danger" onclick="hubDisable()">Disable Host</button>';
+        html += '</div>';
+
+    } else if (mode === 'joined') {
+        html += '<div class="hub-card">';
+        html += '<div class="hub-card-title">🔗 Connected to Host</div>';
+        html += '<div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">' + escHtml(detail) + '</div>';
+        html += '<button class="hub-btn hub-btn-danger" onclick="hubLeave()">Leave</button>';
+        html += '</div>';
+    }
+
+    document.getElementById('hubContent').innerHTML = html;
+}
+
+async function hubEnable() {
+    var token = document.getElementById('hubEnableToken').value.trim();
+    if (!token) { alert('Please enter a join token.'); return; }
+    try {
+        await api('POST', 'api/hub/enable', { join_token: token });
+        loadHubStatus();
+        refreshInstances();
+    } catch(e) {
+        alert('Failed to enable host: ' + e.message);
+    }
+}
+
+async function hubDisable() {
+    if (!confirm('Disable host mode? All connected slaves will be disconnected.')) return;
+    try {
+        await api('POST', 'api/hub/disable', {});
+        loadHubStatus();
+        refreshInstances();
+    } catch(e) {
+        alert('Failed to disable host: ' + e.message);
+    }
+}
+
+async function hubJoin() {
+    var url = document.getElementById('hubJoinUrl').value.trim();
+    var token = document.getElementById('hubJoinToken').value.trim();
+    if (!url) { alert('Please enter the host URL.'); return; }
+    if (!token) { alert('Please enter the join token.'); return; }
+    try {
+        await api('POST', 'api/hub/join', { host_url: url, join_token: token });
+        loadHubStatus();
+        refreshInstances();
+    } catch(e) {
+        alert('Failed to join host: ' + e.message);
+    }
+}
+
+async function hubLeave() {
+    if (!confirm('Leave the current host?')) return;
+    try {
+        await api('POST', 'api/hub/leave', {});
+        loadHubStatus();
+        refreshInstances();
+    } catch(e) {
+        alert('Failed to leave host: ' + e.message);
+    }
+}
+
 // @SEC: js-ops ===== Ops Dropdown =====
 function toggleOpsMenu(e) {
     e.stopPropagation();
@@ -2525,6 +2684,14 @@ setTimeout(updateSidebarFooter, 500);
             <button onclick="closeSettings()">Cancel</button>
             <button class="primary" onclick="saveSettings()">Save</button>
         </div>
+    </div>
+</div>
+
+<!-- Hub Modal -->
+<div class="hub-overlay" id="hubOverlay" onclick="if(event.target===this)closeHub()">
+    <div class="hub-panel">
+        <h3>🌐 Hub</h3>
+        <div id="hubContent"><div style="color:var(--text-muted);font-size:13px;">Loading...</div></div>
     </div>
 </div>
 
