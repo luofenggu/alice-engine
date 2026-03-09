@@ -2524,7 +2524,8 @@ async function hubEnable() {
     var token = document.getElementById('hubEnableToken').value.trim();
     if (!token) { alert('Please enter a join token.'); return; }
     try {
-        await api('POST', 'api/hub/enable', { join_token: token });
+        var res = await api('POST', 'api/hub/enable', { join_token: token });
+        if (res && res.error) { alert('Error: ' + res.error); return; }
         loadHubStatus();
         refreshInstances();
     } catch(e) {
@@ -2535,7 +2536,8 @@ async function hubEnable() {
 async function hubDisable() {
     if (!confirm('Disable host mode? All connected slaves will be disconnected.')) return;
     try {
-        await api('POST', 'api/hub/disable', {});
+        var res = await api('POST', 'api/hub/disable', {});
+        if (res && res.error) { alert('Error: ' + res.error); return; }
         loadHubStatus();
         refreshInstances();
     } catch(e) {
@@ -2549,7 +2551,8 @@ async function hubJoin() {
     if (!url) { alert('Please enter the host URL.'); return; }
     if (!token) { alert('Please enter the join token.'); return; }
     try {
-        await api('POST', 'api/hub/join', { host_url: url, join_token: token });
+        var res = await api('POST', 'api/hub/join', { host_url: url, join_token: token });
+        if (res && res.error) { alert('Error: ' + res.error); return; }
         loadHubStatus();
         refreshInstances();
     } catch(e) {
@@ -2560,7 +2563,8 @@ async function hubJoin() {
 async function hubLeave() {
     if (!confirm('Leave the current host?')) return;
     try {
-        await api('POST', 'api/hub/leave', {});
+        var res = await api('POST', 'api/hub/leave', {});
+        if (res && res.error) { alert('Error: ' + res.error); return; }
         loadHubStatus();
         refreshInstances();
     } catch(e) {
