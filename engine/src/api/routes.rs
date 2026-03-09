@@ -586,6 +586,7 @@ async fn handle_hub_enable(
 ) -> Response {
     let local_port = state.env_config.http_port;
     let host_endpoint = state.env_config.host.clone()
+        .map(|h| if h.starts_with("http://") || h.starts_with("https://") { h } else { format!("http://{}", h) })
         .unwrap_or_else(|| format!("http://localhost:{}", local_port));
     match state.hub.enable_host(body.join_token, host_endpoint, local_port).await {
         Ok(()) => {
