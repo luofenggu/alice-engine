@@ -1,179 +1,183 @@
-//! Hub module — master mode for multi-engine management.
-//!
-//! When ALICE_HUB=true, this engine becomes a hub (master) that:
-//! - Aggregates instances from multiple slave engines
-//! - Proxies API requests to the correct engine based on instance_id
-//! - Provides hook callbacks for contacts and message relay
-//! - Registers hooks on slave engines at startup
-//!
-//! Design: hub is an optional layer on top of the engine. When disabled,
-//! the engine operates normally as a standalone instance.
-
-pub mod config;
+pub mod tunnel;
+pub mod host;
+pub mod slave;
 pub mod hooks;
-pub mod proxy;
 
-use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use sha2::{Sha256, Digest};
+use tracing::info;
 
-use config::{EngineEntry, HubConfig, HubConfigStore};
-use crate::api::types::InstanceInfo;
+use crate::hub::host::HostState;
+use crate::hub::slave::SlaveState;
+use crate::hub::tunnel::TunnelInstanceInfo;
 
-/// Routing entry: maps an instance_id to its engine.
-#[derive(Debug, Clone)]
-pub struct InstanceRoute {
-    /// Engine endpoint (e.g., "http://localhost:8080")
-    pub endpoint: String,
-    /// Auth token for this engine
-    pub auth_token: String,
-    /// Engine label
-    pub label: String,
+/// Hub operating mode
+pub enum HubMode {
+    /// Hub is off - normal standalone engine
+    Off,
+    /// This engine is a host - accepts slave connections
+    Host(Arc<HostState>),
+    /// This engine is a slave - connected to a host
+    Joined(Arc<SlaveState>),
 }
 
-/// Hub state — shared across the HTTP server.
+impl std::fmt::Debug for HubMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HubMode::Off => write!(f, "Off"),
+            HubMode::Host(_) => write!(f, "Host"),
+            HubMode::Joined(_) => write!(f, "Joined"),
+        }
+    }
+}
+
+/// Hub state: manages the current mode and transitions
 pub struct HubState {
-    /// Hub configuration store.
-    pub config_store: HubConfigStore,
-    /// Engine entries from config.
-    pub engines: Vec<EngineEntry>,
-    /// Instance routing table: instance_id -> InstanceRoute.
-    /// Updated periodically by refresh.
-    routing_table: RwLock<HashMap<String, InstanceRoute>>,
-    /// Cached instance list from all engines (for aggregated GET /api/instances).
-    cached_instances: RwLock<Vec<(InstanceInfo, String)>>, // (info, engine_label)
-    /// HTTP client for outbound requests to slave engines.
-    pub client: reqwest::Client,
-    /// This hub's own port (for constructing hook callback URLs).
-    pub self_port: u16,
+    mode: RwLock<HubMode>,
+}
+
+impl std::fmt::Debug for HubState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HubState")
+    }
 }
 
 impl HubState {
-    /// Create a new HubState from config.
-    pub fn new(config: HubConfig, config_store: HubConfigStore, self_port: u16) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-
+    pub fn new() -> Self {
         Self {
-            engines: config.engines.clone(),
-            config_store,
-            routing_table: RwLock::new(HashMap::new()),
-            cached_instances: RwLock::new(Vec::new()),
-            client,
-            self_port,
+            mode: RwLock::new(HubMode::Off),
         }
     }
 
-    /// Look up which engine owns an instance_id.
-    pub fn route(&self, instance_id: &str) -> Option<InstanceRoute> {
-        self.routing_table.read().unwrap().get(instance_id).cloned()
+    /// Enable host mode with a join token (room password)
+    pub async fn enable_host(&self, join_token: String, host_endpoint: String, local_port: u16) -> Result<(), String> {
+        let mut mode = self.mode.write().await;
+        match &*mode {
+            HubMode::Off => {
+                let host = Arc::new(HostState::new(join_token, host_endpoint, local_port));
+                info!("[HUB] Host mode enabled");
+                *mode = HubMode::Host(host);
+                Ok(())
+            }
+            HubMode::Host(_) => Err("Already in host mode".to_string()),
+            HubMode::Joined(_) => Err("Currently joined to a host. Leave first.".to_string()),
+        }
     }
 
-    /// Get all cached instances (from all engines).
-    pub fn all_instances(&self) -> Vec<InstanceInfo> {
-        self.cached_instances
-            .read()
-            .unwrap()
-            .iter()
-            .map(|(info, _)| info.clone())
-            .collect()
+    /// Disable host mode
+    pub async fn disable_host(&self) -> Result<(), String> {
+        let mut mode = self.mode.write().await;
+        match &*mode {
+            HubMode::Host(_) => {
+                info!("[HUB] Host mode disabled");
+                *mode = HubMode::Off;
+                Ok(())
+            }
+            _ => Err("Not in host mode".to_string()),
+        }
     }
 
-    /// Refresh the routing table and instance cache by querying all slave engines.
-    pub async fn refresh_instances(&self) {
-        let mut new_routing = HashMap::new();
-        let mut new_instances = Vec::new();
-
-        for engine in &self.engines {
-            match self.fetch_engine_instances(engine).await {
-                Ok(instances) => {
-                    for inst in instances {
-                        new_routing.insert(
-                            inst.id.clone(),
-                            InstanceRoute {
-                                endpoint: engine.endpoint.clone(),
-                                auth_token: engine.auth_token.clone(),
-                                label: engine.label.clone(),
-                            },
-                        );
-                        new_instances.push((inst, engine.label.clone()));
+    /// Join a host as a slave
+    pub async fn join_host(
+        &self,
+        host_url: String,
+        join_token: String,
+        instances: Vec<TunnelInstanceInfo>,
+        engine_id: &str,
+        local_port: u16,
+        auth_token: String,
+    ) -> Result<(), String> {
+        let mut mode = self.mode.write().await;
+        match &*mode {
+            HubMode::Off => {
+                let slave = Arc::new(SlaveState::new(
+                    host_url.clone(),
+                    local_port,
+                    auth_token,
+                ));
+                let slave_clone = slave.clone();
+                let instances_clone = instances.clone();
+                let engine_id_owned = engine_id.to_string();
+                let join_token_clone = join_token.clone();
+                // Spawn connection task
+                tokio::spawn(async move {
+                    if let Err(e) = slave_clone.connect(instances_clone, &engine_id_owned, &join_token_clone).await {
+                        tracing::error!("[HUB] Slave connection failed: {}", e);
                     }
-                    tracing::info!(
-                        "[HUB] Refreshed instances from {} ({})",
-                        engine.label,
-                        engine.endpoint
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "[HUB] Failed to fetch instances from {} ({}): {}",
-                        engine.label,
-                        engine.endpoint,
-                        e
-                    );
+                });
+                *mode = HubMode::Joined(slave);
+                info!("[HUB] Joined host at {}", host_url);
+                Ok(())
+            }
+            HubMode::Host(_) => Err("Currently in host mode. Disable first.".to_string()),
+            HubMode::Joined(_) => Err("Already joined to a host. Leave first.".to_string()),
+        }
+    }
+
+    /// Leave the current host
+    pub async fn leave_host(&self) -> Result<(), String> {
+        let mut mode = self.mode.write().await;
+        match &*mode {
+            HubMode::Joined(_) => {
+                info!("[HUB] Left host");
+                *mode = HubMode::Off;
+                // SlaveState will be dropped, closing the WebSocket
+                Ok(())
+            }
+            _ => Err("Not joined to any host".to_string()),
+        }
+    }
+
+    /// Get current mode status
+    pub async fn status(&self) -> HubStatus {
+        let mode = self.mode.read().await;
+        match &*mode {
+            HubMode::Off => HubStatus {
+                mode: "off".to_string(),
+                detail: None,
+            },
+            HubMode::Host(host) => {
+                let count = host.slave_count().await;
+                HubStatus {
+                    mode: "host".to_string(),
+                    detail: Some(format!("{} slaves connected", count)),
                 }
             }
+            HubMode::Joined(slave) => HubStatus {
+                mode: "joined".to_string(),
+                detail: Some(format!("connected to {}", slave.host_url)),
+            },
         }
-
-        *self.routing_table.write().unwrap() = new_routing;
-        *self.cached_instances.write().unwrap() = new_instances;
     }
 
-    /// Fetch instances from a single engine.
-    async fn fetch_engine_instances(
-        &self,
-        engine: &EngineEntry,
-    ) -> Result<Vec<InstanceInfo>, String> {
-        let url = format!("{}/api/instances", engine.endpoint);
-
-        // Build auth cookie for the slave engine
-        let session_token = Self::compute_session_token(&engine.auth_token);
-        let cookie_name = crate::api::http_protocol::build_session_cookie_name(
-            &Self::extract_port(&engine.endpoint),
-        );
-        let cookie_value = format!("{}={}", cookie_name, session_token);
-
-        let resp = self
-            .client
-            .get(&url)
-            .header("Cookie", cookie_value)
-            .send()
-            .await
-            .map_err(|e| format!("request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {}", resp.status()));
+    /// Get host state if in host mode
+    pub async fn as_host(&self) -> Option<Arc<HostState>> {
+        let mode = self.mode.read().await;
+        match &*mode {
+            HubMode::Host(host) => Some(host.clone()),
+            _ => None,
         }
-
-        resp.json::<Vec<InstanceInfo>>()
-            .await
-            .map_err(|e| format!("parse error: {}", e))
     }
 
-    /// Compute session token (SHA256 of auth_token) — same logic as EngineState.
-    fn compute_session_token(auth_secret: &str) -> String {
-        use sha2::{Digest, Sha256};
-        let hash = Sha256::digest(auth_secret.as_bytes());
-        hex::encode(hash)
+    /// Get slave state if in joined mode
+    pub async fn as_slave(&self) -> Option<Arc<SlaveState>> {
+        let mode = self.mode.read().await;
+        match &*mode {
+            HubMode::Joined(slave) => Some(slave.clone()),
+            _ => None,
+        }
     }
+}
 
-    /// Extract port from endpoint URL (e.g., "http://localhost:8080" -> "8080").
-    fn extract_port(endpoint: &str) -> String {
-        endpoint
-            .rsplit(':')
-            .next()
-            .unwrap_or("8080")
-            .trim_end_matches('/')
-            .to_string()
-    }
+#[derive(serde::Serialize)]
+pub struct HubStatus {
+    pub mode: String,
+    pub detail: Option<String>,
+}
 
-    /// Build the auth cookie header value for a slave engine.
-    pub fn build_auth_cookie(&self, route: &InstanceRoute) -> String {
-        let session_token = Self::compute_session_token(&route.auth_token);
-        let port = Self::extract_port(&route.endpoint);
-        let cookie_name = crate::api::http_protocol::build_session_cookie_name(&port);
-        format!("{}={}", cookie_name, session_token)
-    }
+/// Compute session token from auth secret (SHA256 hex)
+pub fn compute_session_token(auth_secret: &str) -> String {
+    hex::encode(Sha256::digest(auth_secret.as_bytes()))
 }
 

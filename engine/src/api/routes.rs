@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Multipart, Path as AxumPath, Query, State},
+    extract::ws::WebSocketUpgrade,
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, delete, get, post},
@@ -16,6 +17,24 @@ use super::http_protocol;
 use super::state::EngineState;
 use crate::persist::hooks::HooksConfig;
 use crate::persist::Settings;
+
+// Hub API request/response types
+#[derive(Deserialize)]
+pub struct HubEnableBody {
+    pub join_token: String,
+}
+
+#[derive(Deserialize)]
+pub struct HubJoinBody {
+    pub host_url: String,
+    pub join_token: String,
+}
+
+#[derive(Deserialize)]
+pub struct HubWsQuery {
+    pub token: Option<String>,
+    pub engine_id: Option<String>,
+}
 
 // ── Hub instance_id extraction patterns ──
 
@@ -103,10 +122,21 @@ pub struct VisionBody {
 async fn handle_get_instances(State(state): State<Arc<EngineState>>) -> Response {
     let mut instances = state.get_instances().await;
 
-    // Hub mode: merge remote instances from all slave engines
-    if let Some(ref hub) = state.hub {
-        let remote = hub.all_instances();
-        instances.extend(remote);
+    // Hub host mode: merge remote instances from all slave engines
+    if let Some(host) = state.hub.as_host().await {
+        let remote = host.get_all_remote_instances().await;
+        for (_engine_id, tunnel_instances) in remote {
+            for ti in tunnel_instances {
+                instances.push(crate::api::types::InstanceInfo {
+                    id: ti.id,
+                    name: ti.name,
+                    avatar: String::new(),
+                    color: String::new(),
+                    privileged: false,
+                    last_active: 0,
+                });
+            }
+        }
     }
 
     json_ok(instances)
@@ -529,9 +559,9 @@ async fn handle_hub_contacts(
     State(state): State<Arc<EngineState>>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    match &state.hub {
-        Some(hub) => crate::hub::hooks::handle_hub_contacts(hub, &state, &id).await.into_response(),
-        None => json_error(StatusCode::NOT_FOUND, "Hub not enabled"),
+    match state.hub.as_host().await {
+        Some(host) => crate::hub::hooks::handle_hub_contacts(&host, &state, &id).await.into_response(),
+        None => json_error(StatusCode::NOT_FOUND, "Hub not in host mode"),
     }
 }
 
@@ -541,10 +571,126 @@ async fn handle_hub_relay(
     State(state): State<Arc<EngineState>>,
     Json(body): Json<crate::persist::hooks::RelayRequest>,
 ) -> Response {
-    match &state.hub {
-        Some(hub) => crate::hub::hooks::handle_hub_relay(hub, &state, body).await.into_response(),
-        None => json_error(StatusCode::NOT_FOUND, "Hub not enabled"),
+    match state.hub.as_host().await {
+        Some(host) => crate::hub::hooks::handle_hub_relay(&host, &state, body).await.into_response(),
+        None => json_error(StatusCode::NOT_FOUND, "Hub not in host mode"),
     }
+}
+
+// ── Hub API ──
+
+#[post("/api/hub/enable")]
+async fn handle_hub_enable(
+    State(state): State<Arc<EngineState>>,
+    Json(body): Json<HubEnableBody>,
+) -> Response {
+    let local_port = state.env_config.http_port;
+    let host_endpoint = state.env_config.host.clone()
+        .unwrap_or_else(|| format!("http://localhost:{}", local_port));
+    match state.hub.enable_host(body.join_token, host_endpoint, local_port).await {
+        Ok(()) => {
+            // Register hooks on self so local instances can use hub contacts/relay
+            let port = local_port;
+            let hooks_body = serde_json::json!({
+                "contacts_url": format!("http://localhost:{}/api/hub/contacts/{{instance_id}}", port),
+                "send_msg_relay_url": format!("http://localhost:{}/api/hub/relay", port)
+            });
+            let cookie = format!("{}={}", state.session_cookie_name, state.session_token);
+            let url = format!("http://localhost:{}/api/hooks", port);
+            match state.http_client.post(&url)
+                .header("Cookie", cookie)
+                .json(&hooks_body)
+                .send()
+                .await
+            {
+                Ok(resp) => tracing::info!("[HUB] Self hooks registration: {}", resp.status()),
+                Err(e) => tracing::warn!("[HUB] Failed to register hooks on self: {}", e),
+            }
+            json_ok(serde_json::json!({"status": "host mode enabled"}))
+        }
+        Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+#[post("/api/hub/disable")]
+async fn handle_hub_disable(
+    State(state): State<Arc<EngineState>>,
+) -> Response {
+    match state.hub.disable_host().await {
+        Ok(()) => json_ok(serde_json::json!({"status": "host mode disabled"})),
+        Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+#[post("/api/hub/join")]
+async fn handle_hub_join(
+    State(state): State<Arc<EngineState>>,
+    Json(body): Json<HubJoinBody>,
+) -> Response {
+    // Gather local instances to register with the host
+    let local_instances = state.get_instances().await;
+    let tunnel_instances: Vec<crate::hub::tunnel::TunnelInstanceInfo> = local_instances
+        .iter()
+        .map(|inst| crate::hub::tunnel::TunnelInstanceInfo {
+            id: inst.id.clone(),
+            name: inst.name.clone(),
+        })
+        .collect();
+
+    // Use a stable engine_id (first instance id or generate one)
+    let engine_id = tunnel_instances.first()
+        .map(|i| i.id.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let local_port = state.env_config.http_port;
+    let auth_token = state.env_config.auth_secret.clone();
+    match state.hub.join_host(body.host_url, body.join_token, tunnel_instances, &engine_id, local_port, auth_token).await {
+        Ok(()) => json_ok(serde_json::json!({"status": "joined host"})),
+        Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+#[post("/api/hub/leave")]
+async fn handle_hub_leave(
+    State(state): State<Arc<EngineState>>,
+) -> Response {
+    match state.hub.leave_host().await {
+        Ok(()) => json_ok(serde_json::json!({"status": "left host"})),
+        Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+#[get("/api/hub/status")]
+async fn handle_hub_status(
+    State(state): State<Arc<EngineState>>,
+) -> Response {
+    json_ok(state.hub.status().await)
+}
+
+/// WebSocket endpoint for slave engines to connect.
+/// Auth via join_token query parameter (not cookie).
+#[get("/api/hub/ws")]
+async fn handle_hub_ws(
+    State(state): State<Arc<EngineState>>,
+    Query(query): Query<HubWsQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let host = match state.hub.as_host().await {
+        Some(h) => h,
+        None => return json_error(StatusCode::BAD_REQUEST, "Not in host mode"),
+    };
+
+    // Verify join token
+    let token = query.token.unwrap_or_default();
+    if token != host.join_token {
+        return json_error(StatusCode::UNAUTHORIZED, "Invalid join token");
+    }
+
+    let engine_id = query.engine_id.unwrap_or_else(|| "unknown".to_string());
+
+    ws.on_upgrade(move |socket| async move {
+        host.handle_slave_connection(socket, engine_id).await;
+    })
 }
 
 // ── Hooks Registration ──
@@ -620,7 +766,12 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_AUTH_CHECK, get(handle_auth_check))
         .route(ROUTE_HANDLE_REGISTER_HOOKS, post(handle_register_hooks))
         .route(ROUTE_HANDLE_RELAY_MESSAGE, post(handle_relay_message))
-        // Hub hook callback routes
+        // Hub API routes
+        .route(ROUTE_HANDLE_HUB_ENABLE, post(handle_hub_enable))
+        .route(ROUTE_HANDLE_HUB_DISABLE, post(handle_hub_disable))
+        .route(ROUTE_HANDLE_HUB_JOIN, post(handle_hub_join))
+        .route(ROUTE_HANDLE_HUB_LEAVE, post(handle_hub_leave))
+        .route(ROUTE_HANDLE_HUB_STATUS, get(handle_hub_status))
 }
 
 /// Public API routes — no auth required.
@@ -629,6 +780,7 @@ pub fn public_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_PUBLIC_STATIC, get(handle_public_static))
         .route(ROUTE_HANDLE_HUB_CONTACTS, get(handle_hub_contacts))
         .route(ROUTE_HANDLE_HUB_RELAY, post(handle_hub_relay))
+        .route(ROUTE_HANDLE_HUB_WS, get(handle_hub_ws))
 }
 
 // ── Embedded HTML (compiled into binary) ──
@@ -699,16 +851,16 @@ async fn html_fallback(
 
 /// Hub proxy middleware — intercepts requests for remote instances and proxies them.
 ///
-/// When hub mode is active, this middleware checks if the target instance_id
-/// lives on a slave engine. If so, the request is proxied transparently.
+/// When hub mode is active (host), this middleware checks if the target instance_id
+/// lives on a slave engine. If so, the request is forwarded through the WebSocket tunnel.
 /// Local instances and non-instance routes pass through normally.
 async fn hub_proxy_middleware(
     State(state): State<Arc<EngineState>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    // Only active in hub mode
-    let hub = match &state.hub {
+    // Only active in host mode
+    let host = match state.hub.as_host().await {
         Some(h) => h,
         None => return next.run(req).await,
     };
@@ -717,34 +869,73 @@ async fn hub_proxy_middleware(
 
     // Check if this request targets a specific instance
     if let Some(instance_id) = extract_instance_id_from_path(&path) {
-        // Check if this instance is remote (on a slave engine)
-        if let Some(route) = hub.route(instance_id) {
-            // Check it's not a local instance (local instances are handled normally)
-            // Local instances won't be in the hub routing table
-            // Decompose request into parts for proxy
-            let method = req.method().clone();
+        // Check if this instance is on a connected slave
+        if let Some(engine_id) = host.find_instance_engine(instance_id).await {
+            // Decompose request into parts for tunnel forwarding
+            let method = req.method().to_string();
             let path_str = req.uri().path().to_string();
             let query_str = req.uri().query().map(|q| q.to_string());
-            let headers = req.headers().clone();
+
+            // Collect headers
+            let mut header_map = std::collections::HashMap::new();
+            for (name, value) in req.headers().iter() {
+                if let Ok(v) = value.to_str() {
+                    header_map.insert(name.to_string(), v.to_string());
+                }
+            }
+
             let body_bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
                 .await
                 .unwrap_or_default();
-            return crate::hub::proxy::proxy_to_engine(
-                &hub.client,
-                &route,
-                &hub.build_auth_cookie(&route),
-                method,
-                &path_str,
-                query_str.as_deref(),
-                &headers,
-                body_bytes,
-            )
-            .await;
-        }
-    }
 
-    // Not a remote instance request — proceed normally
-    next.run(req).await
+            use base64::Engine as _;
+            let tunnel_req = crate::hub::tunnel::TunnelRequest {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                method,
+                path: if let Some(q) = &query_str {
+                    format!("{}?{}", path_str, q)
+                } else {
+                    path_str
+                },
+                headers: header_map,
+                body: if body_bytes.is_empty() {
+                    None
+                } else {
+                    Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes))
+                },
+            };
+
+            match host.proxy_request(instance_id, tunnel_req).await {
+                Some(resp) => {
+                    let status = StatusCode::from_u16(resp.status)
+                        .unwrap_or(StatusCode::BAD_GATEWAY);
+                    let mut headers = HeaderMap::new();
+                    for (k, v) in &resp.headers {
+                        if let (Ok(name), Ok(val)) = (
+                            axum::http::header::HeaderName::from_bytes(k.as_bytes()),
+                            axum::http::header::HeaderValue::from_str(v),
+                        ) {
+                            headers.insert(name, val);
+                        }
+                    }
+                    let body_bytes = resp.body
+                        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(&b).ok())
+                        .unwrap_or_default();
+                    (status, headers, body_bytes).into_response()
+                }
+                None => {
+                    tracing::warn!("[HUB] Tunnel proxy failed for {}", instance_id);
+                    json_error(StatusCode::BAD_GATEWAY, "Tunnel proxy error")
+                }
+            }
+        } else {
+            // Not a remote instance — proceed normally
+            next.run(req).await
+        }
+    } else {
+        // Not an instance request — proceed normally
+        next.run(req).await
+    }
 }
 
 /// Build the complete application router.
@@ -774,14 +965,11 @@ pub fn build_router(engine_state: Arc<EngineState>) -> Router {
         // HTML fallback: disk (dev) → embedded (release)
         .fallback(html_fallback);
 
-    // Hub proxy middleware: intercept remote instance requests before auth
-    // (hub handles its own auth via slave engine tokens)
-    if engine_state.hub.is_some() {
-        router = router.layer(axum::middleware::from_fn_with_state(
-            engine_state.clone(),
-            hub_proxy_middleware,
-        ));
-    }
+    // Hub proxy middleware: always applied (hub can be enabled at runtime)
+    router = router.layer(axum::middleware::from_fn_with_state(
+        engine_state.clone(),
+        hub_proxy_middleware,
+    ));
 
     router
         // Auth middleware (applied to all routes, whitelist inside)

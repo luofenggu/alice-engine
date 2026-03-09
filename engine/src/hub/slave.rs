@@ -1,0 +1,217 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use futures_util::{SinkExt, StreamExt};
+use tracing::{info, warn, error, debug};
+use base64::Engine as _;
+
+use crate::hub::tunnel::*;
+
+type WsSink = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::tungstenite::Message,
+>;
+
+/// Slave state: maintains WebSocket connection to host
+pub struct SlaveState {
+    pub host_url: String,
+    #[allow(dead_code)]
+    sender: Arc<Mutex<Option<WsSink>>>,
+    local_port: u16,
+    auth_token: String,
+}
+
+impl SlaveState {
+    pub fn new(host_url: String, local_port: u16, auth_token: String) -> Self {
+        Self {
+            host_url,
+            sender: Arc::new(Mutex::new(None)),
+            local_port,
+            auth_token,
+        }
+    }
+
+    /// Connect to host and start processing tunnel requests
+    pub async fn connect(&self, instances: Vec<TunnelInstanceInfo>, engine_id: &str, join_token: &str) -> Result<(), String> {
+        // Build WebSocket URL with join_token as query param
+        let ws_url = self.host_url
+            .replace("http://", "ws://")
+            .replace("https://", "wss://");
+        let ws_url = format!("{}/api/hub/ws?token={}", ws_url, join_token);
+
+        info!("[HUB-SLAVE] Connecting to host: {}", self.host_url);
+
+        // Connect using tokio-tungstenite for client-side WebSocket
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .map_err(|e| format!("WebSocket connect failed: {}", e))?;
+
+        let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+
+        // Send register message
+        let register = TunnelMessage::Register {
+            engine_id: engine_id.to_string(),
+            engine_endpoint: format!("http://localhost:{}", self.local_port),
+            instances,
+        };
+        let msg = serde_json::to_string(&register).unwrap();
+        ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(msg.into()))
+            .await
+            .map_err(|e| format!("Failed to send register: {}", e))?;
+
+        info!("[HUB-SLAVE] Registered with host");
+
+        let local_port = self.local_port;
+        let auth_token = self.auth_token.clone();
+
+        // Store sender for potential future use
+        {
+            let mut s = self.sender.lock().await;
+            // We can't store it here because we moved it below. 
+            // The sender will be used in the spawned task.
+            let _ = s; // placeholder
+        }
+
+        // Wrap sender for sending responses back
+        let ws_sender = Arc::new(Mutex::new(ws_sender));
+
+        // Process incoming messages (requests from host)
+        let ws_sender_clone = ws_sender.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = ws_receiver.next().await {
+                match msg {
+                    Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                        match serde_json::from_str::<TunnelMessage>(&text) {
+                            Ok(TunnelMessage::Request(req)) => {
+                                let sender = ws_sender_clone.clone();
+                                let token = auth_token.clone();
+                                tokio::spawn(async move {
+                                    let resp = handle_tunnel_request(req, local_port, &token).await;
+                                    let msg = serde_json::to_string(&TunnelMessage::Response(resp)).unwrap();
+                                    let mut s = sender.lock().await;
+                                    let _ = s.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await;
+                                });
+                            }
+                            Ok(TunnelMessage::Heartbeat) => {
+                                let hb = serde_json::to_string(&TunnelMessage::Heartbeat).unwrap();
+                                let mut s = ws_sender_clone.lock().await;
+                                let _ = s.send(tokio_tungstenite::tungstenite::Message::Text(hb.into())).await;
+                            }
+                            Ok(TunnelMessage::HookRegister { hooks }) => {
+                                info!("[HUB-SLAVE] Received hook registration: {:?}", hooks.keys().collect::<Vec<_>>());
+                                let token = auth_token.clone();
+                                tokio::spawn(async move {
+                                    register_hooks_locally(local_port, &token, hooks).await;
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
+                        info!("[HUB-SLAVE] Host closed connection");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("[HUB-SLAVE] WebSocket error: {}", e);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            info!("[HUB-SLAVE] Disconnected from host");
+        });
+
+        Ok(())
+    }
+}
+
+/// Handle a tunnel request by making a local HTTP request
+async fn handle_tunnel_request(req: TunnelRequest, local_port: u16, auth_token: &str) -> TunnelResponse {
+    let client = reqwest::Client::new();
+    let url = format!("http://localhost:{}{}", local_port, req.path);
+
+    debug!("[HUB-SLAVE] Tunnel request: {} {}", req.method, req.path);
+
+    // Build request with auth cookie
+    let method = reqwest::Method::from_bytes(req.method.as_bytes())
+        .unwrap_or(reqwest::Method::GET);
+
+    let mut http_req = client.request(method, &url);
+
+    // Inject auth cookie (slave computes session token from its own auth_token)
+    let session_token = crate::hub::compute_session_token(auth_token);
+    http_req = http_req.header("cookie", format!("session_token={}", session_token));
+
+    // Add headers from tunnel request
+    for (k, v) in &req.headers {
+        let k_lower = k.to_lowercase();
+        if k_lower != "cookie" && k_lower != "host" {
+            http_req = http_req.header(k.as_str(), v.as_str());
+        }
+    }
+
+    // Add body if present (base64 decoded)
+    if let Some(body_b64) = &req.body {
+        if let Ok(body_bytes) = base64::engine::general_purpose::STANDARD.decode(body_b64) {
+            http_req = http_req.body(body_bytes);
+        }
+    }
+
+    // Execute request
+    match http_req.send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let mut headers = HashMap::new();
+            for (k, v) in resp.headers() {
+                if let Ok(v_str) = v.to_str() {
+                    headers.insert(k.to_string(), v_str.to_string());
+                }
+            }
+            let body_bytes = resp.bytes().await.unwrap_or_default();
+            let body = if body_bytes.is_empty() {
+                None
+            } else {
+                Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes))
+            };
+
+            TunnelResponse {
+                request_id: req.request_id,
+                status,
+                headers,
+                body,
+            }
+        }
+        Err(e) => {
+            error!("[HUB-SLAVE] Local request failed: {}", e);
+            TunnelResponse {
+                request_id: req.request_id,
+                status: 502,
+                headers: HashMap::new(),
+                body: Some(base64::engine::general_purpose::STANDARD.encode(
+                    format!("Tunnel error: {}", e).as_bytes(),
+                )),
+            }
+        }
+    }
+}
+
+/// Register hooks on local engine
+async fn register_hooks_locally(local_port: u16, auth_token: &str, hooks: HashMap<String, String>) {
+    let client = reqwest::Client::new();
+    let url = format!("http://localhost:{}/api/hooks", local_port);
+    let session_token = crate::hub::compute_session_token(auth_token);
+
+    match client.post(&url)
+        .header("cookie", format!("session_token={}", session_token))
+        .json(&hooks)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            info!("[HUB-SLAVE] Local hook registration: status {}", resp.status());
+        }
+        Err(e) => {
+            error!("[HUB-SLAVE] Failed to register hooks locally: {}", e);
+        }
+    }
+}
