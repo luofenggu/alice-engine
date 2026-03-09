@@ -222,7 +222,7 @@ pub fn extract_session_token<'a>(cookies: &'a str, cookie_name: &str) -> Option<
 /// Static file paths that bypass auth (not route-annotated handlers).
 pub const SETUP_PAGE_FILE: &str = "/setup.html";
 
-pub const AUTH_WHITELIST_STATIC: &[&str] = &["/login.html", "/setup.html", "/error-reporter.js"];
+pub const AUTH_WHITELIST_STATIC: &[&str] = &["/login.html", "/setup.html", "/error-reporter.js", "/api/hub/ws"];
 
 /// Path prefixes that bypass auth.
 pub const AUTH_WHITELIST_PREFIXES: &[&str] = &["/public/"];
