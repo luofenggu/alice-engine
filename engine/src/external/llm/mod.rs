@@ -205,6 +205,41 @@ impl LlmClient {
         }
     }
 
+    /// Get channels status: list of (index, display_name, model), raw counter value, current effective index.
+    pub fn channels_status(&self) -> (Vec<(usize, String, String)>, u64, usize) {
+        let configs = self.configs.read().unwrap();
+        let counter = self.channel_index.load(Ordering::Relaxed);
+        let len = configs.len();
+        let current_idx = counter as usize % len;
+        let channels: Vec<(usize, String, String)> = configs
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, Self::channel_display_name(i), c.model.clone()))
+            .collect();
+        (channels, counter, current_idx)
+    }
+
+    /// Select a specific channel by resetting the counter so that counter % len == target_idx.
+    pub fn select_channel(&self, target_idx: usize) -> Result<(), String> {
+        let configs = self.configs.read().unwrap();
+        let len = configs.len();
+        if target_idx >= len {
+            return Err(format!(
+                "channel index {} out of range (0..{})",
+                target_idx,
+                len - 1
+            ));
+        }
+        self.channel_index
+            .store(target_idx as u64, Ordering::Relaxed);
+        info!(
+            "[CHANNEL] Manually selected {} (model={})",
+            Self::channel_display_name(target_idx),
+            configs[target_idx].model
+        );
+        Ok(())
+    }
+
     /// Advance to the next channel (called on inference error).
     /// Returns (old_name, new_name) if rotation happened (multi-channel), None if single channel.
     pub fn advance_channel(&self) -> Option<(String, String)> {

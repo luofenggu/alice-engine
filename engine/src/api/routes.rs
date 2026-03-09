@@ -116,6 +116,11 @@ pub struct VisionBody {
     pub image_url: String,
 }
 
+#[derive(Deserialize)]
+pub struct ChannelSelectBody {
+    pub index: usize,
+}
+
 // ── Instance Handlers ──
 
 #[get("/api/instances")]
@@ -240,6 +245,50 @@ async fn handle_interrupt(
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     json_ok(state.interrupt(id).await)
+}
+
+// ── Channels ──
+
+#[get("/api/instances/{id}/channels")]
+async fn handle_get_channels(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    // Channel rotation is global (shared LlmClient), but API path is instance-scoped for frontend consistency
+    let _ = id; // instance id unused — channels are global
+    let (channels, counter, current_idx) = state.llm_client.channels_status();
+    let channels_json: Vec<serde_json::Value> = channels
+        .iter()
+        .map(|(idx, name, model)| {
+            serde_json::json!({
+                "index": idx,
+                "name": name,
+                "model": model,
+            })
+        })
+        .collect();
+    json_ok(serde_json::json!({
+        "channels": channels_json,
+        "counter": counter,
+        "current_index": current_idx,
+        "current_name": crate::external::llm::LlmClient::channel_display_name(current_idx),
+    }))
+}
+
+#[post("/api/instances/{id}/channels/select")]
+async fn handle_select_channel(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<ChannelSelectBody>,
+) -> Response {
+    let _ = id;
+    match state.llm_client.select_channel(body.index) {
+        Ok(()) => json_ok(serde_json::json!({
+            "success": true,
+            "message": format!("switched to {}", crate::external::llm::LlmClient::channel_display_name(body.index)),
+        })),
+        Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
+    }
 }
 
 // ── Settings ──
@@ -828,6 +877,14 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         )
         .route(ROUTE_HANDLE_OBSERVE, get(handle_observe))
         .route(ROUTE_HANDLE_INTERRUPT, post(handle_interrupt))
+        .route(
+            ROUTE_HANDLE_GET_CHANNELS,
+            get(handle_get_channels),
+        )
+        .route(
+            ROUTE_HANDLE_SELECT_CHANNEL,
+            post(handle_select_channel),
+        )
         .route(
             ROUTE_HANDLE_GET_GLOBAL_SETTINGS,
             get(handle_get_global_settings).post(handle_update_global_settings),

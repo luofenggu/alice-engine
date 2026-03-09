@@ -658,6 +658,36 @@ body {
 .settings-extra-row button:hover { color: #e74c3c; border-color: #e74c3c; }
 .settings-actions { display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end; }
 .settings-actions button { padding: 7px 18px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); cursor: pointer; font-size: 13px; }
+/* Channels overlay */
+.channels-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 1000; justify-content: center; align-items: center;
+}
+.channels-overlay.open { display: flex; }
+.channels-panel {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 12px; width: 80vw; max-width: 500px; max-height: 85vh;
+    overflow-y: auto; padding: 24px; color: var(--text-primary);
+}
+.channels-panel h3 { margin: 0 0 16px; font-size: 16px; }
+.channels-panel .ch-info { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; }
+.channels-panel .ch-list { display: flex; flex-direction: column; gap: 6px; }
+.channels-panel .ch-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    background: var(--bg-primary); border: 1px solid var(--border);
+    border-radius: 8px; cursor: pointer; transition: all 0.15s;
+}
+.channels-panel .ch-item:hover { border-color: var(--accent); }
+.channels-panel .ch-item.active { border-color: var(--accent); background: rgba(108,92,231,0.1); }
+.channels-panel .ch-item .ch-indicator {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--border); flex-shrink: 0;
+}
+.channels-panel .ch-item.active .ch-indicator { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.channels-panel .ch-item .ch-detail { flex: 1; min-width: 0; }
+.channels-panel .ch-item .ch-name { font-size: 13px; font-weight: 500; }
+.channels-panel .ch-item .ch-model { font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channels-panel .ch-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+.channels-panel .ch-actions button { padding: 7px 18px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); cursor: pointer; font-size: 13px; }
 .settings-actions button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .settings-actions button:hover { opacity: 0.85; }
 .settings-add-btn { background: none; border: 1px dashed var(--border); color: var(--text-secondary); border-radius: 4px; cursor: pointer; padding: 5px 10px; font-size: 12px; width: 100%; margin-top: 4px; }
@@ -930,6 +960,7 @@ body {
                 <button id="privilegedBtn" onclick="togglePrivileged()">🔒 Privileged: Off</button>
                 <button id="interruptBtn" onclick="doInterrupt()">🛑 Stop</button>
                 <button onclick="openSettings()">⚙ Settings</button>
+                <button onclick="openChannels()">📡 Channels</button>
                 <button onclick="openKnowledge()">🧬 Knowledge</button>
             </div>
         </div>
@@ -2252,6 +2283,41 @@ function renumberExtraChannels() {
 
 function closeSettings() { document.getElementById('settingsOverlay').classList.remove('open'); }
 
+/* @SEC: js-channels — channel switching UI */
+async function openChannels() {
+    if (!currentInstance) return;
+    document.getElementById('opsMenu').classList.remove('open');
+    const res = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/channels');
+    if (!res || !res.channels) return;
+    const panel = document.getElementById('channelsPanel');
+    let html = '<div class="ch-info">Counter: ' + res.counter + ' → Channel index: ' + res.current_index + ' (' + (res.current_name || 'unknown') + ')</div>';
+    html += '<div class="ch-list">';
+    res.channels.forEach(function(ch) {
+        const isActive = ch.index === res.current_index;
+        html += '<div class="ch-item' + (isActive ? ' active' : '') + '" onclick="selectChannel(' + ch.index + ')">'
+            + '<div class="ch-indicator"></div>'
+            + '<div class="ch-detail">'
+            + '<div class="ch-name">' + (ch.name || 'channel ' + ch.index) + '</div>'
+            + '<div class="ch-model">' + (ch.model || 'no model') + '</div>'
+            + '</div></div>';
+    });
+    html += '</div>';
+    panel.innerHTML = '<h3>Channels</h3>' + html + '<div class="ch-actions"><button onclick="closeChannels()">Close</button></div>';
+    document.getElementById('channelsOverlay').classList.add('open');
+}
+
+async function selectChannel(idx) {
+    if (!currentInstance) return;
+    const res = await api('POST', 'api/instances/' + encodeURIComponent(currentInstance) + '/channels/select', { index: idx });
+    if (res && res.success) {
+        openChannels();
+    } else {
+        alert('Failed to select channel: ' + (res && res.message || 'unknown error'));
+    }
+}
+
+function closeChannels() { document.getElementById('channelsOverlay').classList.remove('open'); }
+
 async function saveSettings() {
     var body = {};
     var apiKey = document.getElementById('setApiKey').value.trim();
@@ -2411,6 +2477,13 @@ setTimeout(updateSidebarFooter, 500);
 </script>
 
 <!-- Settings Modal -->
+<div class="channels-overlay" id="channelsOverlay" onclick="if(event.target===this)closeChannels()">
+    <div class="channels-panel" id="channelsPanel">
+        <h3>Channels</h3>
+        <div class="ch-info">Loading...</div>
+    </div>
+</div>
+
 <div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
     <div class="settings-panel" id="settingsPanel">
         <h3 id="settingsTitle">Settings</h3>
