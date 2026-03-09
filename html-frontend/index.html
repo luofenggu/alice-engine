@@ -377,6 +377,14 @@ body {
     background: rgba(52, 152, 219, 0.12);
     color: rgba(52, 152, 219, 0.8);
 }
+.msg.agent.system-msg {
+    border-left: 3px solid rgba(150, 150, 150, 0.4);
+    padding-top: 0;
+}
+.msg.agent.system-msg .msg-cross-title {
+    background: rgba(150, 150, 150, 0.1);
+    color: rgba(150, 150, 150, 0.7);
+}
 
 .no-instance {
     flex: 1;
@@ -1923,7 +1931,11 @@ function createMessageElement(m) {
     } else {
         // Agent message (including from other agents) → left side
         isAgentSide = true;
-        if (sender && sender !== currentInstance) {
+        if (m.role === 'system' || sender === 'system') {
+            // System notification
+            div.className = 'msg agent system-msg';
+            crossTitle = '🔔 系统通知';
+        } else if (sender && sender !== currentInstance) {
             // From another agent
             div.className = 'msg agent from-other';
             crossTitle = '📩 来自 ' + getInstanceDisplayName(sender);
