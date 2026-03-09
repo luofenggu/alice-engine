@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock, oneshot};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
@@ -16,6 +17,8 @@ struct SlaveConnection {
     engine_endpoint: String,
     instances: Vec<TunnelInstanceInfo>,
     sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    /// Whether this connection is still alive (set to false on disconnect or heartbeat failure)
+    connected: Arc<AtomicBool>,
 }
 
 /// Pending request awaiting response from slave
@@ -76,6 +79,9 @@ impl HostState {
         let engine_id = if registered_engine_id.is_empty() { engine_id } else { registered_engine_id };
         let engine_id_clone = engine_id.clone();
 
+        // Connection health flag
+        let connected = Arc::new(AtomicBool::new(true));
+
         // Store connection
         {
             let conn = SlaveConnection {
@@ -83,9 +89,32 @@ impl HostState {
                 engine_endpoint,
                 instances,
                 sender: ws_sender.clone(),
+                connected: connected.clone(),
             };
             self.connections.write().await.insert(engine_id.clone(), conn);
         }
+
+        // Spawn heartbeat sender: periodically send heartbeat to detect half-open connections
+        let hb_sender = ws_sender.clone();
+        let hb_connected = connected.clone();
+        let hb_engine_id = engine_id.clone();
+        let heartbeat_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(20));
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                if !hb_connected.load(Ordering::Relaxed) {
+                    break;
+                }
+                let hb = serde_json::to_string(&TunnelMessage::Heartbeat).unwrap();
+                let mut sender = hb_sender.lock().await;
+                if sender.send(Message::Text(hb.into())).await.is_err() {
+                    warn!("[HUB-HOST] Heartbeat send failed for {}, marking disconnected", hb_engine_id);
+                    hb_connected.store(false, Ordering::Relaxed);
+                    break;
+                }
+            }
+        });
 
         // Process incoming messages (responses from slave, or requests from slave)
         while let Some(msg) = ws_receiver.next().await {
@@ -137,23 +166,32 @@ impl HostState {
         }
 
         // Cleanup on disconnect
+        connected.store(false, Ordering::Relaxed);
+        heartbeat_task.abort();
         info!("[HUB-HOST] Slave disconnected: {}", engine_id_clone);
         self.connections.write().await.remove(&engine_id_clone);
     }
 
     /// Send an HTTP request through the tunnel to a slave (by instance_id)
     pub async fn proxy_request(&self, instance_id: &str, req: TunnelRequest) -> Option<TunnelResponse> {
-        let (_engine_id, sender) = {
+        let (engine_id, sender, connected) = {
             let conns = self.connections.read().await;
             let mut found = None;
             for (eid, conn) in conns.iter() {
                 if conn.instances.iter().any(|i| i.id == instance_id) {
-                    found = Some((eid.clone(), conn.sender.clone()));
+                    found = Some((eid.clone(), conn.sender.clone(), conn.connected.clone()));
                     break;
                 }
             }
             found?
         };
+
+        // Fast fail: check if connection is still alive
+        if !connected.load(Ordering::Relaxed) {
+            warn!("[HUB-HOST] Connection already dead for instance {}, cleaning up", instance_id);
+            self.connections.write().await.remove(&engine_id);
+            return None;
+        }
 
         let request_id = req.request_id.clone();
 
@@ -169,39 +207,49 @@ impl HostState {
         {
             let mut ws = sender.lock().await;
             if ws.send(Message::Text(msg.into())).await.is_err() {
-                error!("[HUB-HOST] Failed to send tunnel request");
+                error!("[HUB-HOST] Failed to send tunnel request, marking disconnected");
+                connected.store(false, Ordering::Relaxed);
                 self.pending.lock().await.remove(&request_id);
+                self.connections.write().await.remove(&engine_id);
                 return None;
             }
         }
 
-        // Wait for response with timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+        // Wait for response with timeout (10s — fail fast)
+        match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
             Ok(Ok(resp)) => Some(resp),
             Ok(Err(_)) => {
                 warn!("[HUB-HOST] Response channel dropped for {}", request_id);
                 None
             }
             Err(_) => {
-                warn!("[HUB-HOST] Tunnel request timeout for {}", request_id);
+                warn!("[HUB-HOST] Tunnel request timeout for {} (10s), marking disconnected", request_id);
+                connected.store(false, Ordering::Relaxed);
                 self.pending.lock().await.remove(&request_id);
+                self.connections.write().await.remove(&engine_id);
                 None
             }
         }
     }
 
     /// Get all connected slave instances (for contacts aggregation)
+    /// Filters out disconnected slaves
     pub async fn get_all_remote_instances(&self) -> Vec<(String, Vec<TunnelInstanceInfo>)> {
         let conns = self.connections.read().await;
-        conns.iter().map(|(eid, conn)| {
-            (eid.clone(), conn.instances.clone())
-        }).collect()
+        conns.iter()
+            .filter(|(_, conn)| conn.connected.load(Ordering::Relaxed))
+            .map(|(eid, conn)| {
+                (eid.clone(), conn.instances.clone())
+            }).collect()
     }
 
-    /// Find which engine has a given instance
+    /// Find which engine has a given instance (only among connected slaves)
     pub async fn find_instance_engine(&self, instance_id: &str) -> Option<String> {
         let conns = self.connections.read().await;
         for (_eid, conn) in conns.iter() {
+            if !conn.connected.load(Ordering::Relaxed) {
+                continue;
+            }
             if conn.instances.iter().any(|i| i.id == instance_id) {
                 return Some(conn.engine_id.clone());
             }

@@ -1065,6 +1065,11 @@ async function api(method, path, body) {
     }
     const res = await fetch(path, opts);
     if (res.status === 401) { window.location.href = 'login'; return null; }
+    if (res.status === 502 || res.status === 504) {
+        const err = new Error('Instance unavailable (HTTP ' + res.status + ')');
+        err.status = res.status;
+        throw err;
+    }
     const text = await res.text();
     try { return JSON.parse(text); } catch(e) { return text; }
 }
@@ -1210,9 +1215,44 @@ async function switchInstance(name) {
     setTimeout(() => document.getElementById('msgInput').focus(), 100);
 }
 
+function showUnavailableBanner(instanceId) {
+    const el = document.getElementById('chatMessages');
+    if (!el) return;
+    // Remove existing banner if any
+    const existing = document.getElementById('unavailableBanner');
+    if (existing) existing.remove();
+    const banner = document.createElement('div');
+    banner.id = 'unavailableBanner';
+    banner.style.cssText = 'text-align:center;padding:24px 16px;color:#e74c3c;font-size:14px;margin-top:40px;';
+    banner.innerHTML = '<div style="font-size:28px;margin-bottom:12px;">⚠️</div>'
+        + '<div style="font-weight:600;margin-bottom:6px;">Instance Unavailable</div>'
+        + '<div style="color:#808090;font-size:13px;">The remote instance is currently offline or unreachable.</div>'
+        + '<div style="margin-top:16px;"><button onclick="retryInstance()" style="background:var(--accent);color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;">Retry</button></div>';
+    el.appendChild(banner);
+    // Hide input area
+    document.getElementById('chatInput').style.display = 'none';
+}
+
+function retryInstance() {
+    if (!currentInstance) return;
+    const banner = document.getElementById('unavailableBanner');
+    if (banner) banner.remove();
+    document.getElementById('chatInput').style.display = 'flex';
+    switchInstance(currentInstance);
+}
+
 /* @SEC: js-history — loadHistory + loadMoreHistory */
 async function loadHistory(name) {
-    const res = await api('GET', 'api/instances/' + encodeURIComponent(name) + '/messages?limit=50');
+    let res;
+    try {
+        res = await api('GET', 'api/instances/' + encodeURIComponent(name) + '/messages?limit=50');
+    } catch(e) {
+        if (e.status === 502 || e.status === 504) {
+            showUnavailableBanner(name);
+            return;
+        }
+        throw e;
+    }
     if (res && Array.isArray(res.messages)) {
         const allMsgsWithId = res.messages.filter(m => m.id);
         const lastMsgId = allMsgsWithId.length > 0 ? Math.max(...allMsgsWithId.map(m => m.id)) : 0;
@@ -1529,6 +1569,12 @@ function startPolling() {
     schedulePollReplies(pollGeneration);
 }
 
+function stopPolling() {
+    pollGeneration++;
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+}
+
 function schedulePollReplies(gen) {
     if (pollTimer) clearTimeout(pollTimer);
     if (gen !== pollGeneration) return;
@@ -1555,6 +1601,11 @@ async function pollReplies() {
     try {
         replies = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/replies?after_id=' + afterId);
     } catch(e) {
+        if (e.status === 502 || e.status === 504) {
+            showUnavailableBanner(currentInstance);
+            stopPolling();
+            stopInferencePolling();
+        }
         frontendLog('ERROR', 'poll_replies', 'instance=' + currentInstance + ' error=' + e.message);
         isPolling = false;
         return;
@@ -2002,6 +2053,11 @@ function startInferencePolling() {
     if (inferenceTimer) clearTimeout(inferenceTimer);
     pollInference();
     scheduleInferencePolling();
+}
+
+function stopInferencePolling() {
+    if (inferenceTimer) clearTimeout(inferenceTimer);
+    inferenceTimer = null;
 }
 
 function scheduleInferencePolling() {
