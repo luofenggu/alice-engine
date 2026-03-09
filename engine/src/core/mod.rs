@@ -574,7 +574,7 @@ impl Alice {
             "[ROLL-{}] Calling LLM for history compression",
             self.instance.id
         );
-        let (new_history, usage) = self.llm_client.infer_compress(request, &self.instance.id)?;
+        let (new_history, _usage) = self.llm_client.infer_compress(request, &self.instance.id)?;
 
         let trimmed = new_history.trim();
         if trimmed.is_empty() {
@@ -1004,13 +1004,13 @@ impl Alice {
 /// Data needed to execute history rolling in a background thread.
 /// Generate a random end marker for truncation defense.
 /// Each capture/roll call gets a unique marker so it can't appear in content body.
+/// Generate a short random end-marker token for capture/compress truncation defense.
+/// Format: `###END_{6-hex}###`, e.g. `###END_f22332###`
 pub fn generate_end_marker() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("###END_{:016x}###", nanos)
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let hash = RandomState::new().build_hasher().finish();
+    format!("###END_{:06x}###", hash & 0xFFFFFF)
 }
 
 pub struct RollTask {
@@ -1066,14 +1066,13 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         anyhow::bail!("Knowledge content empty after stripping end marker");
     }
 
-    let old_size = task.memory.knowledge.read().map(|s| s.len()).unwrap_or(0);
     task.memory.knowledge.write(clean_knowledge)?;
-    let new_size = clean_knowledge.len();
 
-    let result = crate::policy::messages::capture_result(
-        (old_size / 1024) as u64,
-        (new_size / 1024) as u64,
-    );
+    let new_kb = std::fs::metadata(task.memory.knowledge.path())
+        .map(|m| m.len() / 1024)
+        .unwrap_or(0);
+
+    let result = crate::policy::messages::capture_result(old_kb, new_kb);
     info!(
         "[CAPTURE-{}] Background: {}{}",
         task.instance_id,
@@ -1099,7 +1098,7 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
         "[ROLL-{}] Background: calling LLM for history compression",
         task.instance_id
     );
-    let (new_history, usage) = llm_client.infer_compress(task.request, &task.instance_id)?;
+    let (new_history, _usage) = llm_client.infer_compress(task.request, &task.instance_id)?;
 
     let trimmed = new_history.trim();
     if trimmed.is_empty() {
