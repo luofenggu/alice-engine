@@ -2487,7 +2487,7 @@ function renderHubContent(status) {
         html += '<div class="hub-card-title">🏠 Enable Host Mode</div>';
         html += '<div class="hub-card-desc">Start as a host. Other engines can join using the token.</div>';
         html += '<label>Join Token</label>';
-        html += '<input id="hubEnableToken" type="text" placeholder="Enter a token for slaves to join">';
+        html += '<input id="hubEnableToken" type="text" placeholder="Enter a token for slaves to join" value="' + (localStorage.getItem('hub_enable_token') || '') + '">';
         html += '<button class="hub-btn hub-btn-primary" onclick="hubEnable()">Enable Host</button>';
         html += '</div>';
 
@@ -2496,9 +2496,9 @@ function renderHubContent(status) {
         html += '<div class="hub-card-title">🔗 Join a Host</div>';
         html += '<div class="hub-card-desc">Connect to an existing host engine.</div>';
         html += '<label>Host URL</label>';
-        html += '<input id="hubJoinUrl" type="text" placeholder="http://host-ip:port">';
+        html += '<input id="hubJoinUrl" type="text" placeholder="http://host-ip:port" value="' + (localStorage.getItem('hub_host_url') || '') + '">';
         html += '<label>Join Token</label>';
-        html += '<input id="hubJoinToken" type="text" placeholder="Token provided by the host">';
+        html += '<input id="hubJoinToken" type="text" placeholder="Token provided by the host" value="' + (localStorage.getItem('hub_join_token') || '') + '">';
         html += '<button class="hub-btn hub-btn-blue" onclick="hubJoin()">Join</button>';
         html += '</div>';
 
@@ -2526,6 +2526,7 @@ async function hubEnable() {
     try {
         var res = await api('POST', 'api/hub/enable', { join_token: token });
         if (res && res.error) { alert('Error: ' + res.error); return; }
+        localStorage.setItem('hub_enable_token', token);
         loadHubStatus();
         refreshInstances();
     } catch(e) {
@@ -2553,6 +2554,8 @@ async function hubJoin() {
     try {
         var res = await api('POST', 'api/hub/join', { host_url: url, join_token: token });
         if (res && res.error) { alert('Error: ' + res.error); return; }
+        localStorage.setItem('hub_host_url', url);
+        localStorage.setItem('hub_join_token', token);
         loadHubStatus();
         refreshInstances();
     } catch(e) {
