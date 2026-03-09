@@ -1058,14 +1058,14 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         anyhow::bail!("Knowledge content empty after stripping end marker");
     }
 
+    let old_size = task.memory.knowledge.read().map(|s| s.len()).unwrap_or(0);
     task.memory.knowledge.write(clean_knowledge)?;
+    let new_size = clean_knowledge.len();
 
     let result = format!(
-        "knowledge updated{}",
-        usage
-            .as_ref()
-            .map(|u| format!(" ({}→{} tokens)", u.input_tokens, u.output_tokens))
-            .unwrap_or_default()
+        "knowledge updated: {}KB → {}KB",
+        old_size / 1024,
+        new_size / 1024
     );
     info!("[CAPTURE-{}] Background: {}", task.instance_id, result);
     Ok(result)
@@ -1133,9 +1133,23 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
         end_marker,
     };
 
-    std::thread::spawn(move || match execute_capture_task(task) {
-        Ok(msg) => info!("[CAPTURE] {}", msg),
-        Err(e) => error!("[CAPTURE] Background capture failed: {}", e),
+    let chat = alice.instance.chat.clone();
+
+    std::thread::spawn(move || {
+        let result = execute_capture_task(task);
+        // Notify agent via system message (appears in current on next beat)
+        let ts = crate::persist::chat::ChatHistory::now_timestamp();
+        let notify_msg = match &result {
+            Ok(r) => r.clone(),
+            Err(e) => format!("knowledge capture failed: {}", e),
+        };
+        if let Ok(mut db) = chat.lock() {
+            db.write_system_message(&notify_msg, &ts).ok();
+        }
+        match result {
+            Ok(msg) => info!("[CAPTURE] {}", msg),
+            Err(e) => error!("[CAPTURE] Background capture failed: {}", e),
+        }
     });
 }
 

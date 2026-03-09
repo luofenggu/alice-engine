@@ -608,8 +608,19 @@ impl AliceEngine {
                                 let rolling = rolling_in_progress.clone();
                                 rolling.store(true, Ordering::Relaxed);
                                 let iid = instance_id.clone();
+                                let chat = alice.instance.chat.clone();
                                 std::thread::spawn(move || {
-                                    match crate::core::execute_roll_task(task) {
+                                    let result = crate::core::execute_roll_task(task);
+                                    // Notify agent via system message
+                                    let ts = crate::persist::chat::ChatHistory::now_timestamp();
+                                    let notify_msg = match &result {
+                                        Ok(r) => r.clone(),
+                                        Err(e) => format!("history roll failed: {}", e),
+                                    };
+                                    if let Ok(mut db) = chat.lock() {
+                                        db.write_system_message(&notify_msg, &ts).ok();
+                                    }
+                                    match result {
                                         Ok(result) => {
                                             info!("[HISTORY-ROLL-{}] Background: {}", iid, result)
                                         }
