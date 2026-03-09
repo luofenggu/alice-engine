@@ -380,6 +380,7 @@ body {
 .msg.agent.system-msg {
     border-left: 3px solid rgba(150, 150, 150, 0.4);
     padding-top: 0;
+    opacity: 0.45;
 }
 .msg.agent.system-msg .msg-cross-title {
     background: rgba(150, 150, 150, 0.1);
@@ -1934,7 +1935,7 @@ function createMessageElement(m) {
         if (m.role === 'system' || sender === 'system') {
             // System notification
             div.className = 'msg agent system-msg';
-            crossTitle = '🔔 系统通知';
+            crossTitle = 'system';
         } else if (sender && sender !== currentInstance) {
             // From another agent
             div.className = 'msg agent from-other';
