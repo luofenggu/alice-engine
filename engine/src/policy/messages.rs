@@ -137,9 +137,53 @@ pub fn binary_file_description(name: &str, size: u64) -> String {
     format!("[Binary file: {}, {} bytes]", name, size)
 }
 
+/// Translate raw LLM error strings into user-friendly messages.
+///
+/// Recognizes:
+/// - `"LLM API error {status} ...:"` → status-code based mapping
+/// - Known non-API errors (timeout, connection, stream)
+/// - Fallback: return original string unchanged
+pub fn humanize_llm_error(raw: &str) -> String {
+    // Pattern: "LLM API error {status} {reason}: {body}"
+    if let Some(rest) = raw.strip_prefix("LLM API error ") {
+        // Extract status code (first token before space)
+        if let Some(status_str) = rest.split_whitespace().next() {
+            if let Ok(status) = status_str.parse::<u16>() {
+                return match status {
+                    401 => "API密钥无效".to_string(),
+                    402 => "通道额度用完了".to_string(),
+                    403 => "API访问被拒绝".to_string(),
+                    429 => "请求太频繁".to_string(),
+                    500 | 502 | 503 => "LLM服务暂时不可用".to_string(),
+                    _ => format!("LLM服务返回错误({})", status),
+                };
+            }
+        }
+    }
+
+    // Known non-API errors
+    if raw.contains("SSE stream timeout") {
+        return "连接超时（60秒无响应）".to_string();
+    }
+    if raw.contains("Failed to send") && raw.contains("request") {
+        return "无法连接LLM服务".to_string();
+    }
+    if raw.contains("SSE stream read error") {
+        return "数据流读取异常".to_string();
+    }
+    if raw.contains("Failed to create tokio runtime") {
+        return "内部运行时创建失败".to_string();
+    }
+
+    // Fallback: return as-is
+    raw.to_string()
+}
+
 /// Format beat error for user notification.
+/// This is a thin wrapper — inference errors are already formatted by
+/// `inference_error`/`inference_disconnected`, so we just pass through.
 pub fn beat_error(e: &anyhow::Error) -> String {
-    format!("推理出错：{}", e)
+    format!("{}", e)
 }
 
 /// Format inference error with optional channel rotation info.
@@ -148,12 +192,13 @@ pub fn inference_error(
     backoff_secs: u64,
     rotation: Option<&(String, String)>,
 ) -> String {
+    let friendly = humanize_llm_error(error);
     match rotation {
         Some((from, to)) => format!(
-            "{} 推理出错: {}，已轮换到 {}，将在{}秒后重试。",
-            from, error, to, backoff_secs
+            "⚡ {}（{}），已轮换到 {}，{}秒后重试",
+            friendly, from, to, backoff_secs
         ),
-        None => format!("推理过程出错: {}，将在{}秒后重试。", error, backoff_secs),
+        None => format!("⚡ {}，{}秒后重试", friendly, backoff_secs),
     }
 }
 
@@ -161,10 +206,10 @@ pub fn inference_error(
 pub fn inference_disconnected(backoff_secs: u64, rotation: Option<&(String, String)>) -> String {
     match rotation {
         Some((from, to)) => format!(
-            "{} 推理连接异常断开，已轮换到 {}，将在{}秒后重试。",
+            "⚡ 推理连接异常断开（{}），已轮换到 {}，{}秒后重试",
             from, to, backoff_secs
         ),
-        None => format!("推理连接异常断开，将在{}秒后重试。", backoff_secs),
+        None => format!("⚡ 推理连接异常断开，{}秒后重试", backoff_secs),
     }
 }
 
@@ -261,4 +306,147 @@ pub fn capture_failed(error: &str) -> String {
 
 pub fn roll_failed(error: &str) -> String {
     format!("记忆整理失败：{}", error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === humanize_llm_error tests ===
+
+    #[test]
+    fn test_humanize_401() {
+        let raw = r#"LLM API error 401 Unauthorized: {"error":"invalid api key"}"#;
+        assert_eq!(humanize_llm_error(raw), "API密钥无效");
+    }
+
+    #[test]
+    fn test_humanize_402() {
+        let raw = r#"LLM API error 402 Payment Required: {"error":{"code":"402","type":"quote_exceeded","message":"You have reached your subscription quota limit..."}}"#;
+        assert_eq!(humanize_llm_error(raw), "通道额度用完了");
+    }
+
+    #[test]
+    fn test_humanize_403() {
+        let raw = r#"LLM API error 403 Forbidden: {"error":"access denied"}"#;
+        assert_eq!(humanize_llm_error(raw), "API访问被拒绝");
+    }
+
+    #[test]
+    fn test_humanize_429() {
+        let raw = r#"LLM API error 429 Too Many Requests: {"code": 429, "reason": "RATE_LIMIT_EXCEEDED"}"#;
+        assert_eq!(humanize_llm_error(raw), "请求太频繁");
+    }
+
+    #[test]
+    fn test_humanize_500() {
+        let raw = "LLM API error 500 Internal Server Error: something broke";
+        assert_eq!(humanize_llm_error(raw), "LLM服务暂时不可用");
+    }
+
+    #[test]
+    fn test_humanize_502() {
+        let raw = "LLM API error 502 Bad Gateway: ";
+        assert_eq!(humanize_llm_error(raw), "LLM服务暂时不可用");
+    }
+
+    #[test]
+    fn test_humanize_503() {
+        let raw = "LLM API error 503 Service Unavailable: overloaded";
+        assert_eq!(humanize_llm_error(raw), "LLM服务暂时不可用");
+    }
+
+    #[test]
+    fn test_humanize_unknown_status() {
+        let raw = "LLM API error 418 I'm a Teapot: {}";
+        assert_eq!(humanize_llm_error(raw), "LLM服务返回错误(418)");
+    }
+
+    #[test]
+    fn test_humanize_sse_timeout() {
+        let raw = "SSE stream timeout: no data received for 60 seconds";
+        assert_eq!(humanize_llm_error(raw), "连接超时（60秒无响应）");
+    }
+
+    #[test]
+    fn test_humanize_connection_failure() {
+        let raw = "Failed to send sync inference request";
+        assert_eq!(humanize_llm_error(raw), "无法连接LLM服务");
+    }
+
+    #[test]
+    fn test_humanize_stream_read_error() {
+        let raw = "SSE stream read error";
+        assert_eq!(humanize_llm_error(raw), "数据流读取异常");
+    }
+
+    #[test]
+    fn test_humanize_tokio_runtime() {
+        let raw = "Failed to create tokio runtime: some OS error";
+        assert_eq!(humanize_llm_error(raw), "内部运行时创建失败");
+    }
+
+    #[test]
+    fn test_humanize_fallback() {
+        let raw = "some completely unknown error message";
+        assert_eq!(humanize_llm_error(raw), "some completely unknown error message");
+    }
+
+    #[test]
+    fn test_humanize_empty_string() {
+        assert_eq!(humanize_llm_error(""), "");
+    }
+
+    // === beat_error tests ===
+
+    #[test]
+    fn test_beat_error_passthrough() {
+        let err = anyhow::anyhow!("⚡ 通道额度用完了（primary），已轮换到 extra1，30秒后重试");
+        let result = beat_error(&err);
+        assert_eq!(result, "⚡ 通道额度用完了（primary），已轮换到 extra1，30秒后重试");
+    }
+
+    // === inference_error tests ===
+
+    #[test]
+    fn test_inference_error_with_rotation() {
+        let rotation = ("primary".to_string(), "extra1".to_string());
+        let result = inference_error(
+            r#"LLM API error 402 Payment Required: {"error":"quota"}"#,
+            30,
+            Some(&rotation),
+        );
+        assert_eq!(result, "⚡ 通道额度用完了（primary），已轮换到 extra1，30秒后重试");
+    }
+
+    #[test]
+    fn test_inference_error_without_rotation() {
+        let result = inference_error(
+            "LLM API error 429 Too Many Requests: rate limited",
+            15,
+            None,
+        );
+        assert_eq!(result, "⚡ 请求太频繁，15秒后重试");
+    }
+
+    #[test]
+    fn test_inference_error_unknown_error() {
+        let result = inference_error("weird error", 10, None);
+        assert_eq!(result, "⚡ weird error，10秒后重试");
+    }
+
+    // === inference_disconnected tests ===
+
+    #[test]
+    fn test_inference_disconnected_with_rotation() {
+        let rotation = ("extra2".to_string(), "primary".to_string());
+        let result = inference_disconnected(20, Some(&rotation));
+        assert_eq!(result, "⚡ 推理连接异常断开（extra2），已轮换到 primary，20秒后重试");
+    }
+
+    #[test]
+    fn test_inference_disconnected_without_rotation() {
+        let result = inference_disconnected(10, None);
+        assert_eq!(result, "⚡ 推理连接异常断开，10秒后重试");
+    }
 }
