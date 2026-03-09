@@ -43,10 +43,10 @@ pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) 
         Action::CreateInstance { name, knowledge } => {
             execute_create_instance(alice, tx, name, knowledge)
         }
-        Action::Forget {
+        Action::Distill {
             target_action_id,
             summary,
-        } => execute_forget(alice, tx, target_action_id, summary),
+        } => execute_distill(alice, tx, target_action_id, summary),
     }
 }
 
@@ -458,7 +458,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
 /// The target block is identified by its action_id in the START/END markers.
 /// On success, returns empty string (silent execution - caller skips append_current).
 /// On failure, returns error (caller records it so agent sees what went wrong).
-fn execute_forget(
+fn execute_distill(
     alice: &mut Alice,
     _tx: &mut Transaction,
     target_action_id: &str,
@@ -470,7 +470,7 @@ fn execute_forget(
         .replace_action_block(target_action_id, summary.trim())?;
 
     info!(
-        "[FORGET-{}] Replaced action [{}]: {} -> {} chars (saved {})",
+        "[DISTILL-{}] Replaced action [{}]: {} -> {} chars (saved {})",
         alice.instance.id,
         target_action_id,
         old_len,

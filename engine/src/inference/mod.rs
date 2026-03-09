@@ -102,7 +102,7 @@ pub enum Action {
         name: String,
         knowledge: String,
     },
-    Forget {
+    Distill {
         target_action_id: String,
         summary: String,
     },
@@ -138,9 +138,9 @@ impl fmt::Display for Action {
                 write!(f, "set_profile → {}", fields.join(", "))
             }
             Action::CreateInstance { name, .. } => write!(f, "create_instance → {}", name),
-            Action::Forget {
+            Action::Distill {
                 target_action_id, ..
-            } => write!(f, "forget → {}", target_action_id),
+            } => write!(f, "distill → {}", target_action_id),
         }
     }
 }
@@ -174,7 +174,8 @@ const ACTION_NAMES: &[(&str, ActionKind)] = &[
     ("summary", ActionKind::Summary),
     ("set_profile", ActionKind::SetProfile),
     ("create_instance", ActionKind::CreateInstance),
-    ("forget", ActionKind::Forget),
+    ("distill", ActionKind::Distill),
+    ("forget", ActionKind::Distill),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -189,7 +190,7 @@ enum ActionKind {
     Summary,
     SetProfile,
     CreateInstance,
-    Forget,
+    Distill,
 }
 
 // ---------------------------------------------------------------------------
@@ -295,9 +296,9 @@ fn parse_single_action(text: &str, separator_token: &str) -> Result<Action> {
                 knowledge: knowledge.to_string(),
             })
         }
-        ActionKind::Forget => {
-            let (target_action_id, summary) = split_first_line(rest, "forget")?;
-            Ok(Action::Forget {
+        ActionKind::Distill => {
+            let (target_action_id, summary) = split_first_line(rest, "distill")?;
+            Ok(Action::Distill {
                 target_action_id: target_action_id.to_string(),
                 summary: summary.to_string(),
             })

@@ -173,7 +173,7 @@ impl Memory {
     pub fn replace_action_block(&self, action_id: &str, summary: &str) -> Result<(usize, usize)> {
         let current = self.current.read()?;
         if current.is_empty() {
-            anyhow::bail!("current is empty, nothing to forget");
+            anyhow::bail!("current is empty, nothing to distill");
         }
 
         let start_marker = out::action_block_start(action_id);
@@ -192,7 +192,7 @@ impl Memory {
             end_pos += 1;
         }
 
-        let replacement = out::forgotten_block(action_id, summary.trim());
+        let replacement = out::distilled_block(action_id, summary.trim());
         let new_current = format!(
             "{}{}{}",
             &current[..start_pos],

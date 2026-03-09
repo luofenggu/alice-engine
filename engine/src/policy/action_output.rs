@@ -284,8 +284,8 @@ pub fn action_block_end(action_id: &str) -> String {
     format!("---------行为编号[{}]结束---------", action_id)
 }
 
-/// Format forgotten action block replacement.
-pub fn forgotten_block(action_id: &str, summary: &str) -> String {
+/// Format distilled action block replacement.
+pub fn distilled_block(action_id: &str, summary: &str) -> String {
     format!(
         "---------行为编号[{}]开始---------\n[已提炼] {}\n---------行为编号[{}]结束---------\n",
         action_id,
@@ -438,11 +438,11 @@ pub fn build_doing_description(action: &Action) -> String {
             name,
             knowledge.len()
         ),
-        Action::Forget {
+        Action::Distill {
             target_action_id,
             summary,
         } => format!(
-            "forget [{}]: {}",
+            "distill [{}]: {}",
             target_action_id,
             crate::util::safe_truncate(summary, 80)
         ),
