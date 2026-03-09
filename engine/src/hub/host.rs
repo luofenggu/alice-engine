@@ -243,6 +243,16 @@ impl HostState {
             }).collect()
     }
 
+    /// Get remote instances grouped by endpoint URL (for frontend display)
+    pub async fn get_remote_endpoints(&self) -> Vec<(String, Vec<TunnelInstanceInfo>)> {
+        let conns = self.connections.read().await;
+        conns.iter()
+            .filter(|(_, conn)| conn.connected.load(Ordering::Relaxed))
+            .map(|(_, conn)| {
+                (conn.engine_endpoint.clone(), conn.instances.clone())
+            }).collect()
+    }
+
     /// Find which engine has a given instance (only among connected slaves)
     pub async fn find_instance_engine(&self, instance_id: &str) -> Option<String> {
         let conns = self.connections.read().await;

@@ -801,6 +801,40 @@ async fn handle_hub_status(
     json_ok(state.hub.status().await)
 }
 
+#[get("/api/hub/endpoints")]
+async fn handle_hub_endpoints(
+    State(state): State<Arc<EngineState>>,
+) -> Response {
+    let local_instances: Vec<crate::api::types::InstanceInfo> = state.get_instances().await;
+
+    let mut groups = vec![crate::api::types::EndpointGroup {
+        endpoint: "local".to_string(),
+        instances: local_instances,
+    }];
+
+    // Hub host mode: add remote endpoint groups
+    if let Some(host) = state.hub.as_host().await {
+        let remote = host.get_remote_endpoints().await;
+        for (endpoint, tunnel_instances) in remote {
+            groups.push(crate::api::types::EndpointGroup {
+                endpoint,
+                instances: tunnel_instances.into_iter().map(|ti| {
+                    crate::api::types::InstanceInfo {
+                        id: ti.id,
+                        name: ti.name,
+                        avatar: ti.avatar,
+                        color: ti.color,
+                        privileged: ti.privileged,
+                        last_active: ti.last_active,
+                    }
+                }).collect(),
+            });
+        }
+    }
+
+    json_ok(groups)
+}
+
 /// WebSocket endpoint for slave engines to connect.
 /// Auth via join_token query parameter (not cookie).
 #[get("/api/hub/ws")]
@@ -914,6 +948,7 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_HUB_JOIN, post(handle_hub_join))
         .route(ROUTE_HANDLE_HUB_LEAVE, post(handle_hub_leave))
         .route(ROUTE_HANDLE_HUB_STATUS, get(handle_hub_status))
+        .route(ROUTE_HANDLE_HUB_ENDPOINTS, get(handle_hub_endpoints))
 }
 
 /// Public API routes — no auth required.

@@ -23,6 +23,17 @@ pub struct InstanceInfo {
 }
 
 // ============================================================
+// Endpoint Groups (Hub)
+// ============================================================
+
+/// Endpoint分组：按engine endpoint聚合实例
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndpointGroup {
+    pub endpoint: String,
+    pub instances: Vec<InstanceInfo>,
+}
+
+// ============================================================
 // Messages
 // ============================================================
 

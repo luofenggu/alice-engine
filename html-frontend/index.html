@@ -227,6 +227,31 @@ body {
 .instance-item:hover .instance-delete { opacity: 1; }
 .instance-delete:hover { color: var(--danger); background: rgba(255,107,107,0.1); }
 
+.endpoint-header {
+    padding: 8px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+    transition: color 0.15s;
+}
+.endpoint-header:hover { color: var(--text-secondary); }
+.endpoint-header .endpoint-arrow {
+    font-size: 8px;
+    transition: transform 0.2s;
+    display: inline-block;
+}
+.endpoint-header.collapsed .endpoint-arrow { transform: rotate(-90deg); }
+.endpoint-instances { overflow: hidden; }
+.endpoint-instances.collapsed { display: none; }
+.endpoint-header.single { display: none; }
+
 .create-bar {
     padding: 12px 16px;
     padding-bottom: calc(12px + var(--safe-bottom));
@@ -1151,68 +1176,103 @@ async function doLogout() {
 
 /* @SEC: js-instances — refresh/create/delete/switch */
 async function refreshInstances() {
-    const list = await api('GET', 'api/instances');
-    if (!Array.isArray(list)) return;
-    cachedInstanceList = list;
-    // Sort by lastActive descending (most recent first)
-    list.sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0));
+    const endpoints = await api('GET', 'api/hub/endpoints');
+    if (!Array.isArray(endpoints)) return;
+    // Flatten all instances into cachedInstanceList
+    cachedInstanceList = [];
+    endpoints.forEach(g => { if (Array.isArray(g.instances)) cachedInstanceList.push(...g.instances); });
     const el = document.getElementById('instanceList');
     el.innerHTML = '';
-    if (list.length === 0 && !currentInstance) {
+    if (cachedInstanceList.length === 0 && !currentInstance) {
         createInstance();
         return;
     }
     // Auto-select instance on first load: prefer last interacted, fallback to most recent
-    if (!currentInstance && list.length > 0) {
+    if (!currentInstance && cachedInstanceList.length > 0) {
+        const sorted = [...cachedInstanceList].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0));
         const lastId = localStorage.getItem('alice_last_instance');
-        const lastInst = lastId && list.find(i => i.id === lastId);
-        switchInstance(lastInst ? lastInst.id : list[0].id);
+        const lastInst = lastId && sorted.find(i => i.id === lastId);
+        switchInstance(lastInst ? lastInst.id : sorted[0].id);
     }
-    list.forEach(inst => {
-        const displayName = inst.name || inst.id;
-        // Update chat title if current instance's displayName changed
-        if (inst.id === currentInstance) {
-            const titleEl = document.getElementById('chatTitle');
-            if (titleEl && titleEl.textContent !== displayName) {
-                titleEl.textContent = displayName;
-                document.title = displayName;
-            }
+    const multiGroup = endpoints.length > 1;
+    endpoints.forEach(group => {
+        const isLocal = group.endpoint === 'local';
+        const instances = Array.isArray(group.instances) ? group.instances : [];
+        // Sort each group by lastActive descending
+        instances.sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0));
+        const groupDiv = document.createElement('div');
+        groupDiv.className = 'endpoint-group';
+        // Group header (only show when multiple groups)
+        if (multiGroup) {
+            const storageKey = 'alice_ep_collapsed_' + group.endpoint;
+            const collapsed = localStorage.getItem(storageKey) === '1';
+            const header = document.createElement('div');
+            header.className = 'endpoint-header' + (collapsed ? ' collapsed' : '');
+            const label = isLocal ? '本机' : group.endpoint.replace(/^https?:\/\//, '');
+            header.innerHTML = '<span class="endpoint-arrow">▸</span><span class="endpoint-label">' + escHtml(label) + '</span><span class="endpoint-count">' + instances.length + '</span>';
+            header.onclick = function() {
+                header.classList.toggle('collapsed');
+                const list = header.nextElementSibling;
+                if (list) list.style.display = header.classList.contains('collapsed') ? 'none' : '';
+                localStorage.setItem(storageKey, header.classList.contains('collapsed') ? '1' : '0');
+            };
+            groupDiv.appendChild(header);
+            const listDiv = document.createElement('div');
+            listDiv.className = 'endpoint-instances';
+            if (collapsed) listDiv.style.display = 'none';
+            instances.forEach(inst => listDiv.appendChild(renderInstanceItem(inst, isLocal)));
+            groupDiv.appendChild(listDiv);
+        } else {
+            instances.forEach(inst => groupDiv.appendChild(renderInstanceItem(inst, isLocal)));
         }
-        const div = document.createElement('div');
-        div.className = 'instance-item' + (inst.id === currentInstance ? ' active' : '');
-        div.onclick = (e) => { if (!e.target.closest('.instance-delete')) { switchInstance(inst.id); if(window.innerWidth <= 768) toggleSidebar(); } };
-        let badge = '';
-        if (inst.born === false && inst.engineOnline) badge = '<span class="instance-waking">waking...</span>';
-        else if (inst.unread > 0) badge = '<span class="instance-badge">' + inst.unread + '</span>';
-        else if (inst.idle) {
-            if (inst.idleTimeoutSecs && inst.idleSince) {
-                const remaining = Math.max(0, inst.idleTimeoutSecs - Math.floor(Date.now() / 1000 - inst.idleSince));
-                badge = '<span class="instance-idle">idle ' + remaining + 's</span>';
-            } else {
-                badge = '<span class="instance-idle">idle</span>';
-            }
-        }
-        let deleteBtn = '<button class="instance-delete" onclick="deleteInstance(\'' + escHtml(inst.id) + '\',\'' + escHtml(displayName || inst.id) + '\',event)" title="Delete">&times;</button>';
-        // Avatar: image URL or color circle with first letter
-        const color = inst.color || '#6c5ce7';
-        const initial = (displayName || inst.id).charAt(0).toUpperCase();
-        let avatarStyle = 'background-color:' + color + ';';
-        let avatarContent = initial;
-        if (inst.avatar) {
-            if (inst.avatar.startsWith('http://') || inst.avatar.startsWith('https://') || inst.avatar.startsWith('/')) {
-                avatarStyle = 'background-image:url(' + escHtml(inst.avatar) + ');background-color:' + color + ';';
-                avatarContent = '';
-            } else {
-                avatarContent = inst.avatar;
-            }
-        }
-        div.innerHTML = '<span class="instance-left">'
-            + '<span class="instance-avatar" style="' + avatarStyle + '">' + avatarContent + '</span>'
-            + '<span class="instance-name">' + escHtml(displayName) + '</span>'
-            + '</span>'
-            + '<span class="instance-meta">' + badge + deleteBtn + '</span>';
-        el.appendChild(div);
+        el.appendChild(groupDiv);
     });
+}
+
+function renderInstanceItem(inst, isLocal) {
+    const displayName = inst.name || inst.id;
+    // Update chat title if current instance's displayName changed
+    if (inst.id === currentInstance) {
+        const titleEl = document.getElementById('chatTitle');
+        if (titleEl && titleEl.textContent !== displayName) {
+            titleEl.textContent = displayName;
+            document.title = displayName;
+        }
+    }
+    const div = document.createElement('div');
+    div.className = 'instance-item' + (inst.id === currentInstance ? ' active' : '');
+    div.onclick = (e) => { if (!e.target.closest('.instance-delete')) { switchInstance(inst.id); if(window.innerWidth <= 768) toggleSidebar(); } };
+    let badge = '';
+    if (inst.born === false && inst.engineOnline) badge = '<span class="instance-waking">waking...</span>';
+    else if (inst.unread > 0) badge = '<span class="instance-badge">' + inst.unread + '</span>';
+    else if (inst.idle) {
+        if (inst.idleTimeoutSecs && inst.idleSince) {
+            const remaining = Math.max(0, inst.idleTimeoutSecs - Math.floor(Date.now() / 1000 - inst.idleSince));
+            badge = '<span class="instance-idle">idle ' + remaining + 's</span>';
+        } else {
+            badge = '<span class="instance-idle">idle</span>';
+        }
+    }
+    let deleteBtn = isLocal ? '<button class="instance-delete" onclick="deleteInstance(\'' + escHtml(inst.id) + '\',\'' + escHtml(displayName || inst.id) + '\',event)" title="Delete">&times;</button>' : '';
+    // Avatar: image URL or color circle with first letter
+    const color = inst.color || '#6c5ce7';
+    const initial = (displayName || inst.id).charAt(0).toUpperCase();
+    let avatarStyle = 'background-color:' + color + ';';
+    let avatarContent = initial;
+    if (inst.avatar) {
+        if (inst.avatar.startsWith('http://') || inst.avatar.startsWith('https://') || inst.avatar.startsWith('/')) {
+            avatarStyle = 'background-image:url(' + escHtml(inst.avatar) + ');background-color:' + color + ';';
+            avatarContent = '';
+        } else {
+            avatarContent = inst.avatar;
+        }
+    }
+    div.innerHTML = '<span class="instance-left">'
+        + '<span class="instance-avatar" style="' + avatarStyle + '">' + avatarContent + '</span>'
+        + '<span class="instance-name">' + escHtml(displayName) + '</span>'
+        + '</span>'
+        + '<span class="instance-meta">' + badge + deleteBtn + '</span>';
+    return div;
 }
 
 async function createInstance() {
