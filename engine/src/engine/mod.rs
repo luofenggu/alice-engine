@@ -610,24 +610,23 @@ impl AliceEngine {
                                 let iid = instance_id.clone();
                                 let chat = alice.instance.chat.clone();
                                 std::thread::spawn(move || {
-                                    let result = crate::core::execute_roll_task(task);
-                                    // Notify agent via system message
-                                    let ts = crate::persist::chat::ChatHistory::now_timestamp();
-                                    let notify_msg = match &result {
-                                        Ok(r) => r.clone(),
-                                        Err(e) => format!("history roll failed: {}", e),
-                                    };
-                                    if let Ok(mut db) = chat.lock() {
-                                        db.write_system_message(&notify_msg, &ts).ok();
-                                    }
-                                    match result {
+                                    let notify_msg = match crate::core::execute_roll_task(task) {
                                         Ok(result) => {
-                                            info!("[HISTORY-ROLL-{}] Background: {}", iid, result)
+                                            info!("[HISTORY-ROLL-{}] Background: {}", iid, result);
+                                            result
                                         }
-                                        Err(e) => error!(
-                                            "[HISTORY-ROLL-{}] Background failed: {}",
-                                            iid, e
-                                        ),
+                                        Err(e) => {
+                                            error!(
+                                                "[HISTORY-ROLL-{}] Background failed: {}",
+                                                iid, e
+                                            );
+                                            crate::policy::messages::roll_failed(&e.to_string())
+                                        }
+                                    };
+                                    // Notify via system message
+                                    let ts = crate::persist::chat::ChatHistory::now_timestamp();
+                                    if let Ok(mut chat) = chat.lock() {
+                                        let _ = chat.write_system_message(&notify_msg, &ts);
                                     }
                                     rolling.store(false, Ordering::Relaxed);
                                 });

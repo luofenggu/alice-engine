@@ -605,14 +605,17 @@ impl Alice {
         }
 
         // 5. Commit history (marker lifecycle managed inside commit_history)
+        let old_kb = std::fs::metadata(self.instance.memory.history.path())
+            .map(|m| m.len() / 1024)
+            .unwrap_or(0);
         self.instance
             .memory
             .commit_history(clean_history, oldest_block)?;
+        let new_kb = std::fs::metadata(self.instance.memory.history.path())
+            .map(|m| m.len() / 1024)
+            .unwrap_or(0);
 
-        let result = crate::policy::messages::roll_result(
-            oldest_block,
-            usage.as_ref().map(|u| (u.input_tokens, u.output_tokens)),
-        );
+        let result = crate::policy::messages::roll_result(old_kb, new_kb);
         info!("[ROLL-{}] {}", self.instance.id, result);
 
         Ok(Some(result))
@@ -1036,6 +1039,11 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         "[CAPTURE-{}] Background: calling LLM for knowledge capture",
         task.instance_id
     );
+
+    let old_kb = std::fs::metadata(task.memory.knowledge.path())
+        .map(|m| m.len() / 1024)
+        .unwrap_or(0);
+
     let (new_knowledge, usage) =
         llm_client.infer_sync_streaming(messages, &task.instance_id, Some(&task.log_path))?;
 
@@ -1062,12 +1070,19 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
     task.memory.knowledge.write(clean_knowledge)?;
     let new_size = clean_knowledge.len();
 
-    let result = format!(
-        "knowledge updated: {}KB → {}KB",
-        old_size / 1024,
-        new_size / 1024
+    let result = crate::policy::messages::capture_result(
+        (old_size / 1024) as u64,
+        (new_size / 1024) as u64,
     );
-    info!("[CAPTURE-{}] Background: {}", task.instance_id, result);
+    info!(
+        "[CAPTURE-{}] Background: {}{}",
+        task.instance_id,
+        result,
+        usage
+            .as_ref()
+            .map(|u| format!(" (tokens: {}+{})", u.input_tokens, u.output_tokens))
+            .unwrap_or_default()
+    );
     Ok(result)
 }
 
@@ -1106,13 +1121,16 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     }
 
     // Commit via Memory (marker → write history → delete block → clear marker)
+    let old_kb = std::fs::metadata(task.memory.history.path())
+        .map(|m| m.len() / 1024)
+        .unwrap_or(0);
     task.memory
         .commit_history(clean_history, &task.oldest_block)?;
+    let new_kb = std::fs::metadata(task.memory.history.path())
+        .map(|m| m.len() / 1024)
+        .unwrap_or(0);
 
-    let result = crate::policy::messages::roll_result(
-        &task.oldest_block,
-        usage.as_ref().map(|u| (u.input_tokens, u.output_tokens)),
-    );
+    let result = crate::policy::messages::roll_result(old_kb, new_kb);
     info!("[ROLL-{}] Background: {}", task.instance_id, result);
 
     Ok(result)
@@ -1134,21 +1152,20 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
     };
 
     let chat = alice.instance.chat.clone();
-
     std::thread::spawn(move || {
-        let result = execute_capture_task(task);
-        // Notify agent via system message (appears in current on next beat)
-        let ts = crate::persist::chat::ChatHistory::now_timestamp();
-        let notify_msg = match &result {
-            Ok(r) => r.clone(),
-            Err(e) => format!("knowledge capture failed: {}", e),
+        let notify_msg = match execute_capture_task(task) {
+            Ok(msg) => {
+                info!("[CAPTURE] {}", msg);
+                msg
+            }
+            Err(e) => {
+                error!("[CAPTURE] Background capture failed: {}", e);
+                crate::policy::messages::capture_failed(&e.to_string())
+            }
         };
-        if let Ok(mut db) = chat.lock() {
-            db.write_system_message(&notify_msg, &ts).ok();
-        }
-        match result {
-            Ok(msg) => info!("[CAPTURE] {}", msg),
-            Err(e) => error!("[CAPTURE] Background capture failed: {}", e),
+        let ts = crate::persist::chat::ChatHistory::now_timestamp();
+        if let Ok(mut chat) = chat.lock() {
+            let _ = chat.write_system_message(&notify_msg, &ts);
         }
     });
 }

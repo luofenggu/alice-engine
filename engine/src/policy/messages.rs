@@ -139,7 +139,7 @@ pub fn binary_file_description(name: &str, size: u64) -> String {
 
 /// Format beat error for user notification.
 pub fn beat_error(e: &anyhow::Error) -> String {
-    format!("Beat error: {}", e)
+    format!("推理出错：{}", e)
 }
 
 /// Format inference error with optional channel rotation info.
@@ -184,18 +184,18 @@ pub fn sequence_reject_after_idle(instance_id: &str, action: &str) -> String {
     )
 }
 
-// === Roll result messages ===
+// === Roll / Capture result messages ===
 
 pub fn roll_deleted_residual(block: &str) -> String {
-    format!("deleted residual block {} (already compressed)", block)
+    format!("记忆整理：发现已压缩的残留记录，已清理（{}）", block)
 }
 
 pub fn roll_deleted_empty(block: &str) -> String {
-    format!("deleted empty block {}", block)
+    format!("记忆整理：发现空记录，已清理（{}）", block)
 }
 
 pub fn roll_llm_empty() -> &'static str {
-    "LLM returned empty, roll aborted"
+    "记忆整理中断：压缩结果为空，已跳过本次整理"
 }
 
 pub fn empty_placeholder() -> &'static str {
@@ -244,14 +244,21 @@ pub fn truncated_content(content: &str) -> String {
     format!("{}...(略)", content)
 }
 
-pub fn roll_result(block: &str, usage: Option<(u64, u64)>) -> String {
-    let usage_info = if let Some((input, output)) = usage {
-        format!(", tokens: {}+{}", input, output)
-    } else {
-        String::new()
-    };
+pub fn roll_result(old_kb: u64, new_kb: u64) -> String {
     format!(
-        "history rolled: block {} compressed into history.txt{}",
-        block, usage_info
+        "记忆整理完成：旧记录已压缩归档（{} KB → {} KB）",
+        old_kb, new_kb
     )
+}
+
+pub fn capture_result(old_kb: u64, new_kb: u64) -> String {
+    format!("知识更新完成（{} KB → {} KB）", old_kb, new_kb)
+}
+
+pub fn capture_failed(error: &str) -> String {
+    format!("知识更新失败：{}", error)
+}
+
+pub fn roll_failed(error: &str) -> String {
+    format!("记忆整理失败：{}", error)
 }
