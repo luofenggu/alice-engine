@@ -15,6 +15,8 @@ pub struct CompressRequest {
     pub session_content: String,
     /// The current history content to append to.
     pub current_history: String,
+    /// Random end marker for truncation defense.
+    pub end_marker: String,
 }
 
 impl CompressRequest {
@@ -23,7 +25,10 @@ impl CompressRequest {
     pub fn render(&self) -> (String, String) {
         let system_msg = safe_render(
             HISTORY_COMPRESS_PROMPT,
-            &[("{{HISTORY_KB}}", &self.history_kb.to_string())],
+            &[
+                ("{{HISTORY_KB}}", &self.history_kb.to_string()),
+                ("{{END_MARKER}}", &self.end_marker),
+            ],
         );
 
         let user_content = if self.current_history.is_empty() {
@@ -46,6 +51,7 @@ mod tests {
             history_kb: 10,
             session_content: "session data".to_string(),
             current_history: String::new(),
+            end_marker: "###END_test123###".to_string(),
         };
         let (system, user) = req.render();
         assert!(system.contains("10"));
@@ -58,6 +64,7 @@ mod tests {
             history_kb: 10,
             session_content: "new session".to_string(),
             current_history: "existing history".to_string(),
+            end_marker: "###END_test456###".to_string(),
         };
         let (_, user) = req.render();
         assert!(user.contains("existing history"));

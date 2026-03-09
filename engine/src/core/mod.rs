@@ -479,11 +479,15 @@ impl Alice {
         // Read current history
         let current_history = self.instance.memory.history.read()?;
 
+        // Generate random end marker for truncation defense
+        let end_marker = generate_end_marker();
+
         // Build LLM prompt via CompressRequest
         let request = crate::inference::compress::CompressRequest {
             history_kb: self.history_kb as usize,
             session_content: rendered_block.clone(),
             current_history: current_history.clone(),
+            end_marker: end_marker.clone(),
         };
 
         // Clone LLM configs for background thread
@@ -493,6 +497,7 @@ impl Alice {
             request,
             instance_id: self.instance.id.clone(),
             llm_client: self.llm_client.clone(),
+            end_marker,
         }))
     }
 
@@ -556,10 +561,12 @@ impl Alice {
         let current_history = self.instance.memory.history.read()?;
 
         // 3. Build LLM request via CompressRequest
+        let end_marker = generate_end_marker();
         let request = crate::inference::compress::CompressRequest {
             history_kb: self.history_kb as usize,
             session_content: rendered_block.clone(),
             current_history: current_history.clone(),
+            end_marker: end_marker.clone(),
         };
 
         // 4. Call LLM (synchronous, blocking)
@@ -569,9 +576,29 @@ impl Alice {
         );
         let (new_history, usage) = self.llm_client.infer_compress(request, &self.instance.id)?;
 
-        if new_history.trim().is_empty() {
+        let trimmed = new_history.trim();
+        if trimmed.is_empty() {
             warn!(
                 "[ROLL-{}] LLM returned empty history, aborting roll",
+                self.instance.id
+            );
+            return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
+        }
+
+        // End-marker defense: reject truncated output
+        let lines: Vec<&str> = trimmed.lines().collect();
+        if lines.last().map(|l| l.trim()) != Some(end_marker.as_str()) {
+            warn!(
+                "[ROLL-{}] History output missing end marker (likely truncated, {} bytes)",
+                self.instance.id, trimmed.len()
+            );
+            return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
+        }
+        let clean_history = lines[..lines.len() - 1].join("\n");
+        let clean_history = clean_history.trim();
+        if clean_history.is_empty() {
+            warn!(
+                "[ROLL-{}] History content empty after stripping end marker",
                 self.instance.id
             );
             return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
@@ -580,7 +607,7 @@ impl Alice {
         // 5. Commit history (marker lifecycle managed inside commit_history)
         self.instance
             .memory
-            .commit_history(new_history.trim(), oldest_block)?;
+            .commit_history(clean_history, oldest_block)?;
 
         let result = crate::policy::messages::roll_result(
             oldest_block,
@@ -972,12 +999,24 @@ impl Alice {
 // ─── Tests ───────────────────────────────────────────────────────
 
 /// Data needed to execute history rolling in a background thread.
+/// Generate a random end marker for truncation defense.
+/// Each capture/roll call gets a unique marker so it can't appear in content body.
+pub fn generate_end_marker() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("###END_{:016x}###", nanos)
+}
+
 pub struct RollTask {
     pub memory: crate::persist::memory::Memory,
     pub oldest_block: String,
     pub request: crate::inference::compress::CompressRequest,
     pub instance_id: String,
     pub llm_client: Arc<LlmClient>,
+    pub end_marker: String,
 }
 
 pub struct CaptureTask {
@@ -986,6 +1025,7 @@ pub struct CaptureTask {
     pub instance_id: String,
     pub llm_client: Arc<LlmClient>,
     pub log_path: PathBuf,
+    pub end_marker: String,
 }
 
 pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
@@ -1004,15 +1044,16 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         anyhow::bail!("LLM returned empty knowledge");
     }
 
-    // End-marker defense: reject truncated output
-    const KNOWLEDGE_END_MARKER: &str = "###KNOWLEDGE_END###";
-    if !trimmed.ends_with(KNOWLEDGE_END_MARKER) {
+    // End-marker defense: reject truncated output (line-based, random token per call)
+    let lines: Vec<&str> = trimmed.lines().collect();
+    if lines.last().map(|l| l.trim()) != Some(task.end_marker.as_str()) {
         anyhow::bail!(
             "Knowledge output missing end marker (likely truncated, {} bytes received)",
             trimmed.len()
         );
     }
-    let clean_knowledge = trimmed[..trimmed.len() - KNOWLEDGE_END_MARKER.len()].trim();
+    let clean_knowledge = lines[..lines.len() - 1].join("\n");
+    let clean_knowledge = clean_knowledge.trim();
     if clean_knowledge.is_empty() {
         anyhow::bail!("Knowledge content empty after stripping end marker");
     }
@@ -1050,15 +1091,16 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
         anyhow::bail!("LLM returned empty history");
     }
 
-    // End-marker defense: reject truncated output
-    const HISTORY_END_MARKER: &str = "###HISTORY_END###";
-    if !trimmed.ends_with(HISTORY_END_MARKER) {
+    // End-marker defense: reject truncated output (line-based, random token per call)
+    let lines: Vec<&str> = trimmed.lines().collect();
+    if lines.last().map(|l| l.trim()) != Some(task.end_marker.as_str()) {
         anyhow::bail!(
             "History output missing end marker (likely truncated, {} bytes received)",
             trimmed.len()
         );
     }
-    let clean_history = trimmed[..trimmed.len() - HISTORY_END_MARKER.len()].trim();
+    let clean_history = lines[..lines.len() - 1].join("\n");
+    let clean_history = clean_history.trim();
     if clean_history.is_empty() {
         anyhow::bail!("History content empty after stripping end marker");
     }
@@ -1081,12 +1123,14 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
     let log_path = crate::logging::create_infer_log_path(log_dir, &alice.instance.id)
         .0
         .with_extension("capture.log");
+    let end_marker = request.end_marker.clone();
     let task = CaptureTask {
         memory: alice.instance.memory.clone(),
         request,
         instance_id: alice.instance.id.clone(),
         llm_client: alice.llm_client.clone(),
         log_path,
+        end_marker,
     };
 
     std::thread::spawn(move || match execute_capture_task(task) {

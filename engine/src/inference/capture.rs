@@ -5,18 +5,20 @@ pub struct CaptureRequest {
     pub recent_content: String,
     pub current_content: String,
     pub summary_content: String,
+    pub end_marker: String,
 }
 
 const CAPTURE_SYSTEM: &str = include_str!("../../templates/capture_system.txt");
 
 impl CaptureRequest {
     pub fn render(&self) -> Vec<ChatMessage> {
+        let system = CAPTURE_SYSTEM.replace("{{END_MARKER}}", &self.end_marker);
         let user = format!(
             "## 当前知识\n{}\n\n## 近况\n{}\n\n## 当前增量\n{}\n\n## 本次小结\n{}\n",
             self.knowledge_content, self.recent_content, self.current_content, self.summary_content
         );
 
-        vec![ChatMessage::system(CAPTURE_SYSTEM), ChatMessage::user(&user)]
+        vec![ChatMessage::system(&system), ChatMessage::user(&user)]
     }
 }
 
@@ -31,6 +33,7 @@ mod tests {
             recent_content: "R".into(),
             current_content: "C".into(),
             summary_content: "S".into(),
+            end_marker: "###END_test###".into(),
         };
         let msgs = req.render();
         assert_eq!(msgs.len(), 2);
@@ -48,6 +51,7 @@ mod tests {
             recent_content: "".into(),
             current_content: "".into(),
             summary_content: "".into(),
+            end_marker: "###END_test###".into(),
         };
         let msgs = req.render();
         let system = &msgs[0].content;

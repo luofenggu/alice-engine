@@ -151,6 +151,7 @@ pub fn build_capture_request(alice: &Alice, summary_content: &str) -> CaptureReq
         recent_content,
         current_content,
         summary_content: summary_content.to_string(),
+        end_marker: crate::core::generate_end_marker(),
     }
 }
 
