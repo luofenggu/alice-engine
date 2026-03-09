@@ -130,10 +130,10 @@ async fn handle_get_instances(State(state): State<Arc<EngineState>>) -> Response
                 instances.push(crate::api::types::InstanceInfo {
                     id: ti.id,
                     name: ti.name,
-                    avatar: String::new(),
-                    color: String::new(),
-                    privileged: false,
-                    last_active: 0,
+                    avatar: ti.avatar,
+                    color: ti.color,
+                    privileged: ti.privileged,
+                    last_active: ti.last_active,
                 });
             }
         }
@@ -635,6 +635,10 @@ async fn handle_hub_join(
         .map(|inst| crate::hub::tunnel::TunnelInstanceInfo {
             id: inst.id.clone(),
             name: inst.name.clone(),
+            avatar: inst.avatar.clone(),
+            color: inst.color.clone(),
+            privileged: inst.privileged,
+            last_active: inst.last_active,
         })
         .collect();
 
