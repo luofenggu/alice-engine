@@ -1162,9 +1162,11 @@ async function refreshInstances() {
         createInstance();
         return;
     }
-    // Auto-select most recent instance on first load
+    // Auto-select instance on first load: prefer last interacted, fallback to most recent
     if (!currentInstance && list.length > 0) {
-        switchInstance(list[0].id);
+        const lastId = localStorage.getItem('alice_last_instance');
+        const lastInst = lastId && list.find(i => i.id === lastId);
+        switchInstance(lastInst ? lastInst.id : list[0].id);
     }
     list.forEach(inst => {
         const displayName = inst.name || inst.id;
@@ -1248,6 +1250,7 @@ let cachedInstanceList = [];
 async function switchInstance(name) {
     frontendLog('INFO', 'switch_instance', 'to=' + name);
     currentInstance = name;
+    localStorage.setItem('alice_last_instance', name);
     // Immediately update sidebar highlight (async, non-blocking)
     refreshInstances();
     // Look up displayName and born status from cached instance list (no network request)
@@ -1784,9 +1787,7 @@ function renderMarkdown(text) {
         var filename = path.split('/').pop();
         return '<a class="file-link" data-filepath="' + escHtml(path) + '">\u{1F4C4} ' + escHtml(filename) + '</a>';
     });
-    // Pre-process: convert bare URLs to markdown links to prevent marked from
-    // including trailing quotes/braces (e.g. from JSON error messages)
-    text = text.replace(/(https?:\/\/[^\s<>\[\]"'`，。、；：！？）】}]+)/g, '[$1]($1)');
+
     if (typeof marked === 'undefined') {
         return escHtml(text);
     }
