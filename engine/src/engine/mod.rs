@@ -42,29 +42,6 @@ use crate::util::Counter;
 
 // ─── Free function: sandbox user management ──────────────────────
 
-// ─── Free function: shutdown signal check ────────────────────────
-
-/// Check for graceful shutdown signal file.
-/// Returns true if signal detected (caller should initiate shutdown).
-///
-/// @TRACE: SHUTDOWN
-fn check_shutdown_signal(pid_file: &Path, signal_file: &Path) -> bool {
-    let signal_path = signal_file;
-    if !signal_path.exists() {
-        return false;
-    }
-
-    info!("[SHUTDOWN] signal-detected, initiating graceful shutdown");
-
-    // Remove signal file
-    std::fs::remove_file(signal_path).ok();
-
-    // Clean up PID file
-    std::fs::remove_file(pid_file).ok();
-
-    true
-}
-
 // ─── AliceEngine ─────────────────────────────────────────────────
 
 /// Multi-instance Alice engine.
@@ -79,8 +56,6 @@ pub struct AliceEngine {
     instances_base: PathBuf,
     /// Log directory.
     logs_dir: PathBuf,
-    /// PID file path.
-    pid_file: PathBuf,
     /// Instance store for managing instance lifecycle.
     instance_store: InstanceStore,
     /// Signal hub for inter-thread communication (interrupt, switch-model).
@@ -107,7 +82,6 @@ impl AliceEngine {
         global_settings_store: crate::persist::GlobalSettingsStore,
         llm_client: Arc<crate::external::llm::LlmClient>,
     ) -> Self {
-        let pid_file = env_config.pid_file_path(&instances_base);
         let instance_store = InstanceStore::new(instances_base.clone());
 
         // Load hooks config from hooks.json (next to instances dir)
@@ -127,7 +101,6 @@ impl AliceEngine {
         Self {
             instances_base,
             logs_dir,
-            pid_file,
             instance_store,
             signal_hub,
             env_config,
@@ -290,10 +263,7 @@ impl AliceEngine {
             warn!("No instances found. Engine will wait for hot-scan.");
         }
 
-        // 3. Write PID file
-        self.write_pid_file();
-
-        // 4. Spawn independent thread for each instance
+        // 3. Spawn independent thread for each instance
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut threads: HashMap<String, JoinHandle<()>> = HashMap::new();
 
@@ -315,17 +285,6 @@ impl AliceEngine {
         loop {
             let engine_policy = &crate::policy::EngineConfig::get().engine;
             std::thread::sleep(Duration::from_secs(engine_policy.main_loop_interval_secs));
-
-            // Check graceful shutdown signal
-            if check_shutdown_signal(&self.pid_file, &self.env_config.shutdown_signal_file) {
-                info!("[SHUTDOWN] Signaling all instance threads to shut down...");
-                shutdown.store(true, Ordering::Relaxed);
-                for (name, handle) in threads.drain() {
-                    info!("[SHUTDOWN] Waiting for instance thread: {}", name);
-                    handle.join().ok();
-                }
-                return Ok(());
-            }
 
             // Clean up finished threads (instance self-exited, e.g. settings deleted)
             threads.retain(|name, handle| {
@@ -696,19 +655,6 @@ impl AliceEngine {
         info!("[THREAD-{}] Instance thread exited", instance_id);
     }
 
-    /// Write PID file.
-    fn write_pid_file(&self) {
-        let pid = std::process::id();
-        if let Err(e) = std::fs::write(&self.pid_file, pid.to_string()) {
-            warn!("Failed to write PID file: {}", e);
-        } else {
-            info!(
-                "PID file written: {} (PID {})",
-                self.pid_file.display(),
-                pid
-            );
-        }
-    }
 }
 
 // ─── Shared Instance Creation ────────────────────────────────────
@@ -826,13 +772,6 @@ mod tests {
 
         assert_eq!(engine.instances.len(), 1);
         assert_eq!(engine.instances[0].0, "valid");
-    }
-
-    #[test]
-    fn test_check_restart_signal_no_file() {
-        let pid_file = PathBuf::from("/tmp/test-alice-engine.pid");
-        let signal_file = PathBuf::from("/tmp/test-alice-shutdown.signal");
-        assert!(!check_shutdown_signal(&pid_file, &signal_file));
     }
 
     #[test]
