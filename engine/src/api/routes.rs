@@ -577,6 +577,88 @@ async fn handle_hub_relay(
     }
 }
 
+// ── Hub Tunnel Proxy (slave side) ──
+// These routes handle hook callbacks on the slave side by forwarding
+// requests through the WebSocket tunnel to the host.
+
+/// Tunnel proxy for contacts: slave forwards to host via WebSocket tunnel
+#[get("/api/hub/tunnel_proxy/contacts/{id}")]
+async fn handle_tunnel_proxy_contacts(
+    State(state): State<Arc<EngineState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let slave = match state.hub.as_slave().await {
+        Some(s) => s,
+        None => return json_error(StatusCode::NOT_FOUND, "Not in joined mode"),
+    };
+
+    let req = crate::hub::tunnel::TunnelRequest {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        method: "GET".to_string(),
+        path: format!("/api/hub/contacts/{}", id),
+        headers: std::collections::HashMap::new(),
+        body: None,
+    };
+
+    match slave.proxy_request_to_host(req).await {
+        Some(resp) => tunnel_response_to_http(resp),
+        None => json_error(StatusCode::BAD_GATEWAY, "Tunnel request to host failed"),
+    }
+}
+
+/// Tunnel proxy for relay: slave forwards to host via WebSocket tunnel
+#[post("/api/hub/tunnel_proxy/relay")]
+async fn handle_tunnel_proxy_relay(
+    State(state): State<Arc<EngineState>>,
+    body: axum::body::Bytes,
+) -> Response {
+    let slave = match state.hub.as_slave().await {
+        Some(s) => s,
+        None => return json_error(StatusCode::NOT_FOUND, "Not in joined mode"),
+    };
+
+    use base64::Engine as _;
+    let req = crate::hub::tunnel::TunnelRequest {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        method: "POST".to_string(),
+        path: "/api/hub/relay".to_string(),
+        headers: {
+            let mut h = std::collections::HashMap::new();
+            h.insert("content-type".to_string(), "application/json".to_string());
+            h
+        },
+        body: if body.is_empty() {
+            None
+        } else {
+            Some(base64::engine::general_purpose::STANDARD.encode(&body))
+        },
+    };
+
+    match slave.proxy_request_to_host(req).await {
+        Some(resp) => tunnel_response_to_http(resp),
+        None => json_error(StatusCode::BAD_GATEWAY, "Tunnel request to host failed"),
+    }
+}
+
+/// Convert a TunnelResponse to an HTTP Response
+fn tunnel_response_to_http(resp: crate::hub::tunnel::TunnelResponse) -> Response {
+    use base64::Engine as _;
+    let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut headers = HeaderMap::new();
+    for (k, v) in &resp.headers {
+        if let (Ok(name), Ok(val)) = (
+            axum::http::header::HeaderName::from_bytes(k.as_bytes()),
+            axum::http::header::HeaderValue::from_str(v),
+        ) {
+            headers.insert(name, val);
+        }
+    }
+    let body_bytes = resp.body
+        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(&b).ok())
+        .unwrap_or_default();
+    (status, headers, body_bytes).into_response()
+}
+
 // ── Hub API ──
 
 #[post("/api/hub/enable")]
@@ -585,10 +667,8 @@ async fn handle_hub_enable(
     Json(body): Json<HubEnableBody>,
 ) -> Response {
     let local_port = state.env_config.http_port;
-    let host_endpoint = state.env_config.host.clone()
-        .map(|h| if h.starts_with("http://") || h.starts_with("https://") { h } else { format!("http://{}", h) })
-        .unwrap_or_else(|| format!("http://localhost:{}", local_port));
-    match state.hub.enable_host(body.join_token, host_endpoint, local_port).await {
+    let auth_secret = state.env_config.auth_secret.clone();
+    match state.hub.enable_host(body.join_token, local_port, auth_secret).await {
         Ok(()) => {
             // Register hooks on self so local instances can use hub contacts/relay
             let port = local_port;
@@ -786,6 +866,8 @@ pub fn public_api_routes() -> Router<Arc<EngineState>> {
         .route(ROUTE_HANDLE_HUB_CONTACTS, get(handle_hub_contacts))
         .route(ROUTE_HANDLE_HUB_RELAY, post(handle_hub_relay))
         .route(ROUTE_HANDLE_HUB_WS, get(handle_hub_ws))
+        .route(ROUTE_HANDLE_TUNNEL_PROXY_CONTACTS, get(handle_tunnel_proxy_contacts))
+        .route(ROUTE_HANDLE_TUNNEL_PROXY_RELAY, post(handle_tunnel_proxy_relay))
 }
 
 // ── Embedded HTML (compiled into binary) ──
@@ -875,7 +957,7 @@ async fn hub_proxy_middleware(
     // Check if this request targets a specific instance
     if let Some(instance_id) = extract_instance_id_from_path(&path) {
         // Check if this instance is on a connected slave
-        if let Some(engine_id) = host.find_instance_engine(instance_id).await {
+        if let Some(_engine_id) = host.find_instance_engine(instance_id).await {
             // Decompose request into parts for tunnel forwarding
             let method = req.method().to_string();
             let path_str = req.uri().path().to_string();

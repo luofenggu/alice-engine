@@ -51,11 +51,11 @@ impl HubState {
     }
 
     /// Enable host mode with a join token (room password)
-    pub async fn enable_host(&self, join_token: String, host_endpoint: String, local_port: u16) -> Result<(), String> {
+    pub async fn enable_host(&self, join_token: String, local_port: u16, auth_secret: String) -> Result<(), String> {
         let mut mode = self.mode.write().await;
         match &*mode {
             HubMode::Off => {
-                let host = Arc::new(HostState::new(join_token, host_endpoint, local_port));
+                let host = Arc::new(HostState::new(join_token, local_port, auth_secret));
                 info!("[HUB] Host mode enabled");
                 *mode = HubMode::Host(host);
                 Ok(())

@@ -10,9 +10,8 @@ use axum::{
 };
 
 use super::host::HostState;
-use super::tunnel::{TunnelRequest, TunnelInstanceInfo};
+use super::tunnel::TunnelRequest;
 use crate::persist::hooks::{ContactInfo, ContactsResponse, RelayRequest, RelayResponse};
-use std::sync::Arc;
 
 /// Handle contacts hook callback: return all instances except the requesting one.
 pub async fn handle_hub_contacts(
