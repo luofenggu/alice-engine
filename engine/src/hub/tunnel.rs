@@ -38,6 +38,14 @@ pub enum TunnelMessage {
 pub struct TunnelInstanceInfo {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub avatar: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub privileged: bool,
+    #[serde(default)]
+    pub last_active: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
