@@ -99,9 +99,13 @@ impl SlaveState {
 
         info!("[HUB-SLAVE] Connecting to host: {}", self.host_url);
 
-        // Connect using tokio-tungstenite for client-side WebSocket
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
+        // Connect with 5s timeout — fail fast for unreachable hosts or invalid tokens
+        let (ws_stream, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio_tungstenite::connect_async(&ws_url),
+        )
             .await
+            .map_err(|_| format!("Connection timeout (5s) to {}", self.host_url))?
             .map_err(|e| format!("WebSocket connect failed: {}", e))?;
 
         let (ws_sender_raw, mut ws_receiver) = ws_stream.split();

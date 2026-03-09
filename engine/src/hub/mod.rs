@@ -52,6 +52,9 @@ impl HubState {
 
     /// Enable host mode with a join token (room password)
     pub async fn enable_host(&self, join_token: String, local_port: u16, auth_secret: String) -> Result<(), String> {
+        if join_token.is_empty() {
+            return Err("Join token cannot be empty".to_string());
+        }
         let mut mode = self.mode.write().await;
         match &*mode {
             HubMode::Off => {
@@ -79,6 +82,7 @@ impl HubState {
     }
 
     /// Join a host as a slave
+    /// Now synchronously waits for connection + token verification before returning
     pub async fn join_host(
         &self,
         host_url: String,
@@ -88,30 +92,33 @@ impl HubState {
         local_port: u16,
         auth_token: String,
     ) -> Result<(), String> {
+        // 1. Check current mode (read lock, released immediately)
+        {
+            let mode = self.mode.read().await;
+            match &*mode {
+                HubMode::Off => {},
+                HubMode::Host(_) => return Err("Currently in host mode. Disable first.".to_string()),
+                HubMode::Joined(_) => return Err("Already joined to a host. Leave first.".to_string()),
+            }
+        }
+
+        // 2. Create slave and attempt connection (no lock held — may take seconds)
+        let slave = Arc::new(SlaveState::new(
+            host_url.clone(),
+            local_port,
+            auth_token,
+        ));
+        slave.connect(instances, engine_id, &join_token).await?;
+
+        // 3. Connection succeeded — set mode (write lock, re-check for concurrent changes)
         let mut mode = self.mode.write().await;
         match &*mode {
             HubMode::Off => {
-                let slave = Arc::new(SlaveState::new(
-                    host_url.clone(),
-                    local_port,
-                    auth_token,
-                ));
-                let slave_clone = slave.clone();
-                let instances_clone = instances.clone();
-                let engine_id_owned = engine_id.to_string();
-                let join_token_clone = join_token.clone();
-                // Spawn connection task
-                tokio::spawn(async move {
-                    if let Err(e) = slave_clone.connect(instances_clone, &engine_id_owned, &join_token_clone).await {
-                        tracing::error!("[HUB] Slave connection failed: {}", e);
-                    }
-                });
                 *mode = HubMode::Joined(slave);
                 info!("[HUB] Joined host at {}", host_url);
                 Ok(())
             }
-            HubMode::Host(_) => Err("Currently in host mode. Disable first.".to_string()),
-            HubMode::Joined(_) => Err("Already joined to a host. Leave first.".to_string()),
+            _ => Err("Mode changed during connection attempt".to_string()),
         }
     }
 
