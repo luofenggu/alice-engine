@@ -37,6 +37,7 @@
 
 // Re-export the proc macro
 pub use mad_hatter_macros::http_service;
+pub use mad_hatter_macros::bind_http;
 
 // Re-export axum types that generated code needs
 pub use axum;
