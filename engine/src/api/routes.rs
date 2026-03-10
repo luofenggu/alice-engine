@@ -11,6 +11,7 @@ use axum::{
     Json, Router,
 };
 use route_macro::*;
+use mad_hatter::http_service;
 use serde::Deserialize;
 
 use super::http_protocol;
@@ -121,58 +122,56 @@ pub struct ChannelSelectBody {
     pub index: usize,
 }
 
-// ── Instance Handlers ──
+// ── Instance Handlers (Mad Hatter) ──
 
-#[get("/api/instances")]
-async fn handle_get_instances(State(state): State<Arc<EngineState>>) -> Response {
-    let mut instances = state.get_instances().await;
+http_service! {
+    service InstanceApi {
+        GET    "api/instances"      => list() -> Json<Vec<crate::api::types::InstanceInfo>>;
+        POST   "api/instances"      => create(body: CreateInstanceBody) -> Json<crate::api::types::ActionResult>;
+        GET    "api/instances/{id}" => get_by_id(id: String) -> Json<crate::api::types::InstanceInfo>;
+        DELETE "api/instances/{id}" => delete_by_id(id: String) -> Json<crate::api::types::ActionResult>;
+    }
+}
 
-    // Hub host mode: merge remote instances from all slave engines
-    if let Some(host) = state.hub.as_host().await {
-        let remote = host.get_all_remote_instances().await;
-        for (_engine_id, tunnel_instances) in remote {
-            for ti in tunnel_instances {
-                instances.push(crate::api::types::InstanceInfo {
-                    id: ti.id,
-                    name: ti.name,
-                    avatar: ti.avatar,
-                    color: ti.color,
-                    privileged: ti.privileged,
-                    last_active: ti.last_active,
-                });
+impl InstanceApiService for EngineState {
+    async fn list(&self) -> mad_hatter::Result<Json<Vec<crate::api::types::InstanceInfo>>> {
+        let mut instances = self.get_instances().await;
+
+        // Hub host mode: merge remote instances from all slave engines
+        if let Some(host) = self.hub.as_host().await {
+            let remote = host.get_all_remote_instances().await;
+            for (_engine_id, tunnel_instances) in remote {
+                for ti in tunnel_instances {
+                    instances.push(crate::api::types::InstanceInfo {
+                        id: ti.id,
+                        name: ti.name,
+                        avatar: ti.avatar,
+                        color: ti.color,
+                        privileged: ti.privileged,
+                        last_active: ti.last_active,
+                    });
+                }
             }
+        }
+
+        Ok(Json(instances))
+    }
+
+    async fn create(&self, body: CreateInstanceBody) -> mad_hatter::Result<Json<crate::api::types::ActionResult>> {
+        let name = body.name.unwrap_or_default();
+        Ok(Json(self.create_instance(name, body.settings).await))
+    }
+
+    async fn get_by_id(&self, id: String) -> mad_hatter::Result<Json<crate::api::types::InstanceInfo>> {
+        match self.get_instance(id).await {
+            Some(info) => Ok(Json(info)),
+            None => Err(mad_hatter::HttpError::not_found("Instance not found")),
         }
     }
 
-    json_ok(instances)
-}
-
-#[post("/api/instances")]
-async fn handle_create_instance(
-    State(state): State<Arc<EngineState>>,
-    Json(body): Json<CreateInstanceBody>,
-) -> Response {
-    let name = body.name.unwrap_or_default();
-    json_ok(state.create_instance(name, body.settings).await)
-}
-
-#[get("/api/instances/{id}")]
-async fn handle_get_instance(
-    State(state): State<Arc<EngineState>>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
-    match state.get_instance(id).await {
-        Some(info) => json_ok(info),
-        None => json_error(StatusCode::NOT_FOUND, "Instance not found"),
+    async fn delete_by_id(&self, id: String) -> mad_hatter::Result<Json<crate::api::types::ActionResult>> {
+        Ok(Json(self.delete_instance(id).await))
     }
-}
-
-#[delete("/api/instances/{id}")]
-async fn handle_delete_instance(
-    State(state): State<Arc<EngineState>>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
-    json_ok(state.delete_instance(id).await)
 }
 
 // ── Message Handlers ──
@@ -892,14 +891,7 @@ async fn handle_auth_check() -> axum::Json<serde_json::Value> {
 /// Authenticated API routes — require valid session cookie.
 pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
     Router::new()
-        .route(
-            ROUTE_HANDLE_GET_INSTANCES,
-            get(handle_get_instances).post(handle_create_instance),
-        )
-        .route(
-            ROUTE_HANDLE_GET_INSTANCE,
-            get(handle_get_instance).delete(handle_delete_instance),
-        )
+        .merge(InstanceApi::router::<EngineState>())
         .route(
             ROUTE_HANDLE_GET_MESSAGES,
             get(handle_get_messages).post(handle_send_message),
