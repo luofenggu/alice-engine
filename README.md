@@ -11,7 +11,7 @@ curl -fsSL http://8.149.243.230/release/latest/start.sh | bash
 ```
 
 This will:
-- Cache the binary in `~/.alice/` (auto-updates on re-run)
+- Cache the binary in `~/.alice-v2/` (auto-updates on re-run)
 - Store data in your **current directory** (instances, settings, logs)
 - Find an available port starting from 8081
 - Open your browser automatically
