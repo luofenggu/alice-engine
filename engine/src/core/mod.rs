@@ -196,6 +196,8 @@ pub struct Transaction {
     pub started_at: Instant,
     /// Instance ID (for logging)
     pub instance_id: String,
+    /// Whether to cancel subsequent idle actions (set when send_msg fails)
+    pub cancel_idle: bool,
 }
 
 impl Transaction {
@@ -208,6 +210,7 @@ impl Transaction {
             action_records: Vec::new(),
             started_at: Instant::now(),
             instance_id: instance_id.to_string(),
+            cancel_idle: false,
         }
     }
 
@@ -885,6 +888,29 @@ impl Alice {
                             self.instance.memory.append_current(&doing_block).ok();
                         }
 
+                        // Cancel idle if a prior send_msg failed in this beat
+                        if tx.cancel_idle && matches!(action, Action::Idle { .. }) {
+                            info!(
+                                "[BEAT-{}] Cancelling idle: send_msg failed earlier in this beat",
+                                self.instance.id
+                            );
+                            // Skip idle execution — don't set last_was_idle, let next beat see the error
+
+                            // Record done
+                            let done_text = action_output::build_done_text(&action_output::idle_cancelled_after_send_failure());
+                            tx.record_done(&action_id, done_text);
+
+                            // Phase 2: append done block
+                            if let Some(record) = tx.action_records.last() {
+                                let done_block = action_output::action_block_done(
+                                    &record.action_id,
+                                    record.done_text.as_deref(),
+                                );
+                                self.instance.memory.append_current(&done_block).ok();
+                            }
+                            continue;
+                        }
+
                         // Execute action
                         let result = execute_action(&action, self, &mut tx);
 
@@ -999,17 +1025,6 @@ impl Alice {
 // ─── Tests ───────────────────────────────────────────────────────
 
 /// Data needed to execute history rolling in a background thread.
-/// Generate a random end marker for truncation defense.
-/// Each capture/roll call gets a unique marker so it can't appear in content body.
-/// Generate a short random end-marker token for capture/compress truncation defense.
-/// Format: `###END_{6-hex}###`, e.g. `###END_f22332###`
-pub fn generate_end_marker() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let hash = RandomState::new().build_hasher().finish();
-    format!("###END_{:06x}###", hash & 0xFFFFFF)
-}
-
 pub struct RollTask {
     pub memory: crate::persist::memory::Memory,
     pub oldest_block: String,

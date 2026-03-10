@@ -160,6 +160,7 @@ fn execute_send_msg(
                 "[ACTION-{}] send_msg to '{}' failed: no hooks_caller available",
                 tx.instance_id, recipient
             );
+            tx.cancel_idle = true;
             return Ok(out::send_failed_service_unavailable(recipient));
         }
     };
@@ -172,6 +173,7 @@ fn execute_send_msg(
                 "[ACTION-{}] send_msg to '{}' failed: contacts fetch error: {}",
                 tx.instance_id, recipient, e
             );
+            tx.cancel_idle = true;
             return Ok(out::send_failed_service_unavailable(recipient));
         }
     };
@@ -184,6 +186,7 @@ fn execute_send_msg(
                 "[ACTION-{}] send_msg to '{}' failed: recipient not in contacts",
                 tx.instance_id, recipient
             );
+            tx.cancel_idle = true;
             return Ok(out::send_failed_recipient_not_found(recipient, &contacts));
         }
     };
@@ -219,6 +222,7 @@ fn execute_send_msg(
                 resolved,
                 response.message.unwrap_or_default()
             );
+            tx.cancel_idle = true;
             Ok(out::send_failed_relay_error(recipient))
         }
         Err(e) => {
@@ -226,6 +230,7 @@ fn execute_send_msg(
                 "[ACTION-{}] send_msg relay failed for '{}': {}",
                 tx.instance_id, resolved, e
             );
+            tx.cancel_idle = true;
             Ok(out::send_failed_relay_error(recipient))
         }
     }
@@ -715,6 +720,32 @@ mod tests {
         assert!(result.contains("发送失败"));
         assert!(result.contains("通讯服务"));
         assert!(!result.contains("send success"));
+    }
+
+    #[test]
+    fn test_send_msg_failure_sets_cancel_idle() {
+        let (mut alice, mut tx, _tmp) = setup();
+        assert!(!tx.cancel_idle);
+        // alice.hooks_caller is None by default → send to non-user recipient will fail
+        let action = Action::SendMsg {
+            recipient: "nonexistent_agent".to_string(),
+            content: "hello".to_string(),
+        };
+        let _result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        assert!(tx.cancel_idle, "cancel_idle should be true after send_msg failure");
+    }
+
+    #[test]
+    fn test_send_msg_to_user_does_not_set_cancel_idle() {
+        let (mut alice, mut tx, _tmp) = setup();
+        assert!(!tx.cancel_idle);
+        let action = Action::SendMsg {
+            recipient: "user".to_string(),
+            content: "hello user".to_string(),
+        };
+        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        assert!(result.contains("send success"));
+        assert!(!tx.cancel_idle, "cancel_idle should remain false after successful send_msg");
     }
 
     #[test]

@@ -241,6 +241,11 @@ pub fn send_success(timestamp: &str) -> String {
     format!("{}[MSG:{}]\n", MSG_SEND_CONTEXT, timestamp)
 }
 
+/// Format idle cancellation message when a prior send_msg failed in the same beat.
+pub fn idle_cancelled_after_send_failure() -> String {
+    "idle已跳过：本轮有消息发送失败，请检查上方的错误信息\n".to_string()
+}
+
 // ─── Summary ─────────────────────────────────────────────────────
 
 /// Format empty current message for summary.
