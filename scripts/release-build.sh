@@ -29,6 +29,11 @@ git pull
 echo ""
 
 echo "=== Step 2: Build all targets ==="
+# Ensure build tools are in PATH
+export HOME="/root"
+export PATH="/data/zig/zig-x86_64-linux-0.15.2:/root/.cargo/bin:$PATH"
+export SDKROOT="/data/macsdk/MacOSX15.2.sdk"
+
 for target in "${!TARGETS[@]}"; do
     echo "Building $target ..."
     cargo zigbuild --release --target "$target" -p alice-engine
