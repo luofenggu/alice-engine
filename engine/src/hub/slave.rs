@@ -119,7 +119,10 @@ impl SlaveState {
         // Send register message
         let register = TunnelMessage::Register {
             engine_id: engine_id.to_string(),
-            engine_endpoint: format!("http://localhost:{}", self.local_port),
+            engine_endpoint: std::env::var("ALICE_HOST").ok()
+                .filter(|s| !s.is_empty())
+                .map(|h| if h.starts_with("http") { h } else { format!("http://{}", h) })
+                .unwrap_or_else(|| format!("http://localhost:{}", self.local_port)),
             instances,
         };
         let msg = serde_json::to_string(&register).unwrap();
