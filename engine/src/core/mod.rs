@@ -1025,6 +1025,15 @@ impl Alice {
 // ─── Tests ───────────────────────────────────────────────────────
 
 /// Data needed to execute history rolling in a background thread.
+/// Generate a short random end-marker token for capture/compress truncation defense.
+/// Format: `###END_{6-hex}###`, e.g. `###END_f22332###`
+pub fn generate_end_marker() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let hash = RandomState::new().build_hasher().finish();
+    format!("###END_{:06x}###", hash & 0xFFFFFF)
+}
+
 pub struct RollTask {
     pub memory: crate::persist::memory::Memory,
     pub oldest_block: String,
