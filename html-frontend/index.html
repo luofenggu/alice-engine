@@ -1763,16 +1763,20 @@ async function pollReplies() {
             try {
                 const el = document.getElementById('chatMessages');
                 const newMsgs = data.msgs.slice(-added);
+                // Check if user is near bottom before appending (must check before DOM changes)
+                const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
                 newMsgs.forEach(m => {
                     // Final DOM-level dedup check
                     if (m.id && document.querySelector('[data-msg-id="' + m.id + '"]')) return;
                     el.appendChild(createMessageElement(m));
                 });
-                el.style.scrollBehavior = 'auto';
-                requestAnimationFrame(() => {
-                    el.scrollTop = el.scrollHeight;
-                    requestAnimationFrame(() => { el.style.scrollBehavior = ''; });
-                });
+                if (nearBottom) {
+                    el.style.scrollBehavior = 'auto';
+                    requestAnimationFrame(() => {
+                        el.scrollTop = el.scrollHeight;
+                        requestAnimationFrame(() => { el.style.scrollBehavior = ''; });
+                    });
+                }
             } catch(domErr) {
                 frontendLog('ERROR', 'poll_replies_dom', 'error=' + domErr.message);
             }
