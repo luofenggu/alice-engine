@@ -176,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
     let engine_env_config = env_config.clone();
     let engine_gs_store = global_settings_store.clone();
     let engine_llm_client = llm_client.clone();
+    let engine_hooks_caller = engine_state.hooks_caller.clone();
     let engine_handle = std::thread::spawn(move || {
         let mut engine = AliceEngine::new(
             engine_instances_dir,
@@ -184,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
             engine_env_config,
             engine_gs_store,
             engine_llm_client,
+            engine_hooks_caller,
         );
         if let Err(e) = engine.run() {
             tracing::error!("Engine error: {}", e);

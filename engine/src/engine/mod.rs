@@ -36,7 +36,7 @@ use tracing::{error, info, warn};
 
 use crate::core::signal::SignalHub;
 use crate::core::Alice;
-use crate::persist::hooks::{HooksCaller, HooksStore};
+use crate::persist::hooks::HooksCaller;
 use crate::persist::instance::InstanceStore;
 use crate::util::Counter;
 
@@ -81,22 +81,9 @@ impl AliceEngine {
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: crate::persist::GlobalSettingsStore,
         llm_client: Arc<crate::external::llm::LlmClient>,
+        hooks_caller: Arc<HooksCaller>,
     ) -> Self {
         let instance_store = InstanceStore::new(instances_base.clone());
-
-        // Load hooks config from hooks.json (next to instances dir)
-        let hooks_json_path = instances_base
-            .parent()
-            .unwrap_or(&instances_base)
-            .join("hooks.json");
-        let hooks_config = match HooksStore::open(&hooks_json_path) {
-            Ok(store) => store.load().unwrap_or_default(),
-            Err(e) => {
-                warn!("[HOOKS] Failed to open hooks.json: {}, using defaults", e);
-                Default::default()
-            }
-        };
-        let hooks_caller = Arc::new(HooksCaller::new(hooks_config));
 
         Self {
             instances_base,
@@ -706,6 +693,7 @@ mod tests {
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
         let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
+        let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
         let engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
@@ -713,6 +701,7 @@ mod tests {
             env,
             gs_store,
             llm_client,
+            hooks_caller,
         );
         assert!(engine.instances.is_empty());
     }
@@ -735,6 +724,7 @@ mod tests {
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
         let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
+        let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
@@ -742,6 +732,7 @@ mod tests {
             env,
             gs_store,
             llm_client,
+            hooks_caller,
         );
         engine.restore_instances().unwrap();
 
@@ -770,6 +761,7 @@ mod tests {
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
         let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
+        let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
@@ -777,6 +769,7 @@ mod tests {
             env,
             gs_store,
             llm_client,
+            hooks_caller,
         );
         engine.restore_instances().unwrap();
 
@@ -833,6 +826,7 @@ mod tests {
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
         let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
+        let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
@@ -840,6 +834,7 @@ mod tests {
             env,
             gs_store,
             llm_client,
+            hooks_caller,
         );
         engine.restore_instances().unwrap();
 
