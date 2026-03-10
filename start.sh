@@ -6,7 +6,7 @@
 
 set -e
 
-ALICE_CACHE="$HOME/.alice"
+ALICE_CACHE="$HOME/.alice-v2"
 ALICE_BIN="$ALICE_CACHE/alice-engine"
 ALICE_VERSION="$ALICE_CACHE/version.txt"
 
@@ -143,7 +143,11 @@ main() {
     # Start engine in current directory (data lives here)
     export ALICE_HTTP_PORT="$ALICE_PORT"
     export ALICE_BASE_DIR="$(pwd)"
-    exec "$ALICE_BIN"
+
+    # Log to file for debugging
+    ALICE_LOG="$ALICE_CACHE/alice.log"
+    echo "📝 Log file: $ALICE_LOG"
+    exec "$ALICE_BIN" >> "$ALICE_LOG" 2>&1
 }
 
 main

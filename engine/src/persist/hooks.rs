@@ -201,9 +201,12 @@ impl HooksCaller {
 
         // Fetch from hook (URL may contain {instance_id} placeholder)
         let request_url = url.replace("{instance_id}", instance_id);
-        match self.client.get(&request_url).send() {
+        let fetch_start = Instant::now();
+        tracing::info!("[HOOKS] contacts fetch start: {}", request_url);
+        let result = match self.client.get(&request_url).send() {
             Ok(resp) => {
-                if resp.status().is_success() {
+                let status = resp.status();
+                if status.is_success() {
                     match resp.json::<ContactsResponse>() {
                         Ok(resp_body) => {
                             let contacts = resp_body.contacts;
@@ -220,15 +223,21 @@ impl HooksCaller {
                         }
                     }
                 } else {
-                    tracing::warn!("[HOOKS] contacts hook returned {}", resp.status());
-                    Err(format!("contacts hook returned {}", resp.status()))
+                    tracing::warn!("[HOOKS] contacts hook returned {}", status);
+                    Err(format!("contacts hook returned {}", status))
                 }
             }
             Err(e) => {
                 tracing::warn!("[HOOKS] contacts hook request failed: {}", e);
                 Err(format!("contacts request failed: {}", e))
             }
+        };
+        let elapsed = fetch_start.elapsed();
+        match &result {
+            Ok(contacts) => tracing::info!("[HOOKS] contacts fetch OK: {} contacts in {:?}", contacts.len(), elapsed),
+            Err(e) => tracing::warn!("[HOOKS] contacts fetch FAILED in {:?}: {}", elapsed, e),
         }
+        result
     }
 
     /// Format contacts into a prompt-friendly string.
