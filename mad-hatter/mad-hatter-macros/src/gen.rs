@@ -30,11 +30,11 @@ pub fn generate(def: ServiceDef) -> TokenStream {
             let const_name = format_ident!("{}", ep.fn_name.to_string().to_uppercase());
             let handler_name = format_ident!("__handle_{}", ep.fn_name);
             let method_fn = match ep.method {
-                HttpMethod::Get => quote! { axum::routing::get },
-                HttpMethod::Post => quote! { axum::routing::post },
-                HttpMethod::Put => quote! { axum::routing::put },
-                HttpMethod::Delete => quote! { axum::routing::delete },
-                HttpMethod::Patch => quote! { axum::routing::patch },
+                HttpMethod::Get => quote! { ::axum::routing::get },
+                HttpMethod::Post => quote! { ::axum::routing::post },
+                HttpMethod::Put => quote! { ::axum::routing::put },
+                HttpMethod::Delete => quote! { ::axum::routing::delete },
+                HttpMethod::Patch => quote! { ::axum::routing::patch },
             };
             quote! {
                 .route(#routes_mod::#const_name, #method_fn(#handler_name::<S>))
@@ -43,9 +43,6 @@ pub fn generate(def: ServiceDef) -> TokenStream {
         .collect();
 
     quote! {
-        // Re-export Json so users can write `Json<T>` in macro without explicit import
-        use axum::Json;
-
         /// Route path constants (auto-generated)
         pub mod #routes_mod {
             #(#route_consts)*
@@ -63,14 +60,13 @@ pub fn generate(def: ServiceDef) -> TokenStream {
         pub struct #service_name;
 
         impl #service_name {
-            /// Build an axum Router from a service implementation.
-            pub fn router<S: #trait_name>(svc: S) -> axum::Router {
-                use std::sync::Arc;
-                let shared = Arc::new(svc);
-
-                axum::Router::new()
+            /// Build an axum Router with the given state type.
+            ///
+            /// Returns `Router<Arc<S>>` — the caller is responsible for
+            /// calling `.with_state(state)` when ready.
+            pub fn router<S: #trait_name>() -> ::axum::Router<::std::sync::Arc<S>> {
+                ::axum::Router::new()
                     #(#route_calls)*
-                    .with_state(shared)
             }
         }
     }
@@ -97,14 +93,14 @@ fn generate_trait_methods(endpoints: &[EndpointDef]) -> Vec<TokenStream> {
             let fn_name = &ep.fn_name;
             let params = trait_params(&ep.params);
             let ret = match &ep.return_type {
-                Some(ty) => quote! { Result<#ty, mad_hatter::HttpError> },
-                None => quote! { Result<(), mad_hatter::HttpError> },
+                Some(ty) => {
+                    let qualified = qualify_known_types(ty);
+                    quote! { ::std::result::Result<#qualified, ::mad_hatter::HttpError> }
+                }
+                None => quote! { ::std::result::Result<(), ::mad_hatter::HttpError> },
             };
-            // Use `-> impl Future + Send` instead of `async fn` to ensure
-            // the returned future is Send (required by axum handlers).
-            // Users can still write `async fn` in their impl blocks.
             quote! {
-                fn #fn_name(&self, #(#params),*) -> impl std::future::Future<Output = #ret> + Send;
+                fn #fn_name(&self, #(#params),*) -> impl ::std::future::Future<Output = #ret> + Send;
             }
         })
         .collect()
@@ -128,7 +124,7 @@ fn generate_handler(ep: &EndpointDef, trait_name: &proc_macro2::Ident) -> TokenS
 
     // State is always first
     handler_params.push(quote! {
-        axum::extract::State(svc): axum::extract::State<std::sync::Arc<S>>
+        ::axum::extract::State(svc): ::axum::extract::State<::std::sync::Arc<S>>
     });
 
     // Path parameters
@@ -136,7 +132,7 @@ fn generate_handler(ep: &EndpointDef, trait_name: &proc_macro2::Ident) -> TokenS
         let ty = &path_params[0].ty;
         let name = &path_params[0].name;
         handler_params.push(quote! {
-            axum::extract::Path(#name): axum::extract::Path<#ty>
+            ::axum::extract::Path(#name): ::axum::extract::Path<#ty>
         });
         call_args.push(quote! { #name });
     } else if path_params.len() > 1 {
@@ -145,7 +141,7 @@ fn generate_handler(ep: &EndpointDef, trait_name: &proc_macro2::Ident) -> TokenS
         let tuple_names = quote! { (#(#names),*) };
         let tuple_types = quote! { (#(#types),*) };
         handler_params.push(quote! {
-            axum::extract::Path(#tuple_names): axum::extract::Path<#tuple_types>
+            ::axum::extract::Path(#tuple_names): ::axum::extract::Path<#tuple_types>
         });
         for name in &names {
             call_args.push(quote! { #name });
@@ -156,7 +152,7 @@ fn generate_handler(ep: &EndpointDef, trait_name: &proc_macro2::Ident) -> TokenS
     if let Some(bp) = body_param {
         let ty = &bp.ty;
         handler_params.push(quote! {
-            axum::Json(body): axum::Json<#ty>
+            ::axum::Json(body): ::axum::Json<#ty>
         });
         call_args.push(quote! { body });
     }
@@ -165,15 +161,15 @@ fn generate_handler(ep: &EndpointDef, trait_name: &proc_macro2::Ident) -> TokenS
     let response_conversion = if ep.return_type.is_some() {
         quote! {
             match svc.#fn_name(#(#call_args),*).await {
-                Ok(val) => axum::response::IntoResponse::into_response(val),
-                Err(err) => axum::response::IntoResponse::into_response(err),
+                Ok(val) => ::axum::response::IntoResponse::into_response(val),
+                Err(err) => ::axum::response::IntoResponse::into_response(err),
             }
         }
     } else {
         quote! {
             match svc.#fn_name(#(#call_args),*).await {
-                Ok(()) => axum::response::IntoResponse::into_response(axum::http::StatusCode::NO_CONTENT),
-                Err(err) => axum::response::IntoResponse::into_response(err),
+                Ok(()) => ::axum::response::IntoResponse::into_response(::axum::http::StatusCode::NO_CONTENT),
+                Err(err) => ::axum::response::IntoResponse::into_response(err),
             }
         }
     };
@@ -181,10 +177,29 @@ fn generate_handler(ep: &EndpointDef, trait_name: &proc_macro2::Ident) -> TokenS
     quote! {
         async fn #handler_name<S: #trait_name>(
             #(#handler_params),*
-        ) -> axum::response::Response {
+        ) -> ::axum::response::Response {
             #response_conversion
         }
     }
+}
+
+/// Qualify known framework types used in macro definitions.
+///
+/// Converts bare `Json<T>` to `::axum::Json<T>` so that generated code
+/// doesn't require the caller to have `use axum::Json` in scope.
+fn qualify_known_types(ty: &Type) -> TokenStream {
+    if let Type::Path(tp) = ty {
+        if tp.qself.is_none() && tp.path.segments.len() == 1 {
+            let seg = &tp.path.segments[0];
+            if seg.ident == "Json" {
+                // Extract the generic arguments (e.g., <User>)
+                let args = &seg.arguments;
+                return quote! { ::axum::Json #args };
+            }
+        }
+    }
+    // For any other type, emit as-is
+    quote! { #ty }
 }
 
 fn trait_params(params: &[ParamDef]) -> Vec<TokenStream> {
@@ -197,8 +212,6 @@ fn trait_params(params: &[ParamDef]) -> Vec<TokenStream> {
         })
         .collect()
 }
-
-
 
 fn to_snake_case(s: &str) -> String {
     let mut result = String::new();

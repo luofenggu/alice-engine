@@ -9,6 +9,7 @@
 use mad_hatter::http_service;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 // --- Domain types ---
 
@@ -72,7 +73,9 @@ async fn main() {
         next_id: AtomicU64::new(1),
     };
 
-    let router = UserApi::router(app);
+    // router() returns Router<Arc<App>> — caller binds state
+    let state = Arc::new(app);
+    let router = UserApi::router::<App>().with_state(state);
 
     let addr = "0.0.0.0:3000";
     println!("[SERVER] Listening on {addr}");
