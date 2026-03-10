@@ -36,6 +36,7 @@ pub mod api;
 pub mod engine;
 pub mod hub;
 pub mod persist;
+pub mod bindings;
 pub mod prompt;
 pub mod util;
 pub mod service;

@@ -218,7 +218,7 @@ mod tests {
             .chat
             .lock()
             .unwrap()
-            .write_user_message("24007", "hello world", "20260223155500")
+            .write_user_message("hello world", "20260223155500")
             .unwrap();
         alice
             .instance
@@ -236,7 +236,7 @@ mod tests {
         let entries = extract_session_block_data(&block_entries, &alice);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].messages.len(), 2);
-        assert_eq!(entries[0].messages[0].sender, "24007");
+        assert_eq!(entries[0].messages[0].sender, "user");
         assert_eq!(entries[0].messages[0].content, "hello world");
         assert_eq!(entries[0].messages[1].sender, "alice");
         assert_eq!(entries[0].summary, "Alice read and replied");
@@ -283,7 +283,7 @@ mod tests {
             .chat
             .lock()
             .unwrap()
-            .write_user_message("24007", "hi there", "20260223120000")
+            .write_user_message("hi there", "20260223120000")
             .unwrap();
         let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
         alice

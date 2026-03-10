@@ -1,13 +1,16 @@
 //! # Chat Module
 //!
 //! Message storage and channel backed by SQLite.
-//! All queries go directly to the database — no in-memory caching.
+//! All queries go directly to the database via Diesel — no in-memory caching.
 //!
 //! @TRACE: MSG — All message I/O operations.
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use tracing::info;
+
+use crate::bindings::db::{self, messages, MessageRow, NewMessage};
 
 // ---------------------------------------------------------------------------
 // Message — the core chat record
@@ -30,27 +33,36 @@ pub struct Message {
     pub recipient: String,
 }
 
-impl Message {
-    /// Role value: user message
-    const ROLE_USER: &'static str = "user";
-    /// Role value: agent/assistant message
-    const ROLE_AGENT: &'static str = "agent";
+impl From<MessageRow> for Message {
+    fn from(row: MessageRow) -> Self {
+        Self {
+            id: row.id,
+            sender: row.sender,
+            role: row.role,
+            content: row.content,
+            timestamp: row.timestamp,
+            read_status: row.read_status,
+            msg_type: row.msg_type,
+            recipient: row.recipient,
+        }
+    }
+}
 
-    const ROLE_SYSTEM: &'static str = "system";
-    /// Read status: already consumed
-    const STATUS_READ: &'static str = "read";
-    /// Read status: waiting to be consumed
-    const STATUS_UNREAD: &'static str = "unread";
-    /// Message type: normal chat
-    const TYPE_CHAT: &'static str = "chat";
+impl Message {
+    pub const ROLE_USER: &'static str = db::ROLE_USER;
+    pub const ROLE_AGENT: &'static str = db::ROLE_AGENT;
+    pub const ROLE_SYSTEM: &'static str = db::ROLE_SYSTEM;
+    pub const STATUS_READ: &'static str = db::STATUS_READ;
+    pub const STATUS_UNREAD: &'static str = db::STATUS_UNREAD;
+    pub const TYPE_CHAT: &'static str = db::TYPE_CHAT;
 }
 
 // ---------------------------------------------------------------------------
-// Query views — projections of Message for specific use cases
+// View types — projections for specific use-cases
 // ---------------------------------------------------------------------------
 
 /// A message for display (chat history view).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ChatMessage {
     pub id: i64,
     pub role: String,
@@ -62,7 +74,7 @@ pub struct ChatMessage {
 
 impl From<&Message> for ChatMessage {
     fn from(m: &Message) -> Self {
-        ChatMessage {
+        Self {
             id: m.id,
             role: m.role.clone(),
             content: m.content.clone(),
@@ -74,7 +86,7 @@ impl From<&Message> for ChatMessage {
 }
 
 /// A message within a time range (for summary).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RangeMessage {
     pub sender: String,
     pub role: String,
@@ -84,7 +96,7 @@ pub struct RangeMessage {
 
 impl From<&Message> for RangeMessage {
     fn from(m: &Message) -> Self {
-        RangeMessage {
+        Self {
             sender: m.sender.clone(),
             role: m.role.clone(),
             content: m.content.clone(),
@@ -94,7 +106,7 @@ impl From<&Message> for RangeMessage {
 }
 
 /// An unread inbox message from a user.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct InboxMessage {
     pub id: i64,
     pub sender: String,
@@ -106,7 +118,7 @@ pub struct InboxMessage {
 
 impl From<&Message> for InboxMessage {
     fn from(m: &Message) -> Self {
-        InboxMessage {
+        Self {
             id: m.id,
             sender: m.sender.clone(),
             role: m.role.clone(),
@@ -127,15 +139,15 @@ pub struct QueryResult {
 }
 
 // ---------------------------------------------------------------------------
-// ChatHistory — direct SQLite, no caching
+// ChatHistory — direct SQLite via Diesel, no caching
 // ---------------------------------------------------------------------------
 
 /// @TRACE: MSG
 ///
 /// Chat history and message channel.
-/// All queries go directly to SQLite — no in-memory caching.
+/// All queries go directly to SQLite via Diesel — no in-memory caching.
 pub struct ChatHistory {
-    conn: Connection,
+    conn: SqliteConnection,
 }
 
 impl ChatHistory {
@@ -143,39 +155,32 @@ impl ChatHistory {
     ///
     /// @TRACE: MSG — `[MSG] ChatHistory initialized: {path}`
     pub fn open(db_path: &std::path::Path) -> Result<Self> {
-        let conn = Connection::open(db_path)
-            .with_context(|| format!("failed to open chat db: {}", db_path.display()))?;
+        let path_str = db_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid db path: {}", db_path.display()))?;
 
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sender TEXT NOT NULL DEFAULT '',
-                role TEXT NOT NULL DEFAULT '',
-                content TEXT NOT NULL DEFAULT '',
-                timestamp TEXT NOT NULL DEFAULT '',
-                read_status TEXT NOT NULL DEFAULT '',
-                msg_type TEXT NOT NULL DEFAULT '',
-                recipient TEXT NOT NULL DEFAULT ''
-            );
-",
-        )
-        .context("failed to create chat tables")?;
+        let mut conn = SqliteConnection::establish(path_str)
+            .map_err(|e| anyhow::anyhow!("failed to open chat db {}: {}", db_path.display(), e))?;
+
+        // Create table if not exists
+        diesel::sql_query(db::CREATE_MESSAGES_TABLE)
+            .execute(&mut conn)
+            .context("failed to create chat tables")?;
 
         // Migration: add recipient column if missing (for existing DBs)
-        let has_recipient: bool = conn
-            .prepare("SELECT recipient FROM messages LIMIT 0")
+        let has_recipient = diesel::sql_query(db::CHECK_RECIPIENT_COLUMN)
+            .execute(&mut conn)
             .is_ok();
         if !has_recipient {
-            conn.execute(
-                "ALTER TABLE messages ADD COLUMN recipient TEXT NOT NULL DEFAULT ''",
-                [],
-            )
-            .context("failed to add recipient column")?;
+            diesel::sql_query(db::ADD_RECIPIENT_COLUMN)
+                .execute(&mut conn)
+                .context("failed to add recipient column")?;
             info!("[DB] Migration: added recipient column to messages table");
         }
 
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+        let count: i64 = messages::table
+            .count()
+            .get_result(&mut conn)
             .unwrap_or(0);
 
         info!(
@@ -185,17 +190,16 @@ impl ChatHistory {
         Ok(Self { conn })
     }
 
-    // ==================== Chat History ====================
-
     /// Append a message to history (marked as read, for display).
     ///
     /// @TRACE: MSG
     pub fn append(
         &mut self,
-        sender: &str,
         role: &str,
+        sender: &str,
         content: &str,
         timestamp: &str,
+        recipient: &str,
     ) -> Result<()> {
         self.insert_message(
             sender,
@@ -204,7 +208,7 @@ impl ChatHistory {
             timestamp,
             Message::STATUS_READ,
             Message::TYPE_CHAT,
-            "",
+            recipient,
         )?;
         Ok(())
     }
@@ -212,64 +216,56 @@ impl ChatHistory {
     /// Query messages with pagination.
     ///
     /// @TRACE: MSG
-    pub fn query(&self, limit: i64, before: Option<i64>) -> Result<QueryResult> {
-        let total: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
-            .unwrap_or(0);
+    pub fn query(&mut self, limit: i64, before: Option<i64>) -> Result<QueryResult> {
+        let total: i64 = messages::table
+            .count()
+            .get_result(&mut self.conn)
+            .context("failed to count messages")?;
 
-        let rows = match before {
+        if total == 0 {
+            return Ok(QueryResult {
+                messages: vec![],
+                total: 0,
+                start_id: 0,
+                has_more: false,
+            });
+        }
+
+        let rows: Vec<MessageRow> = match before {
             None => {
-                // Last N messages
-                let mut stmt = self.conn.prepare(
-                    "SELECT id, sender, role, content, timestamp, recipient FROM messages ORDER BY id DESC LIMIT ?",
-                )?;
-                let rows: Vec<ChatMessage> = stmt
-                    .query_map([limit], |row| {
-                        Ok(ChatMessage {
-                            id: row.get(0)?,
-                            sender: row.get(1)?,
-                            role: row.get(2)?,
-                            content: row.get(3)?,
-                            timestamp: row.get(4)?,
-                            recipient: row.get(5)?,
-                        })
-                    })?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                let mut rows = rows;
-                rows.reverse(); // Back to ascending order
-                rows
+                messages::table
+                    .order(messages::id.desc())
+                    .limit(limit)
+                    .load(&mut self.conn)
+                    .context("failed to query messages")?
             }
-            Some(id) => {
-                // Messages with id < before, last N
-                let mut stmt = self.conn.prepare(
-                    "SELECT id, sender, role, content, timestamp, recipient FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?"
-                )?;
-                let rows: Vec<ChatMessage> = stmt
-                    .query_map(rusqlite::params![id, limit], |row| {
-                        Ok(ChatMessage {
-                            id: row.get(0)?,
-                            sender: row.get(1)?,
-                            role: row.get(2)?,
-                            content: row.get(3)?,
-                            timestamp: row.get(4)?,
-                            recipient: row.get(5)?,
-                        })
-                    })?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                let mut rows = rows;
-                rows.reverse();
-                rows
+            Some(before_id) => {
+                messages::table
+                    .filter(messages::id.lt(before_id))
+                    .order(messages::id.desc())
+                    .limit(limit)
+                    .load(&mut self.conn)
+                    .context("failed to query messages with before")?
             }
         };
 
-        let start_id = rows.first().map(|m| m.id).unwrap_or(0);
-        let has_more = start_id > 1;
+        let msgs: Vec<Message> = rows.into_iter().map(Message::from).collect();
+        let start_id = msgs.last().map(|m| m.id).unwrap_or(0);
+        let has_more = if start_id > 0 {
+            let older_count: i64 = messages::table
+                .filter(messages::id.lt(start_id))
+                .count()
+                .get_result(&mut self.conn)
+                .unwrap_or(0);
+            older_count > 0
+        } else {
+            false
+        };
+
+        let chat_messages: Vec<ChatMessage> = msgs.iter().rev().map(ChatMessage::from).collect();
 
         Ok(QueryResult {
-            messages: rows,
+            messages: chat_messages,
             total,
             start_id,
             has_more,
@@ -277,27 +273,20 @@ impl ChatHistory {
     }
 
     /// Get the timestamp of the last message (as epoch millis, 0 if empty).
-    pub fn get_last_message_time(&self) -> Result<i64> {
-        let ts: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT timestamp FROM messages ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .ok();
+    pub fn get_last_message_time(&mut self) -> Result<i64> {
+        let result: Option<String> = messages::table
+            .select(messages::timestamp)
+            .order(messages::id.desc())
+            .first::<String>(&mut self.conn)
+            .optional()
+            .context("failed to get last message time")?;
 
-        match ts {
-            Some(t) => Ok(parse_timestamp_to_millis(&t).unwrap_or(0)),
+        match result {
+            Some(ts) => Ok(parse_timestamp_to_millis(&ts).unwrap_or(0)),
             None => Ok(0),
         }
     }
 
-    // ==================== Message Channel (Inbox/Outbox) ====================
-
-    /// Write a user message (unread, for engine to pick up).
-    ///
-    /// @TRACE: MSG
     /// Generate a timestamp string in Alice's standard format.
     pub fn now_timestamp() -> String {
         chrono::Local::now().format("%Y%m%d%H%M%S").to_string()
@@ -313,32 +302,27 @@ impl ChatHistory {
         timestamp: &str,
         recipient: &str,
     ) -> Result<i64> {
-        let id = self.insert_message(
+        let read_status = match role {
+            Message::ROLE_USER | Message::ROLE_SYSTEM => Message::STATUS_UNREAD,
+            _ => Message::STATUS_UNREAD,
+        };
+        self.insert_message(
             sender,
             role,
             content,
             timestamp,
-            Message::STATUS_UNREAD,
+            read_status,
             Message::TYPE_CHAT,
             recipient,
-        )?;
-        info!(
-            "[MSG] Message written: id={}, role={}, sender={}, recipient={}",
-            id,
-            role,
-            sender,
-            if recipient.is_empty() { "user" } else { recipient }
-        );
-        Ok(id)
+        )
     }
 
     pub fn write_user_message(
         &mut self,
-        sender: &str,
         content: &str,
         timestamp: &str,
     ) -> Result<i64> {
-        self.write_message(Message::ROLE_USER, sender, content, timestamp, "")
+        self.write_message(Message::ROLE_USER, "user", content, timestamp, "")
     }
 
     /// Read all unread inbox messages and mark them as read.
@@ -346,51 +330,53 @@ impl ChatHistory {
     ///
     /// @TRACE: MSG
     pub fn read_unread_user_messages(&mut self, self_instance_id: &str) -> Result<Vec<InboxMessage>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, sender, role, content, timestamp, msg_type FROM messages WHERE read_status = ? AND NOT (role = 'agent' AND sender = ?)"
-        )?;
-        let inbox: Vec<InboxMessage> = stmt
-            .query_map(
-                rusqlite::params![Message::STATUS_UNREAD, self_instance_id],
-                |row| {
-                    Ok(InboxMessage {
-                        id: row.get(0)?,
-                        sender: row.get(1)?,
-                        role: row.get(2)?,
-                        content: row.get(3)?,
-                        timestamp: row.get(4)?,
-                        msg_type: row.get(5)?,
-                    })
-                },
-            )?
-            .filter_map(|r| r.ok())
-            .collect();
+        // Filter: unread AND NOT (role='agent' AND sender=self)
+        let rows: Vec<MessageRow> = messages::table
+            .filter(
+                messages::read_status.eq(Message::STATUS_UNREAD)
+                    .and(diesel::dsl::not(
+                        messages::role.eq(Message::ROLE_AGENT)
+                            .and(messages::sender.eq(self_instance_id))
+                    ))
+            )
+            .load(&mut self.conn)
+            .context("failed to read unread messages")?;
 
+        let msgs: Vec<Message> = rows.into_iter().map(Message::from).collect();
+        let inbox: Vec<InboxMessage> = msgs.iter().map(InboxMessage::from).collect();
+
+        // Mark as read
         if !inbox.is_empty() {
-            self.conn.execute(
-                "UPDATE messages SET read_status = ? WHERE read_status = ? AND NOT (role = 'agent' AND sender = ?)",
-                rusqlite::params![
-                    Message::STATUS_READ,
-                    Message::STATUS_UNREAD,
-                    self_instance_id
-                ],
-            )?;
-            info!("[MSG] Read {} unread messages", inbox.len());
+            diesel::update(
+                messages::table.filter(
+                    messages::read_status.eq(Message::STATUS_UNREAD)
+                        .and(diesel::dsl::not(
+                            messages::role.eq(Message::ROLE_AGENT)
+                                .and(messages::sender.eq(self_instance_id))
+                        ))
+                )
+            )
+            .set(messages::read_status.eq(Message::STATUS_READ))
+            .execute(&mut self.conn)
+            .context("failed to mark messages as read")?;
         }
 
         Ok(inbox)
     }
 
     /// Count unread inbox messages (excluding agent messages sent by self).
-    pub fn count_unread_user_messages(&self, self_instance_id: &str) -> Result<i64> {
-        let count: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM messages WHERE read_status = ? AND NOT (role = 'agent' AND sender = ?)",
-                rusqlite::params![Message::STATUS_UNREAD, self_instance_id],
-                |row| row.get(0),
+    pub fn count_unread_user_messages(&mut self, self_instance_id: &str) -> Result<i64> {
+        let count: i64 = messages::table
+            .filter(
+                messages::read_status.eq(Message::STATUS_UNREAD)
+                    .and(diesel::dsl::not(
+                        messages::role.eq(Message::ROLE_AGENT)
+                            .and(messages::sender.eq(self_instance_id))
+                    ))
             )
-            .unwrap_or(0);
+            .count()
+            .get_result(&mut self.conn)
+            .context("failed to count unread messages")?;
         Ok(count)
     }
 
@@ -399,12 +385,20 @@ impl ChatHistory {
     /// @TRACE: MSG
     pub fn write_agent_reply(
         &mut self,
-        sender: &str,
+        instance_id: &str,
         content: &str,
         timestamp: &str,
         recipient: &str,
     ) -> Result<i64> {
-        self.write_message(Message::ROLE_AGENT, sender, content, timestamp, recipient)
+        self.insert_message(
+            instance_id,
+            Message::ROLE_AGENT,
+            content,
+            timestamp,
+            Message::STATUS_UNREAD,
+            Message::TYPE_CHAT,
+            recipient,
+        )
     }
 
     /// Write a system message (role=system, read_status=unread).
@@ -420,95 +414,97 @@ impl ChatHistory {
     /// Read all unread agent replies and mark them as read.
     /// Returns Vec<(id, content, timestamp)> for deduplication on frontend.
     pub fn read_unread_agent_replies(&mut self) -> Result<Vec<(i64, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, content, timestamp FROM messages WHERE role = ? AND read_status = ?",
-        )?;
-        let replies: Vec<(i64, String, String)> = stmt
-            .query_map(
-                rusqlite::params![Message::ROLE_AGENT, Message::STATUS_UNREAD],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?
-            .filter_map(|r| r.ok())
+        let rows: Vec<MessageRow> = messages::table
+            .filter(
+                messages::role.eq(Message::ROLE_AGENT)
+                    .and(messages::read_status.eq(Message::STATUS_UNREAD))
+            )
+            .load(&mut self.conn)
+            .context("failed to read unread agent replies")?;
+
+        let result: Vec<(i64, String, String)> = rows
+            .iter()
+            .map(|r| (r.id, r.content.clone(), r.timestamp.clone()))
             .collect();
 
-        if !replies.is_empty() {
-            self.conn.execute(
-                "UPDATE messages SET read_status = ? WHERE role = ? AND read_status = ?",
-                rusqlite::params![
-                    Message::STATUS_READ,
-                    Message::ROLE_AGENT,
-                    Message::STATUS_UNREAD
-                ],
-            )?;
+        if !result.is_empty() {
+            diesel::update(
+                messages::table.filter(
+                    messages::role.eq(Message::ROLE_AGENT)
+                        .and(messages::read_status.eq(Message::STATUS_UNREAD))
+                )
+            )
+            .set(messages::read_status.eq(Message::STATUS_READ))
+            .execute(&mut self.conn)
+            .context("failed to mark agent replies as read")?;
         }
 
-        Ok(replies)
+        Ok(result)
     }
 
     /// Get agent replies with id > after_id (for polling without read_status).
     /// Returns Vec<(id, sender, role, content, timestamp, recipient)>.
     pub fn get_agent_replies_after(
-        &self,
+        &mut self,
         after_id: i64,
     ) -> Result<Vec<(i64, String, String, String, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, sender, role, content, timestamp, recipient FROM messages WHERE role = ? AND id > ? ORDER BY id"
-        )?;
-        let replies: Vec<(i64, String, String, String, String, String)> = stmt
-            .query_map(rusqlite::params![Message::ROLE_AGENT, after_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(replies)
+        let rows: Vec<MessageRow> = messages::table
+            .filter(
+                messages::role.eq(Message::ROLE_AGENT)
+                    .and(messages::id.gt(after_id))
+            )
+            .order(messages::id.asc())
+            .load(&mut self.conn)
+            .context("failed to get agent replies after")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.id, r.sender, r.role, r.content, r.timestamp, r.recipient))
+            .collect())
     }
 
     /// Get messages (any role) after a given id, with limit for pagination
     pub fn get_messages_after(
-        &self,
+        &mut self,
         after_id: i64,
         limit: i64,
     ) -> Result<Vec<(i64, String, String, String, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, sender, role, content, timestamp, recipient FROM messages WHERE id > ? ORDER BY id LIMIT ?",
-        )?;
-        let rows: Vec<(i64, String, String, String, String, String)> = stmt
-            .query_map(rusqlite::params![after_id, limit], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(rows)
-    }
+        let rows: Vec<MessageRow> = messages::table
+            .filter(messages::id.gt(after_id))
+            .order(messages::id.asc())
+            .limit(limit)
+            .load(&mut self.conn)
+            .context("failed to get messages after")?;
 
-    // ==================== Time Range Query ====================
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.id, r.sender, r.role, r.content, r.timestamp, r.recipient))
+            .collect())
+    }
 
     /// Read all messages within a timestamp range (inclusive).
     /// Timestamps are in "yyyyMMddHHmmss" format.
-    pub fn read_messages_in_range(&self, start: &str, end: &str) -> Result<Vec<RangeMessage>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT sender, role, content, timestamp FROM messages WHERE timestamp >= ? AND timestamp <= ? ORDER BY id LIMIT 50"
-        )?;
-        let messages: Vec<RangeMessage> = stmt
-            .query_map(rusqlite::params![start, end], |row| {
-                Ok(RangeMessage {
-                    sender: row.get(0)?,
-                    role: row.get(1)?,
-                    content: row.get(2)?,
-                    timestamp: row.get(3)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(messages)
+    pub fn read_messages_in_range(&mut self, start: &str, end: &str) -> Result<Vec<RangeMessage>> {
+        let rows: Vec<MessageRow> = messages::table
+            .filter(
+                messages::timestamp.ge(start)
+                    .and(messages::timestamp.le(end))
+            )
+            .order(messages::id.asc())
+            .limit(50)
+            .load(&mut self.conn)
+            .context("failed to read messages in range")?;
+
+        let msgs: Vec<Message> = rows.into_iter().map(Message::from).collect();
+        Ok(msgs.iter().map(RangeMessage::from).collect())
     }
 
-    // ==================== Engine Status ====================
-
-    // ==================== Private helpers ====================
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
 
     fn insert_message(
-        &self,
+        &mut self,
         sender: &str,
         role: &str,
         content: &str,
@@ -517,17 +513,37 @@ impl ChatHistory {
         msg_type: &str,
         recipient: &str,
     ) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO messages (sender, role, content, timestamp, read_status, msg_type, recipient) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            rusqlite::params![sender, role, content, timestamp, read_status, msg_type, recipient],
-        ).context("failed to insert message")?;
-        Ok(self.conn.last_insert_rowid())
+        let new_msg = NewMessage {
+            sender,
+            role,
+            content,
+            timestamp,
+            read_status,
+            msg_type,
+            recipient,
+        };
+
+        diesel::insert_into(messages::table)
+            .values(&new_msg)
+            .execute(&mut self.conn)
+            .context("failed to insert message")?;
+
+        // Get the auto-generated id
+        #[derive(QueryableByName)]
+        struct LastId {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            #[diesel(column_name = "last_insert_rowid()")]
+            id: i64,
+        }
+
+        let last_id = diesel::sql_query("SELECT last_insert_rowid()")
+            .get_result::<LastId>(&mut self.conn)
+            .map(|r| r.id)
+            .unwrap_or(0);
+
+        Ok(last_id)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Parse "yyyyMMddHHmmss" timestamp to epoch millis.
 fn parse_timestamp_to_millis(ts: &str) -> Option<i64> {
@@ -541,11 +557,11 @@ fn parse_timestamp_to_millis(ts: &str) -> Option<i64> {
     let min: u32 = ts[10..12].parse().ok()?;
     let sec: u32 = ts[12..14].parse().ok()?;
 
-    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-    let date = NaiveDate::from_ymd_opt(year, month, day)?;
-    let time = NaiveTime::from_hms_opt(hour, min, sec)?;
-    let dt = NaiveDateTime::new(date, time);
-    Some(dt.and_utc().timestamp_millis())
+    use chrono::{Local, TimeZone};
+    let dt = Local
+        .with_ymd_and_hms(year, month, day, hour, min, sec)
+        .single()?;
+    Some(dt.timestamp_millis())
 }
 
 // ---------------------------------------------------------------------------
@@ -559,106 +575,82 @@ mod tests {
     fn setup() -> ChatHistory {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("chat_test_{}_{}", std::process::id(), n));
-        std::fs::create_dir_all(&dir).ok();
-        let db_path = dir.join("test_chat.db");
-        ChatHistory::open(&db_path).unwrap()
+        let path = std::env::temp_dir().join(format!("chat_test_diesel_{}.db", n));
+        // Clean up any previous test file
+        let _ = std::fs::remove_file(&path);
+        ChatHistory::open(&path).unwrap()
     }
 
     #[test]
     fn test_append_and_query() {
         let mut ch = setup();
-        ch.append("user1", "user", "hello", "20260220120000")
-            .unwrap();
-        ch.append("agent", "agent", "hi there", "20260220120001")
-            .unwrap();
-
+        ch.append("user", "user", "hello", "20250101120000", "").unwrap();
+        ch.append("agent", "bot1", "hi there", "20250101120001", "").unwrap();
         let result = ch.query(10, None).unwrap();
         assert_eq!(result.total, 2);
         assert_eq!(result.messages.len(), 2);
-        assert_eq!(result.messages[0].role, "user");
-        assert_eq!(result.messages[1].role, "agent");
+        assert_eq!(result.messages[0].content, "hello");
+        assert_eq!(result.messages[1].content, "hi there");
     }
 
     #[test]
     fn test_query_pagination() {
         let mut ch = setup();
-        for i in 0..10 {
-            ch.append("user", "user", &format!("msg{}", i), "20260220120000")
-                .unwrap();
+        for i in 0..5 {
+            ch.append("user", "user", &format!("msg{}", i), "20250101120000", "").unwrap();
         }
-
-        // Get last 3
-        let result = ch.query(3, None).unwrap();
-        assert_eq!(result.messages.len(), 3);
-        assert_eq!(result.total, 10);
-        assert!(result.has_more);
-
-        // Get 3 before the start_id
-        let result2 = ch.query(3, Some(result.start_id)).unwrap();
-        assert_eq!(result2.messages.len(), 3);
+        let page1 = ch.query(3, None).unwrap();
+        assert_eq!(page1.messages.len(), 3);
+        assert!(page1.has_more);
+        let page2 = ch.query(3, Some(page1.start_id)).unwrap();
+        assert_eq!(page2.messages.len(), 2);
+        assert!(!page2.has_more);
     }
 
     #[test]
     fn test_user_message_inbox() {
         let mut ch = setup();
-
-        ch.write_user_message("24007", "hello agent", "20260220120000")
-            .unwrap();
-        ch.write_user_message("24007", "are you there?", "20260220120001")
-            .unwrap();
-
-        assert_eq!(ch.count_unread_user_messages("test_instance").unwrap(), 2);
-
-        let msgs = ch.read_unread_user_messages("test_instance").unwrap();
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].content, "hello agent");
-        assert_eq!(msgs[1].content, "are you there?");
-
-        assert_eq!(ch.count_unread_user_messages("test_instance").unwrap(), 0);
-
-        let msgs2 = ch.read_unread_user_messages("test_instance").unwrap();
-        assert!(msgs2.is_empty());
+        let id = ch.write_user_message("hello from user", "20250101120000").unwrap();
+        assert!(id > 0);
+        let unread = ch.count_unread_user_messages("bot1").unwrap();
+        assert_eq!(unread, 1);
+        let msgs = ch.read_unread_user_messages("bot1").unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "hello from user");
+        let unread_after = ch.count_unread_user_messages("bot1").unwrap();
+        assert_eq!(unread_after, 0);
     }
 
     #[test]
     fn test_agent_reply_outbox() {
         let mut ch = setup();
-
-        ch.write_agent_reply("alice", "hello user!", "20260220120000", "")
-            .unwrap();
-
+        ch.write_agent_reply("bot1", "reply content", "20250101120000", "").unwrap();
         let replies = ch.read_unread_agent_replies().unwrap();
         assert_eq!(replies.len(), 1);
-        assert_eq!(replies[0].1, "hello user!");
-
-        let replies2 = ch.read_unread_agent_replies().unwrap();
-        assert!(replies2.is_empty());
+        assert_eq!(replies[0].1, "reply content");
+        let replies_after = ch.read_unread_agent_replies().unwrap();
+        assert_eq!(replies_after.len(), 0);
     }
 
     #[test]
     fn test_get_last_message_time() {
         let mut ch = setup();
-
-        assert_eq!(ch.get_last_message_time().unwrap(), 0);
-
-        ch.append("user", "user", "test", "20260220120000").unwrap();
-        let time = ch.get_last_message_time().unwrap();
-        assert!(time > 0);
+        let t = ch.get_last_message_time().unwrap();
+        assert_eq!(t, 0);
+        ch.append("user", "user", "msg", "20250601120000", "").unwrap();
+        let t2 = ch.get_last_message_time().unwrap();
+        assert!(t2 > 0);
     }
 
     #[test]
     fn test_get_messages_after() {
         let mut ch = setup();
-
-        ch.append("user", "user", "msg1", "20260220120000").unwrap();
-        ch.append("agent", "agent", "msg2", "20260220120001")
-            .unwrap();
-        ch.append("user", "user", "msg3", "20260220120002").unwrap();
-
-        let after = ch.get_messages_after(1, 100).unwrap();
-        assert_eq!(after.len(), 2);
-        assert_eq!(after[0].3, "msg2");
-        assert_eq!(after[1].3, "msg3");
+        ch.append("user", "user", "msg1", "20250101120000", "").unwrap();
+        ch.append("agent", "bot1", "msg2", "20250101120001", "").unwrap();
+        ch.append("user", "user", "msg3", "20250101120002", "").unwrap();
+        let msgs = ch.get_messages_after(1, 10).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].3, "msg2");
+        assert_eq!(msgs[1].3, "msg3");
     }
 }

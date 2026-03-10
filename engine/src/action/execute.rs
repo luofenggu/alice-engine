@@ -656,18 +656,18 @@ mod tests {
             .chat
             .lock()
             .unwrap()
-            .write_user_message("24007", "hello agent", "20260220120000")
+            .write_user_message("hello agent", "20260220120000")
             .unwrap();
         alice
             .instance
             .chat
             .lock()
             .unwrap()
-            .write_user_message("24007", "how are you?", "20260220120001")
+            .write_user_message("how are you?", "20260220120001")
             .unwrap();
 
         let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("24007"));
+        assert!(result.contains("user"));
         assert!(result.contains("hello agent"));
         assert!(result.contains("how are you?"));
         // Verify MSG timestamp markers
