@@ -40,4 +40,3 @@ pub mod bindings;
 pub mod prompt;
 pub mod util;
 pub mod service;
-pub mod bindings;
