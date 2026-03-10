@@ -397,15 +397,14 @@ fn make_host_line(host: Option<&str>) -> String {
 /// Build reserved skill section (app guide + vision API + uploads).
 /// Returns empty string if no host is configured.
 fn make_reserved_skill(host: Option<&str>, instance_id: &str, port: u16) -> String {
-    match host {
-        Some(h) if !h.is_empty() => {
-            RESERVED_SKILL_TEMPLATE
-                .replace("{host}", h)
-                .replace("{instance}", instance_id)
-                .replace("{port}", &port.to_string())
-        }
-        _ => String::new(),
-    }
+    let h = match host {
+        Some(h) if !h.is_empty() => h.to_string(),
+        _ => format!("localhost:{}", port),
+    };
+    RESERVED_SKILL_TEMPLATE
+        .replace("{host}", &h)
+        .replace("{instance}", instance_id)
+        .replace("{port}", &port.to_string())
 }
 
 // ---------------------------------------------------------------------------
