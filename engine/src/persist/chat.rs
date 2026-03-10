@@ -302,10 +302,7 @@ impl ChatHistory {
         timestamp: &str,
         recipient: &str,
     ) -> Result<i64> {
-        let read_status = match role {
-            Message::ROLE_USER | Message::ROLE_SYSTEM => Message::STATUS_UNREAD,
-            _ => Message::STATUS_UNREAD,
-        };
+        let read_status = db::STATUS_UNREAD;
         self.insert_message(
             sender,
             role,
@@ -536,7 +533,7 @@ impl ChatHistory {
             id: i64,
         }
 
-        let last_id = diesel::sql_query("SELECT last_insert_rowid()")
+        let last_id = diesel::sql_query(db::SELECT_LAST_INSERT_ROWID)
             .get_result::<LastId>(&mut self.conn)
             .map(|r| r.id)
             .unwrap_or(0);

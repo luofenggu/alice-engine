@@ -82,5 +82,7 @@ pub const CREATE_MESSAGES_TABLE: &str =
 
 pub const CHECK_RECIPIENT_COLUMN: &str = "SELECT recipient FROM messages LIMIT 0";
 
+pub const SELECT_LAST_INSERT_ROWID: &str = "SELECT last_insert_rowid()";
+
 pub const ADD_RECIPIENT_COLUMN: &str =
     "ALTER TABLE messages ADD COLUMN recipient TEXT NOT NULL DEFAULT ''";
