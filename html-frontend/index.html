@@ -1489,11 +1489,20 @@ function renderMessages(scrollToBottom = true) {
         // Disable smooth scroll for initial load to ensure we land at bottom
         el.style.scrollBehavior = 'auto';
         autoScrollEnabled = true;
+        programmaticScroll = true;
+        // Double-rAF + setTimeout fallback: complex markdown content may need
+        // multiple frames to finish layout, so scrollHeight isn't final in the first frame
         requestAnimationFrame(() => {
-            programmaticScroll = true;
             el.scrollTop = el.scrollHeight;
-            // Re-enable smooth scroll after a tick
-            requestAnimationFrame(() => { el.style.scrollBehavior = ''; programmaticScroll = false; });
+            requestAnimationFrame(() => {
+                el.scrollTop = el.scrollHeight;
+                // Final fallback after layout settles
+                setTimeout(() => {
+                    el.scrollTop = el.scrollHeight;
+                    el.style.scrollBehavior = '';
+                    programmaticScroll = false;
+                }, 80);
+            });
         });
     }
 }
