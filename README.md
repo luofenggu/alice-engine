@@ -122,6 +122,56 @@ Then visit `http://your-server-ip:8081` and log in with your password.
 | `ALICE_BASE_DIR` | Data directory | `.` (current dir) |
 | `ALICE_HOST` | Public endpoint for user-facing URLs (e.g. `example.com`, `1.2.3.4`, `1.2.3.4:8080`) | — |
 
+## Multi-Engine Communication (Hub)
+
+Agents on the same engine can't message each other by default. The Hub enables communication:
+
+- **Enable as Host** — turns on communication between all instances on this engine
+- **Join a Host** — connects this engine to another, enabling cross-engine communication
+
+### Enable Host Mode
+
+In the sidebar, click the Hub toggle to enable host mode. This:
+1. Starts accepting connections from other engines
+2. Registers hooks so local instances can discover and message each other
+3. Generates a join token for other engines to connect
+
+You can also use the API:
+
+```bash
+curl -X POST http://localhost:8081/api/hub/enable \
+  -H "Content-Type: application/json" \
+  -d '{"join_token": "your-secret-token"}'
+```
+
+### Join a Host
+
+From another engine, join the host to enable cross-engine communication:
+
+```bash
+curl -X POST http://localhost:8082/api/hub/join \
+  -H "Content-Type: application/json" \
+  -d '{"host_url": "http://host-ip:8081", "join_token": "your-secret-token"}'
+```
+
+Once joined, all instances across both engines can discover and message each other.
+
+### Leave / Disable
+
+```bash
+# Leave a host (from a joined engine)
+curl -X POST http://localhost:8082/api/hub/leave
+
+# Disable host mode
+curl -X POST http://localhost:8081/api/hub/disable
+```
+
+### Important Notes
+
+- Hub state is **in-memory only** — restarting an engine resets its hub state. You'll need to re-enable/re-join after restart.
+- Joined engines connect via **WebSocket tunnel** — no extra ports need to be opened on the joined engine.
+- If the connection drops, the joined engine **automatically reconnects** with exponential backoff.
+
 ## How It Works
 
 Each agent instance has:
@@ -204,6 +254,18 @@ All endpoints under `/api/`. Set `ALICE_AUTH_SECRET` to enable authentication vi
 | `/public/{id}/apps/{path}` | Public files (no auth) |
 | `/proxy/{port}/{path}` | Reverse proxy to localhost port |
 
+### Hub
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/hub/enable` | Enable host mode (body: `{join_token}`) |
+| POST | `/api/hub/disable` | Disable host mode |
+| POST | `/api/hub/join` | Join a host (body: `{host_url, join_token}`) |
+| POST | `/api/hub/leave` | Leave current host |
+| GET | `/api/hub/status` | Get hub status |
+| GET | `/api/hub/endpoints` | List connected endpoints |
+| POST | `/api/hooks` | Register extension hooks (body: `{contacts_url?, send_msg_relay_url?}`) |
+
 ## Development
 
 ### Project Structure
@@ -217,9 +279,11 @@ engine/              Core engine (Rust, axum HTTP server)
   src/action/        Action execution
   src/policy/        Configuration & defaults
   src/external/      External system adapters
-  route-macro/       Proc-macro for route annotations
+  src/hub/           Multi-engine communication (Hub)
   templates/         Prompt templates
+mad-hatter/          Mad Hatter framework (proc-macro RPC declarations)
 html-frontend/       Web UI (static HTML/JS)
+tests/               Hub E2E tests (bash + curl)
 integration/         E2E tests (Playwright + mock LLM)
 defense/guardian/     Static analysis (literal placement rules)
 ```
