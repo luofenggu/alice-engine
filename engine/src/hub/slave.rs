@@ -31,6 +31,8 @@ pub struct SlaveState {
     join_token: String,
     engine_id: String,
     reconnect_instances: Arc<Mutex<Vec<TunnelInstanceInfo>>>,
+    /// Stored after connect for re-sending Register/Leave messages
+    engine_endpoint: Mutex<Option<String>>,
 }
 
 impl SlaveState {
@@ -45,6 +47,7 @@ impl SlaveState {
             join_token,
             engine_id,
             reconnect_instances: Arc::new(Mutex::new(Vec::new())),
+            engine_endpoint: Mutex::new(None),
         }
     }
 
@@ -139,14 +142,18 @@ impl SlaveState {
 
         // Send register message
         let instances = self.reconnect_instances.lock().await.clone();
+        let endpoint = std::env::var("ALICE_HOST").ok()
+            .filter(|s| !s.is_empty())
+            .map(|h| if h.starts_with("http") { h } else { format!("http://{}", h) })
+            .unwrap_or_else(|| format!("http://localhost:{}", self.local_port));
         let register = TunnelMessage::Register {
             engine_id: self.engine_id.clone(),
-            engine_endpoint: std::env::var("ALICE_HOST").ok()
-                .filter(|s| !s.is_empty())
-                .map(|h| if h.starts_with("http") { h } else { format!("http://{}", h) })
-                .unwrap_or_else(|| format!("http://localhost:{}", self.local_port)),
+            engine_endpoint: endpoint.clone(),
             instances,
         };
+
+        // Store engine_endpoint for later use (disconnect, instances update)
+        *self.engine_endpoint.lock().await = Some(endpoint);
         let msg = serde_json::to_string(&register).unwrap();
         {
             let mut s = self.ws_sender.lock().await;
@@ -360,6 +367,41 @@ impl SlaveState {
                     break;
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Gracefully disconnect from host by sending Leave message
+    pub async fn disconnect(&self) {
+        let mut s = self.ws_sender.lock().await;
+        if let Some(ws) = s.as_mut() {
+            let msg = serde_json::to_string(&TunnelMessage::Leave).unwrap();
+            let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await;
+            let _ = ws.close().await;
+            info!("[HUB-SLAVE] Sent Leave message and closed WebSocket");
+        }
+        *s = None;
+    }
+
+    /// Send updated instances list to host (for when instances are created/deleted)
+    pub async fn send_instances_update(&self, instances: Vec<TunnelInstanceInfo>) {
+        let engine_id = self.engine_id.clone();
+        let engine_endpoint = self.engine_endpoint.lock().await.clone().unwrap_or_default();
+        if engine_id.is_empty() {
+            warn!("[HUB-SLAVE] Cannot send instances update: not connected");
+            return;
+        }
+        let register = TunnelMessage::Register {
+            engine_id,
+            engine_endpoint,
+            instances,
+        };
+        let msg = serde_json::to_string(&register).unwrap();
+        let mut s = self.ws_sender.lock().await;
+        if let Some(ws) = s.as_mut() {
+            match ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await {
+                Ok(_) => info!("[HUB-SLAVE] Sent instances update to host"),
+                Err(e) => warn!("[HUB-SLAVE] Failed to send instances update: {}", e),
             }
         }
     }

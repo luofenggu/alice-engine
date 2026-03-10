@@ -82,16 +82,27 @@ impl HostState {
         // Connection health flag
         let connected = Arc::new(AtomicBool::new(true));
 
-        // Store connection
+        // Store connection (clean stale connections with same endpoint first — Bug fix: zombie endpoint)
         {
             let conn = SlaveConnection {
                 engine_id: engine_id.clone(),
-                engine_endpoint,
+                engine_endpoint: engine_endpoint.clone(),
                 instances,
                 sender: ws_sender.clone(),
                 connected: connected.clone(),
             };
-            self.connections.write().await.insert(engine_id.clone(), conn);
+            let mut conns = self.connections.write().await;
+            // Remove any existing connection from the same endpoint (handles engine_id changes on re-join)
+            conns.retain(|eid, old_conn| {
+                if old_conn.engine_endpoint == engine_endpoint && *eid != engine_id {
+                    info!("[HUB-HOST] Cleaning stale connection: {} (same endpoint {})", eid, engine_endpoint);
+                    old_conn.connected.store(false, Ordering::Relaxed);
+                    false
+                } else {
+                    true
+                }
+            });
+            conns.insert(engine_id.clone(), conn);
         }
 
         // Spawn heartbeat sender: periodically send heartbeat to detect half-open connections
@@ -152,6 +163,10 @@ impl HostState {
                                     engine_id, instances.iter().map(|i| &i.id).collect::<Vec<_>>());
                                 conn.instances = instances;
                             }
+                        }
+                        Ok(TunnelMessage::Leave) => {
+                            info!("[HUB-HOST] Slave {} sent Leave message, disconnecting", engine_id);
+                            break;
                         }
                         _ => {}
                     }

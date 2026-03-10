@@ -124,17 +124,32 @@ impl HubState {
         }
     }
 
-    /// Leave the current host
+    /// Leave the current host (sends Leave message before disconnecting)
     pub async fn leave_host(&self) -> Result<(), String> {
-        let mut mode = self.mode.write().await;
-        match &*mode {
-            HubMode::Joined(slave) => {
-                slave.stop_reconnect();
-                info!("[HUB] Left host");
-                *mode = HubMode::Off;
-                Ok(())
+        let slave = {
+            let mut mode = self.mode.write().await;
+            match std::mem::replace(&mut *mode, HubMode::Off) {
+                HubMode::Joined(slave) => {
+                    slave.stop_reconnect();
+                    info!("[HUB] Left host");
+                    slave
+                }
+                other => {
+                    *mode = other;
+                    return Err("Not joined to any host".to_string());
+                }
             }
-            _ => Err("Not joined to any host".to_string()),
+        };
+        // Send Leave message gracefully (lock released, won't block other operations)
+        slave.disconnect().await;
+        Ok(())
+    }
+
+    /// Notify host of instance list changes (called after create/delete instance)
+    pub async fn notify_instances_changed(&self, instances: Vec<TunnelInstanceInfo>) {
+        let mode = self.mode.read().await;
+        if let HubMode::Joined(slave) = &*mode {
+            slave.send_instances_update(instances).await;
         }
     }
 

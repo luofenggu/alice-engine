@@ -27,6 +27,10 @@ pub enum TunnelMessage {
     #[serde(rename = "heartbeat")]
     Heartbeat,
 
+    /// Slave → Host: graceful disconnect
+    #[serde(rename = "leave")]
+    Leave,
+
     /// Host → Slave: register hooks on the slave engine
     #[serde(rename = "hook_register")]
     HookRegister {

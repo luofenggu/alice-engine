@@ -159,7 +159,10 @@ impl InstanceApiService for EngineState {
 
     async fn create(&self, body: CreateInstanceBody) -> mad_hatter::Result<Json<crate::api::types::ActionResult>> {
         let name = body.name.unwrap_or_default();
-        Ok(Json(self.create_instance(name, body.settings).await))
+        let result = self.create_instance(name, body.settings).await;
+        // Notify hub of instance list change (no-op if not in joined mode)
+        notify_hub_instances(self).await;
+        Ok(Json(result))
     }
 
     async fn get_by_id(&self, id: String) -> mad_hatter::Result<Json<crate::api::types::InstanceInfo>> {
@@ -170,8 +173,27 @@ impl InstanceApiService for EngineState {
     }
 
     async fn delete_by_id(&self, id: String) -> mad_hatter::Result<Json<crate::api::types::ActionResult>> {
-        Ok(Json(self.delete_instance(id).await))
+        let result = self.delete_instance(id).await;
+        // Notify hub of instance list change (no-op if not in joined mode)
+        notify_hub_instances(self).await;
+        Ok(Json(result))
     }
+}
+
+/// Notify hub host of local instance list changes (used after create/delete)
+async fn notify_hub_instances(state: &EngineState) {
+    let instances: Vec<crate::hub::tunnel::TunnelInstanceInfo> = state.get_instances().await
+        .iter()
+        .map(|inst| crate::hub::tunnel::TunnelInstanceInfo {
+            id: inst.id.clone(),
+            name: inst.name.clone(),
+            avatar: inst.avatar.clone(),
+            color: inst.color.clone(),
+            privileged: inst.privileged,
+            last_active: inst.last_active,
+        })
+        .collect();
+    state.hub.notify_instances_changed(instances).await;
 }
 
 // ── Message Handlers ──
