@@ -1,0 +1,3 @@
+[workspace]
+members = ["mad-hatter", "mad-hatter-macros"]
+resolver = "2"
