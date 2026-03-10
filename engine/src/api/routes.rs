@@ -12,6 +12,8 @@ use axum::{
 };
 use route_macro::*;
 use mad_hatter::http_service;
+use crate::service::*;
+use crate::bindings::http::*;
 use serde::Deserialize;
 
 use super::http_protocol;
@@ -125,17 +127,8 @@ pub struct ChannelSelectBody {
 
 // ── Instance Handlers (Mad Hatter) ──
 
-http_service! {
-    service InstanceApi {
-        GET    "api/instances"      => list() -> Json<Vec<crate::api::types::InstanceInfo>>;
-        POST   "api/instances"      => create(body: CreateInstanceBody) -> Json<crate::api::types::ActionResult>;
-        GET    "api/instances/{id}" => get_by_id(id: String) -> Json<crate::api::types::InstanceInfo>;
-        DELETE "api/instances/{id}" => delete_by_id(id: String) -> Json<crate::api::types::ActionResult>;
-    }
-}
-
-impl InstanceApiService for EngineState {
-    async fn list(&self) -> mad_hatter::Result<Json<Vec<crate::api::types::InstanceInfo>>> {
+impl InstanceService for EngineState {
+    async fn list_instances(&self) -> Response {
         let mut instances = self.get_instances().await;
 
         // Hub host mode: merge remote instances from all slave engines
@@ -155,54 +148,45 @@ impl InstanceApiService for EngineState {
             }
         }
 
-        Ok(Json(instances))
+        Json(instances).into_response()
     }
 
-    async fn create(&self, body: CreateInstanceBody) -> mad_hatter::Result<Json<crate::api::types::ActionResult>> {
+    async fn create_instance(&self, body: CreateInstanceBody) -> Response {
         let name = body.name.unwrap_or_default();
         let result = self.create_instance(name, body.settings).await;
         // Notify hub of instance list change (no-op if not in joined mode)
         notify_hub_instances(self).await;
-        Ok(Json(result))
+        Json(result).into_response()
     }
 
-    async fn get_by_id(&self, id: String) -> mad_hatter::Result<Json<crate::api::types::InstanceInfo>> {
+    async fn get_instance_by_id(&self, id: String) -> Response {
         match self.get_instance(id).await {
-            Some(info) => Ok(Json(info)),
-            None => Err(mad_hatter::HttpError::not_found("Instance not found")),
+            Some(info) => Json(info).into_response(),
+            None => json_error(StatusCode::NOT_FOUND, "Instance not found"),
         }
     }
 
-    async fn delete_by_id(&self, id: String) -> mad_hatter::Result<Json<crate::api::types::ActionResult>> {
+    async fn delete_instance_by_id(&self, id: String) -> Response {
         let result = self.delete_instance(id).await;
         // Notify hub of instance list change (no-op if not in joined mode)
         notify_hub_instances(self).await;
-        Ok(Json(result))
+        Json(result).into_response()
     }
 }
 
 
 // ── Control API (Mad Hatter) ──
 
-http_service! {
-    service ControlApi {
-        GET    "api/instances/{id}/observe"          => observe_instance(id: String) -> Response;
-        POST   "api/instances/{id}/interrupt"        => interrupt_instance(id: String) -> Response;
-        GET    "api/instances/{id}/channels"         => get_channels(id: String) -> Response;
-        POST   "api/instances/{id}/channels/select"  => select_channel(id: String, body: ChannelSelectBody) -> Response;
-    }
-}
-
-impl ControlApiService for EngineState {
-    async fn observe_instance(&self, id: String) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.observe(id).await))
+impl ControlService for EngineState {
+    async fn observe_instance(&self, id: String) -> Response {
+        json_ok(self.observe(id).await)
     }
 
-    async fn interrupt_instance(&self, id: String) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.interrupt(id).await))
+    async fn interrupt_instance(&self, id: String) -> Response {
+        json_ok(self.interrupt(id).await)
     }
 
-    async fn get_channels(&self, id: String) -> mad_hatter::Result<Response> {
+    async fn get_channels(&self, id: String) -> Response {
         let _ = id; // instance id unused — channels are global
         let (channels, counter, current_idx) = self.llm_client.channels_status();
         let channels_json: Vec<serde_json::Value> = channels
@@ -215,173 +199,126 @@ impl ControlApiService for EngineState {
                 })
             })
             .collect();
-        Ok(json_ok(serde_json::json!({
+        json_ok(serde_json::json!({
             "channels": channels_json,
             "counter": counter,
             "current_index": current_idx,
             "current_name": crate::external::llm::LlmClient::channel_display_name(current_idx),
-        })))
+        }))
     }
 
-    async fn select_channel(&self, id: String, body: ChannelSelectBody) -> mad_hatter::Result<Response> {
+    async fn select_channel(&self, id: String, body: ChannelSelectBody) -> Response {
         let _ = id;
         match self.llm_client.select_channel(body.index) {
-            Ok(()) => Ok(json_ok(serde_json::json!({
+            Ok(()) => json_ok(serde_json::json!({
                 "success": true,
                 "message": format!("switched to {}", crate::external::llm::LlmClient::channel_display_name(body.index)),
-            }))),
-            Err(e) => Ok(json_error(StatusCode::BAD_REQUEST, &e)),
+            })),
+            Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
         }
     }
 }
 
 // ── Knowledge API (Mad Hatter) ──
 
-http_service! {
-    service KnowledgeApi {
-        GET "api/instances/{id}/knowledge" => get_instance_knowledge(id: String) -> Response;
-        GET "api/instances/{id}/skill" => get_instance_skill(id: String) -> Response;
-        PUT "api/instances/{id}/skill" => update_instance_skill(id: String, body: String) -> Response;
+impl KnowledgeService for EngineState {
+    async fn get_instance_knowledge(&self, id: String) -> Response {
+        json_ok(self.get_knowledge(id).await)
     }
-}
-
-impl KnowledgeApiService for EngineState {
-    async fn get_instance_knowledge(&self, id: String) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.get_knowledge(id).await))
+    async fn get_instance_skill(&self, id: String) -> Response {
+        json_ok(self.get_skill(id).await)
     }
-    async fn get_instance_skill(&self, id: String) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.get_skill(id).await))
-    }
-    async fn update_instance_skill(&self, id: String, body: String) -> mad_hatter::Result<Response> {
+    async fn update_instance_skill(&self, id: String, body: String) -> Response {
         match self.update_skill(id, body).await {
-            Ok(()) => Ok(json_ok(crate::api::types::ActionResult::ok_empty())),
-            Err(e) => Ok(json_ok(crate::api::types::ActionResult::err(e.to_string()))),
+            Ok(()) => json_ok(crate::api::types::ActionResult::ok_empty()),
+            Err(e) => json_ok(crate::api::types::ActionResult::err(e.to_string())),
         }
     }
 }
 
 // ── Auth API (Mad Hatter) ──
 
-http_service! {
-    service AuthApi {
-        GET "api/auth/check" => check() -> Response;
-    }
-}
-
-impl AuthApiService for EngineState {
-    async fn check(&self) -> mad_hatter::Result<Response> {
-        Ok(json_ok(serde_json::json!({ "authenticated": true })))
+impl AuthService for EngineState {
+    async fn check_auth(&self) -> Response {
+        json_ok(serde_json::json!({ "authenticated": true }))
     }
 }
 
 // ── Vision API (Mad Hatter) ──
 
-http_service! {
-    service VisionApi {
-        POST "api/instances/{id}/vision" => vision_analyze(id: String, body: VisionBody) -> Response;
-    }
-}
-
-impl VisionApiService for EngineState {
-    async fn vision_analyze(&self, id: String, body: VisionBody) -> mad_hatter::Result<Response> {
+impl VisionService for EngineState {
+    async fn vision_analyze(&self, id: String, body: VisionBody) -> Response {
         match self.vision(id, body.prompt, body.image_url).await {
-            Ok(text) => Ok(json_ok(serde_json::json!({ "text": text }))),
-            Err(e) => Ok(json_error(StatusCode::BAD_GATEWAY, &e)),
+            Ok(text) => json_ok(serde_json::json!({ "text": text })),
+            Err(e) => json_error(StatusCode::BAD_GATEWAY, &e),
         }
     }
 }
 
 // ── Message API (Mad Hatter) ──
 
-http_service! {
-    service MessageApi {
-        GET    "api/instances/{id}/messages"         => fetch_messages(id: String, query: MessagesQuery) -> Response;
-        POST   "api/instances/{id}/messages"         => post_message(id: String, body: SendMessageBody) -> Response;
-        POST   "api/instances/{id}/messages/relay"   => post_relay(id: String, body: RelayMessageBody) -> Response;
-        POST   "api/instances/{id}/system-messages"  => post_system_message(id: String, body: SendMessageBody) -> Response;
-        GET    "api/instances/{id}/replies"           => fetch_replies(id: String, query: RepliesQuery) -> Response;
-    }
-}
-
-impl MessageApiService for EngineState {
-    async fn fetch_messages(&self, id: String, query: MessagesQuery) -> mad_hatter::Result<Response> {
+impl MessageService for EngineState {
+    async fn fetch_messages(&self, id: String, query: MessagesQuery) -> Response {
         let limit = query.limit.unwrap_or(http_protocol::DEFAULT_MESSAGE_LIMIT);
         match self.get_messages(id, query.before_id, query.after_id, limit).await {
-            Ok(result) => Ok(json_ok(result)),
-            Err(e) => Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, &e)),
+            Ok(result) => json_ok(result),
+            Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e),
         }
     }
 
-    async fn post_message(&self, id: String, body: SendMessageBody) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.send_message(id, body.content).await))
+    async fn post_message(&self, id: String, body: SendMessageBody) -> Response {
+        json_ok(self.send_message(id, body.content).await)
     }
 
-    async fn post_relay(&self, id: String, body: RelayMessageBody) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.send_relay_message(id, body.sender, body.content).await))
+    async fn post_relay(&self, id: String, body: RelayMessageBody) -> Response {
+        json_ok(self.send_relay_message(id, body.sender, body.content).await)
     }
 
-    async fn post_system_message(&self, id: String, body: SendMessageBody) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.send_system_message(id, body.content).await))
+    async fn post_system_message(&self, id: String, body: SendMessageBody) -> Response {
+        json_ok(self.send_system_message(id, body.content).await)
     }
 
-    async fn fetch_replies(&self, id: String, query: RepliesQuery) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.get_replies_after(id, query.after_id).await))
+    async fn fetch_replies(&self, id: String, query: RepliesQuery) -> Response {
+        json_ok(self.get_replies_after(id, query.after_id).await)
     }
 }
 
 // ── File API (Mad Hatter) ──
 
-http_service! {
-    service FileApi {
-        GET    "api/instances/{id}/files/list"   => list_instance_files(id: String, query: FilePathQuery) -> Response;
-        GET    "api/instances/{id}/files/read"    => read_instance_file(id: String, query: FilePathQuery) -> Response;
-        DELETE "api/instances/{id}/files/delete"  => delete_instance_file(id: String, query: FilePathQuery) -> Response;
-    }
-}
-
-impl FileApiService for EngineState {
-    async fn list_instance_files(&self, id: String, query: FilePathQuery) -> mad_hatter::Result<Response> {
+impl FileService for EngineState {
+    async fn list_instance_files(&self, id: String, query: FilePathQuery) -> Response {
         let path = query.path.unwrap_or_default();
-        Ok(json_ok(self.list_files(id, path).await))
+        json_ok(self.list_files(id, path).await)
     }
 
-    async fn read_instance_file(&self, id: String, query: FilePathQuery) -> mad_hatter::Result<Response> {
+    async fn read_instance_file(&self, id: String, query: FilePathQuery) -> Response {
         let path = query.path.unwrap_or_default();
-        Ok(json_ok(self.read_file(id, path).await))
+        json_ok(self.read_file(id, path).await)
     }
 
-    async fn delete_instance_file(&self, id: String, query: FilePathQuery) -> mad_hatter::Result<Response> {
+    async fn delete_instance_file(&self, id: String, query: FilePathQuery) -> Response {
         let path = query.path.unwrap_or_default();
-        Ok(json_ok(self.delete_file(id, path).await))
+        json_ok(self.delete_file(id, path).await)
     }
 }
 
 // ── Settings API (Mad Hatter) ──
 
-http_service! {
-    service SettingsApi {
-        GET    "api/settings"                    => fetch_global_settings() -> Response;
-        POST   "api/settings"                    => save_global_settings(body: Settings) -> Response;
-        GET    "api/instances/{id}/settings"      => fetch_instance_settings(id: String) -> Response;
-        POST   "api/instances/{id}/settings"      => save_instance_settings(id: String, body: Settings) -> Response;
-    }
-}
-
-impl SettingsApiService for EngineState {
-    async fn fetch_global_settings(&self) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.get_global_settings().await))
+impl SettingsService for EngineState {
+    async fn fetch_global_settings(&self) -> Response {
+        json_ok(self.get_global_settings().await)
     }
 
-    async fn save_global_settings(&self, body: Settings) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.update_global_settings(body).await))
+    async fn save_global_settings(&self, body: Settings) -> Response {
+        json_ok(self.update_global_settings(body).await)
     }
 
-    async fn fetch_instance_settings(&self, id: String) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.get_settings(id).await))
+    async fn fetch_instance_settings(&self, id: String) -> Response {
+        json_ok(self.get_settings(id).await)
     }
 
-    async fn save_instance_settings(&self, id: String, body: Settings) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.update_settings(id, body).await))
+    async fn save_instance_settings(&self, id: String, body: Settings) -> Response {
+        json_ok(self.update_settings(id, body).await)
     }
 }
 
@@ -709,20 +646,8 @@ fn tunnel_response_to_http(resp: crate::hub::tunnel::TunnelResponse) -> Response
 
 // ── Hub API (Mad Hatter) ──
 
-http_service! {
-    service HubApi {
-        POST "api/hub/enable" => enable_hub(body: HubEnableBody) -> Response;
-        POST "api/hub/disable" => disable_hub() -> Response;
-        POST "api/hub/join" => join_hub(body: HubJoinBody) -> Response;
-        POST "api/hub/leave" => leave_hub() -> Response;
-        GET "api/hub/status" => hub_status() -> Response;
-        GET "api/hub/endpoints" => hub_endpoints() -> Response;
-        POST "api/hooks" => register_hooks(body: HooksConfig) -> Response;
-    }
-}
-
-impl HubApiService for EngineState {
-    async fn enable_hub(&self, body: HubEnableBody) -> mad_hatter::Result<Response> {
+impl HubService for EngineState {
+    async fn enable_hub(&self, body: HubEnableBody) -> Response {
         let local_port = self.env_config.http_port;
         let auth_secret = self.env_config.auth_secret.clone();
         match self.hub.enable_host(body.join_token, local_port, auth_secret).await {
@@ -744,20 +669,20 @@ impl HubApiService for EngineState {
                     Ok(resp) => tracing::info!("[HUB] Self hooks registration: {}", resp.status()),
                     Err(e) => tracing::warn!("[HUB] Failed to register hooks on self: {}", e),
                 }
-                Ok(json_ok(serde_json::json!({"status": "host mode enabled"})))
+                json_ok(serde_json::json!({"status": "host mode enabled"}))
             }
-            Err(e) => Ok(json_error(StatusCode::BAD_REQUEST, &e)),
+            Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
         }
     }
 
-    async fn disable_hub(&self) -> mad_hatter::Result<Response> {
+    async fn disable_hub(&self) -> Response {
         match self.hub.disable_host().await {
-            Ok(()) => Ok(json_ok(serde_json::json!({"status": "host mode disabled"}))),
-            Err(e) => Ok(json_error(StatusCode::BAD_REQUEST, &e)),
+            Ok(()) => json_ok(serde_json::json!({"status": "host mode disabled"})),
+            Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
         }
     }
 
-    async fn join_hub(&self, body: HubJoinBody) -> mad_hatter::Result<Response> {
+    async fn join_hub(&self, body: HubJoinBody) -> Response {
         let local_instances = self.get_instances().await;
         let tunnel_instances: Vec<crate::hub::tunnel::TunnelInstanceInfo> = local_instances
             .iter()
@@ -778,23 +703,23 @@ impl HubApiService for EngineState {
         let local_port = self.env_config.http_port;
         let auth_token = self.env_config.auth_secret.clone();
         match self.hub.join_host(body.host_url, body.join_token, tunnel_instances, &engine_id, local_port, auth_token).await {
-            Ok(()) => Ok(json_ok(serde_json::json!({"status": "joined host"}))),
-            Err(e) => Ok(json_error(StatusCode::BAD_REQUEST, &e)),
+            Ok(()) => json_ok(serde_json::json!({"status": "joined host"})),
+            Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
         }
     }
 
-    async fn leave_hub(&self) -> mad_hatter::Result<Response> {
+    async fn leave_hub(&self) -> Response {
         match self.hub.leave_host().await {
-            Ok(()) => Ok(json_ok(serde_json::json!({"status": "left host"}))),
-            Err(e) => Ok(json_error(StatusCode::BAD_REQUEST, &e)),
+            Ok(()) => json_ok(serde_json::json!({"status": "left host"})),
+            Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
         }
     }
 
-    async fn hub_status(&self) -> mad_hatter::Result<Response> {
-        Ok(json_ok(self.hub.status().await))
+    async fn hub_status(&self) -> Response {
+        json_ok(self.hub.status().await)
     }
 
-    async fn hub_endpoints(&self) -> mad_hatter::Result<Response> {
+    async fn hub_endpoints(&self) -> Response {
         let local_instances: Vec<crate::api::types::InstanceInfo> = self.get_instances().await;
 
         let mut groups = vec![crate::api::types::EndpointGroup {
@@ -821,19 +746,19 @@ impl HubApiService for EngineState {
             }
         }
 
-        Ok(json_ok(groups))
+        json_ok(groups)
     }
 
-    async fn register_hooks(&self, body: HooksConfig) -> mad_hatter::Result<Response> {
+    async fn register_hooks(&self, body: HooksConfig) -> Response {
         match self.hooks_store.register(&body) {
             Ok(merged) => {
                 self.hooks_caller.update_config(merged);
                 tracing::info!("[HOOKS] Hooks registered/updated successfully");
-                Ok(json_ok(crate::api::types::ActionResult::ok_empty()))
+                json_ok(crate::api::types::ActionResult::ok_empty())
             }
             Err(e) => {
                 tracing::warn!("[HOOKS] Failed to register hooks: {}", e);
-                Ok(json_ok(crate::api::types::ActionResult::err(e.to_string())))
+                json_ok(crate::api::types::ActionResult::err(e.to_string()))
             }
         }
     }
@@ -871,18 +796,18 @@ async fn handle_hub_ws(
 /// Authenticated API routes — require valid session cookie.
 pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
     Router::new()
-        .merge(InstanceApi::router::<EngineState>())
-        .merge(MessageApi::router::<EngineState>())
-        .merge(ControlApi::router::<EngineState>())
-        .merge(SettingsApi::router::<EngineState>())
-        .merge(FileApi::router::<EngineState>())
-        .merge(KnowledgeApi::router::<EngineState>())
-        .merge(HubApi::router::<EngineState>())
+        .merge(InstanceServiceBind::router())
+        .merge(MessageServiceBind::router())
+        .merge(ControlServiceBind::router())
+        .merge(SettingsServiceBind::router())
+        .merge(FileServiceBind::router())
+        .merge(KnowledgeServiceBind::router())
+        .merge(HubServiceBind::router())
         .route(ROUTE_HANDLE_SERVE_STATIC, get(handle_serve_static))
         .route(ROUTE_HANDLE_PROXY, any(handle_proxy))
         .route(ROUTE_HANDLE_UPLOAD, post(handle_upload))
-        .merge(VisionApi::router::<EngineState>())
-        .merge(AuthApi::router::<EngineState>())
+        .merge(VisionServiceBind::router())
+        .merge(AuthServiceBind::router())
 }
 
 /// Public API routes — no auth required.
