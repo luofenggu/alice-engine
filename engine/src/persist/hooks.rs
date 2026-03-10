@@ -141,7 +141,6 @@ impl<T> CacheEntry<T> {
 pub struct HooksCaller {
     client: reqwest::blocking::Client,
     config: Mutex<HooksConfig>,
-    contacts_cache: Mutex<Option<CacheEntry<Vec<ContactInfo>>>>,
     skills_cache: Mutex<Option<CacheEntry<String>>>,
 }
 
@@ -155,7 +154,6 @@ impl HooksCaller {
         Self {
             client,
             config: Mutex::new(config),
-            contacts_cache: Mutex::new(None),
             skills_cache: Mutex::new(None),
         }
     }
@@ -163,8 +161,7 @@ impl HooksCaller {
     /// Update the hooks config (e.g., after POST /api/hooks registration).
     pub fn update_config(&self, config: HooksConfig) {
         *self.config.lock().unwrap() = config;
-        // Invalidate caches on config change
-        *self.contacts_cache.lock().unwrap() = None;
+        // Invalidate cache on config change
         *self.skills_cache.lock().unwrap() = None;
     }
 
@@ -177,7 +174,7 @@ impl HooksCaller {
     // Contacts hook
     // -----------------------------------------------------------------------
 
-    /// Fetch contacts list. Returns cached result if within TTL.
+    /// Fetch contacts list from hub API (no caching — localhost call is fast enough).
     /// On failure, returns Err with description (caller decides how to handle).
     /// Returns Ok(empty vec) when no contacts_url is configured (normal case).
     pub fn fetch_contacts(&self, instance_id: &str) -> Result<Vec<ContactInfo>, String> {
@@ -189,17 +186,6 @@ impl HooksCaller {
             }
         };
 
-        // Check cache
-        {
-            let cache = self.contacts_cache.lock().unwrap();
-            if let Some(entry) = cache.as_ref() {
-                if entry.is_valid() {
-                    tracing::debug!("[HOOKS] contacts cache hit: {} contacts", entry.value.len());
-                    return Ok(entry.value.clone());
-                }
-            }
-        }
-
         // Fetch from hook (URL may contain {instance_id} placeholder)
         let request_url = url.replace("{instance_id}", instance_id);
         let fetch_start = Instant::now();
@@ -209,15 +195,7 @@ impl HooksCaller {
                 let status = resp.status();
                 if status.is_success() {
                     match resp.json::<ContactsResponse>() {
-                        Ok(resp_body) => {
-                            let contacts = resp_body.contacts;
-                            let mut cache = self.contacts_cache.lock().unwrap();
-                            *cache = Some(CacheEntry {
-                                value: contacts.clone(),
-                                fetched_at: Instant::now(),
-                            });
-                            Ok(contacts)
-                        }
+                        Ok(resp_body) => Ok(resp_body.contacts),
                         Err(e) => {
                             tracing::warn!("[HOOKS] contacts parse error: {}", e);
                             Err(format!("contacts parse error: {}", e))
@@ -253,20 +231,7 @@ impl HooksCaller {
                 Vec::new()
             }
         };
-        if contacts.is_empty() {
-            tracing::info!("[HOOKS] format_contacts: empty list, prompt will have no contacts");
-            return String::new();
-        }
-
-        let entries: Vec<String> = contacts
-            .iter()
-            .map(|c| match &c.name {
-                Some(name) if !name.is_empty() => format!("{}({})", name, c.id),
-                _ => c.id.clone(),
-            })
-            .collect();
-
-        format!("可联系的其他实例：{}", entries.join(", "))
+        format_contacts_list(&contacts)
     }
 
     // -----------------------------------------------------------------------
@@ -379,6 +344,24 @@ impl HooksCaller {
     }
 }
 
+/// Format a contacts list into a prompt-friendly string.
+/// Pure function, extracted for testability.
+pub fn format_contacts_list(contacts: &[ContactInfo]) -> String {
+    if contacts.is_empty() {
+        return String::new();
+    }
+
+    let entries: Vec<String> = contacts
+        .iter()
+        .map(|c| match &c.name {
+            Some(name) if !name.is_empty() => format!("{}({})", name, c.id),
+            _ => c.id.clone(),
+        })
+        .collect();
+
+    format!("可联系的其他实例：{}", entries.join(", "))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -460,33 +443,29 @@ mod tests {
     }
 
     #[test]
-    fn test_format_contacts_for_prompt() {
-        let caller = HooksCaller::new(HooksConfig { contacts_url: Some("http://dummy".to_string()), ..Default::default() });
-
-        // Manually populate cache to test formatting
-        {
-            let mut cache = caller.contacts_cache.lock().unwrap();
-            *cache = Some(CacheEntry {
-                value: vec![
-                    ContactInfo {
-                        id: "abc123".to_string(),
-                        name: Some("进化之王".to_string()),
-                    },
-                    ContactInfo {
-                        id: "def456".to_string(),
-                        name: None,
-                    },
-                    ContactInfo {
-                        id: "ghi789".to_string(),
-                        name: Some("".to_string()),
-                    },
-                ],
-                fetched_at: Instant::now(),
-            });
-        }
-
-        let result = caller.format_contacts_for_prompt("test");
+    fn test_format_contacts_list() {
+        let contacts = vec![
+            ContactInfo {
+                id: "abc123".to_string(),
+                name: Some("进化之王".to_string()),
+            },
+            ContactInfo {
+                id: "def456".to_string(),
+                name: None,
+            },
+            ContactInfo {
+                id: "ghi789".to_string(),
+                name: Some("".to_string()),
+            },
+        ];
+        let result = format_contacts_list(&contacts);
         assert_eq!(result, "可联系的其他实例：进化之王(abc123), def456, ghi789");
+    }
+
+    #[test]
+    fn test_format_contacts_list_empty() {
+        let result = format_contacts_list(&[]);
+        assert!(result.is_empty());
     }
 
     #[test]

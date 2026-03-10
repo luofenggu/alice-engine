@@ -503,8 +503,13 @@ mod tests {
 
     #[test]
     fn test_make_reserved_skill_no_host() {
-        assert_eq!(make_reserved_skill(None, "test", 8081), "");
-        assert_eq!(make_reserved_skill(Some(""), "test", 8081), "");
+        // When host is None or empty, falls back to localhost:{port}
+        let result = make_reserved_skill(None, "test", 8081);
+        assert!(result.contains("localhost:8081"), "should fallback to localhost:port");
+        assert!(result.contains("test"), "should contain instance_id");
+
+        let result2 = make_reserved_skill(Some(""), "test", 8081);
+        assert!(result2.contains("localhost:8081"), "empty host should also fallback");
     }
 
     #[test]
