@@ -194,6 +194,7 @@ impl HooksCaller {
             let cache = self.contacts_cache.lock().unwrap();
             if let Some(entry) = cache.as_ref() {
                 if entry.is_valid() {
+                    tracing::debug!("[HOOKS] contacts cache hit: {} contacts", entry.value.len());
                     return Ok(entry.value.clone());
                 }
             }
@@ -223,7 +224,7 @@ impl HooksCaller {
                         }
                     }
                 } else {
-                    tracing::warn!("[HOOKS] contacts hook returned {}", status);
+                    tracing::warn!("[HOOKS] contacts hook returned {} ({}ms)", status, fetch_start.elapsed().as_millis());
                     Err(format!("contacts hook returned {}", status))
                 }
             }
@@ -242,8 +243,18 @@ impl HooksCaller {
 
     /// Format contacts into a prompt-friendly string.
     pub fn format_contacts_for_prompt(&self, instance_id: &str) -> String {
-        let contacts = self.fetch_contacts(instance_id).unwrap_or_default();
+        let contacts = match self.fetch_contacts(instance_id) {
+            Ok(c) => {
+                tracing::info!("[HOOKS] format_contacts: fetch OK, {} contacts", c.len());
+                c
+            }
+            Err(e) => {
+                tracing::warn!("[HOOKS] format_contacts: fetch FAILED ({}), returning empty", e);
+                Vec::new()
+            }
+        };
         if contacts.is_empty() {
+            tracing::info!("[HOOKS] format_contacts: empty list, prompt will have no contacts");
             return String::new();
         }
 

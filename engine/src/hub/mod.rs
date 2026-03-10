@@ -107,6 +107,8 @@ impl HubState {
             host_url.clone(),
             local_port,
             auth_token,
+            join_token.clone(),
+            engine_id.to_string(),
         ));
         slave.connect(instances, engine_id, &join_token).await?;
 
@@ -126,10 +128,10 @@ impl HubState {
     pub async fn leave_host(&self) -> Result<(), String> {
         let mut mode = self.mode.write().await;
         match &*mode {
-            HubMode::Joined(_) => {
+            HubMode::Joined(slave) => {
+                slave.stop_reconnect();
                 info!("[HUB] Left host");
                 *mode = HubMode::Off;
-                // SlaveState will be dropped, closing the WebSocket
                 Ok(())
             }
             _ => Err("Not joined to any host".to_string()),

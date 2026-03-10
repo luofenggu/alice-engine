@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, oneshot};
 use futures_util::{SinkExt, StreamExt};
 use tracing::{info, warn, error, debug};
@@ -15,6 +16,7 @@ type WsSink = futures_util::stream::SplitSink<
 type PendingRequests = Arc<Mutex<HashMap<String, oneshot::Sender<TunnelResponse>>>>;
 
 /// Slave state: maintains WebSocket connection to host (bidirectional tunnel)
+/// Supports automatic reconnection on disconnect with exponential backoff
 pub struct SlaveState {
     pub host_url: String,
     /// WebSocket sender for sending messages to host
@@ -23,17 +25,32 @@ pub struct SlaveState {
     pending: PendingRequests,
     local_port: u16,
     auth_token: String,
+    /// Whether the background task should attempt reconnection after disconnect
+    should_reconnect: Arc<AtomicBool>,
+    /// Saved parameters for reconnection
+    join_token: String,
+    engine_id: String,
+    reconnect_instances: Arc<Mutex<Vec<TunnelInstanceInfo>>>,
 }
 
 impl SlaveState {
-    pub fn new(host_url: String, local_port: u16, auth_token: String) -> Self {
+    pub fn new(host_url: String, local_port: u16, auth_token: String, join_token: String, engine_id: String) -> Self {
         Self {
             host_url,
             ws_sender: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             local_port,
             auth_token,
+            should_reconnect: Arc::new(AtomicBool::new(true)),
+            join_token,
+            engine_id,
+            reconnect_instances: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Stop reconnection attempts (called by leave_host before dropping)
+    pub fn stop_reconnect(&self) {
+        self.should_reconnect.store(false, Ordering::SeqCst);
     }
 
     /// Send an HTTP request through the tunnel to the host
@@ -89,17 +106,21 @@ impl SlaveState {
         }
     }
 
-    /// Connect to host and start processing tunnel messages (bidirectional)
-    pub async fn connect(&self, instances: Vec<TunnelInstanceInfo>, engine_id: &str, join_token: &str) -> Result<(), String> {
-        // Build WebSocket URL with join_token as query param
+    /// Establish a WebSocket connection to host, register, and return the receiver stream
+    async fn establish_connection(&self) -> Result<
+        futures_util::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+        >,
+        String,
+    > {
         let ws_url = self.host_url
             .replace("http://", "ws://")
             .replace("https://", "wss://");
-        let ws_url = format!("{}/api/hub/ws?token={}", ws_url, join_token);
+        let ws_url = format!("{}/api/hub/ws?token={}", ws_url, self.join_token);
 
         info!("[HUB-SLAVE] Connecting to host: {}", self.host_url);
 
-        // Connect with 5s timeout — fail fast for unreachable hosts or invalid tokens
+        // Connect with 5s timeout
         let (ws_stream, _) = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             tokio_tungstenite::connect_async(&ws_url),
@@ -108,17 +129,18 @@ impl SlaveState {
             .map_err(|_| format!("Connection timeout (5s) to {}", self.host_url))?
             .map_err(|e| format!("WebSocket connect failed: {}", e))?;
 
-        let (ws_sender_raw, mut ws_receiver) = ws_stream.split();
+        let (ws_sender_raw, ws_receiver) = ws_stream.split();
 
-        // Store sender in self.ws_sender for proxy_request_to_host
+        // Store sender
         {
             let mut s = self.ws_sender.lock().await;
             *s = Some(ws_sender_raw);
         }
 
         // Send register message
+        let instances = self.reconnect_instances.lock().await.clone();
         let register = TunnelMessage::Register {
-            engine_id: engine_id.to_string(),
+            engine_id: self.engine_id.clone(),
             engine_endpoint: std::env::var("ALICE_HOST").ok()
                 .filter(|s| !s.is_empty())
                 .map(|h| if h.starts_with("http") { h } else { format!("http://{}", h) })
@@ -137,65 +159,209 @@ impl SlaveState {
 
         info!("[HUB-SLAVE] Registered with host");
 
-        // Register hooks locally — URLs point to local tunnel_proxy routes
+        // Register hooks locally
         self.register_tunnel_hooks().await;
 
+        Ok(ws_receiver)
+    }
+
+    /// Connect to host and start processing tunnel messages (bidirectional)
+    /// Spawns a background task that auto-reconnects on disconnect
+    pub async fn connect(&self, instances: Vec<TunnelInstanceInfo>, _engine_id: &str, _join_token: &str) -> Result<(), String> {
+        // Save instances for reconnection (join_token and engine_id already in struct)
+        {
+            let mut inst = self.reconnect_instances.lock().await;
+            *inst = instances;
+        }
+
+        // Initial connection
+        let ws_receiver = self.establish_connection().await?;
+
+        // Spawn message processing + auto-reconnect loop
         let local_port = self.local_port;
         let auth_token = self.auth_token.clone();
         let pending = self.pending.clone();
         let ws_sender_shared = self.ws_sender.clone();
+        let should_reconnect = self.should_reconnect.clone();
+        let host_url = self.host_url.clone();
+        let join_token = self.join_token.clone();
+        let engine_id = self.engine_id.clone();
+        let reconnect_instances = self.reconnect_instances.clone();
+        let self_local_port = self.local_port;
+        let self_auth_token = self.auth_token.clone();
 
-        // Process incoming messages (bidirectional: requests from host + responses to our requests)
         tokio::spawn(async move {
-            while let Some(msg) = ws_receiver.next().await {
-                match msg {
-                    Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                        match serde_json::from_str::<TunnelMessage>(&text) {
-                            Ok(TunnelMessage::Request(req)) => {
-                                // Host is requesting something from us — handle locally
-                                let sender = ws_sender_shared.clone();
-                                let token = auth_token.clone();
-                                tokio::spawn(async move {
-                                    let resp = handle_tunnel_request(req, local_port, &token).await;
-                                    let msg = serde_json::to_string(&TunnelMessage::Response(resp)).unwrap();
-                                    let mut s = sender.lock().await;
-                                    if let Some(ws) = s.as_mut() {
-                                        let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await;
-                                    }
-                                });
+            let mut current_receiver = ws_receiver;
+
+            loop {
+                // Process messages until disconnect
+                Self::run_message_loop(
+                    &mut current_receiver,
+                    &ws_sender_shared,
+                    &pending,
+                    local_port,
+                    &auth_token,
+                ).await;
+
+                // Disconnected — clear ws_sender immediately
+                {
+                    let mut s = ws_sender_shared.lock().await;
+                    *s = None;
+                }
+                info!("[HUB-SLAVE] Disconnected from host, ws_sender cleared");
+
+                // Check if we should reconnect
+                if !should_reconnect.load(Ordering::SeqCst) {
+                    info!("[HUB-SLAVE] Reconnection disabled, exiting");
+                    break;
+                }
+
+                // Exponential backoff reconnection
+                let mut delay_secs = 2u64;
+                loop {
+                    if !should_reconnect.load(Ordering::SeqCst) {
+                        info!("[HUB-SLAVE] Reconnection disabled during backoff, exiting");
+                        return;
+                    }
+
+                    info!("[HUB-SLAVE] Reconnecting in {}s...", delay_secs);
+                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+
+                    if !should_reconnect.load(Ordering::SeqCst) {
+                        info!("[HUB-SLAVE] Reconnection disabled after sleep, exiting");
+                        return;
+                    }
+
+                    // Try to reconnect
+                    let ws_url = host_url
+                        .replace("http://", "ws://")
+                        .replace("https://", "wss://");
+                    let ws_url = format!("{}/api/hub/ws?token={}", ws_url, join_token);
+
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        tokio_tungstenite::connect_async(&ws_url),
+                    ).await {
+                        Ok(Ok((ws_stream, _))) => {
+                            let (ws_sender_raw, ws_receiver) = ws_stream.split();
+
+                            // Restore ws_sender
+                            {
+                                let mut s = ws_sender_shared.lock().await;
+                                *s = Some(ws_sender_raw);
                             }
-                            Ok(TunnelMessage::Response(resp)) => {
-                                // Response to a request we sent to host
-                                let mut pending_map = pending.lock().await;
-                                if let Some(sender) = pending_map.remove(&resp.request_id) {
-                                    let _ = sender.send(resp);
-                                }
-                            }
-                            Ok(TunnelMessage::Heartbeat) => {
-                                let hb = serde_json::to_string(&TunnelMessage::Heartbeat).unwrap();
+
+                            // Re-register
+                            let instances: Vec<TunnelInstanceInfo> = reconnect_instances.lock().await.clone();
+                            let register = TunnelMessage::Register {
+                                engine_id: engine_id.clone(),
+                                engine_endpoint: std::env::var("ALICE_HOST").ok()
+                                    .filter(|s| !s.is_empty())
+                                    .map(|h| if h.starts_with("http") { h } else { format!("http://{}", h) })
+                                    .unwrap_or_else(|| format!("http://localhost:{}", self_local_port)),
+                                instances,
+                            };
+                            let msg = serde_json::to_string(&register).unwrap();
+                            {
                                 let mut s = ws_sender_shared.lock().await;
                                 if let Some(ws) = s.as_mut() {
-                                    let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(hb.into())).await;
+                                    if ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await.is_err() {
+                                        error!("[HUB-SLAVE] Failed to send register on reconnect");
+                                        let mut s2 = ws_sender_shared.lock().await;
+                                        *s2 = None;
+                                        delay_secs = (delay_secs * 2).min(60);
+                                        continue;
+                                    }
                                 }
                             }
-                            _ => {}
+
+                            info!("[HUB-SLAVE] Reconnected to host successfully");
+
+                            // Re-register hooks
+                            let session_token = crate::hub::compute_session_token(&self_auth_token);
+                            let client = reqwest::Client::new();
+                            let hooks_body = serde_json::json!({
+                                "contacts_url": format!("http://localhost:{}/api/hub/tunnel_proxy/contacts/{{instance_id}}", self_local_port),
+                                "send_msg_relay_url": format!("http://localhost:{}/api/hub/tunnel_proxy/relay", self_local_port),
+                            });
+                            let _ = client.post(format!("http://localhost:{}/api/hooks", self_local_port))
+                                .header("cookie", format!("session_token={}", session_token))
+                                .json(&hooks_body)
+                                .send()
+                                .await;
+
+                            current_receiver = ws_receiver;
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            warn!("[HUB-SLAVE] Reconnect failed: {}", e);
+                            delay_secs = (delay_secs * 2).min(60);
+                        }
+                        Err(_) => {
+                            warn!("[HUB-SLAVE] Reconnect timeout (5s)");
+                            delay_secs = (delay_secs * 2).min(60);
                         }
                     }
-                    Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
-                        info!("[HUB-SLAVE] Host closed connection");
-                        break;
-                    }
-                    Err(e) => {
-                        warn!("[HUB-SLAVE] WebSocket error: {}", e);
-                        break;
-                    }
-                    _ => {}
                 }
             }
-            info!("[HUB-SLAVE] Disconnected from host");
         });
 
         Ok(())
+    }
+
+    /// Process WebSocket messages until disconnect
+    async fn run_message_loop(
+        ws_receiver: &mut futures_util::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+        >,
+        ws_sender_shared: &Arc<Mutex<Option<WsSink>>>,
+        pending: &PendingRequests,
+        local_port: u16,
+        auth_token: &str,
+    ) {
+        while let Some(msg) = ws_receiver.next().await {
+            match msg {
+                Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                    match serde_json::from_str::<TunnelMessage>(&text) {
+                        Ok(TunnelMessage::Request(req)) => {
+                            let sender = ws_sender_shared.clone();
+                            let token = auth_token.to_string();
+                            tokio::spawn(async move {
+                                let resp = handle_tunnel_request(req, local_port, &token).await;
+                                let msg = serde_json::to_string(&TunnelMessage::Response(resp)).unwrap();
+                                let mut s = sender.lock().await;
+                                if let Some(ws) = s.as_mut() {
+                                    let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await;
+                                }
+                            });
+                        }
+                        Ok(TunnelMessage::Response(resp)) => {
+                            let mut pending_map = pending.lock().await;
+                            if let Some(sender) = pending_map.remove(&resp.request_id) {
+                                let _ = sender.send(resp);
+                            }
+                        }
+                        Ok(TunnelMessage::Heartbeat) => {
+                            let hb = serde_json::to_string(&TunnelMessage::Heartbeat).unwrap();
+                            let mut s = ws_sender_shared.lock().await;
+                            if let Some(ws) = s.as_mut() {
+                                let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(hb.into())).await;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
+                    info!("[HUB-SLAVE] Host closed connection");
+                    break;
+                }
+                Err(e) => {
+                    warn!("[HUB-SLAVE] WebSocket error: {}", e);
+                    break;
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Register hooks on local engine pointing to tunnel_proxy routes
@@ -204,7 +370,6 @@ impl SlaveState {
         let url = format!("http://localhost:{}/api/hooks", self.local_port);
         let session_token = crate::hub::compute_session_token(&self.auth_token);
 
-        // Hook URLs point to local tunnel_proxy — requests will be forwarded through WS tunnel to host
         let hooks_body = serde_json::json!({
             "contacts_url": format!("http://localhost:{}/api/hub/tunnel_proxy/contacts/{{instance_id}}", self.local_port),
             "send_msg_relay_url": format!("http://localhost:{}/api/hub/tunnel_proxy/relay", self.local_port),
@@ -233,17 +398,14 @@ async fn handle_tunnel_request(req: TunnelRequest, local_port: u16, auth_token: 
 
     debug!("[HUB-SLAVE] Tunnel request: {} {}", req.method, req.path);
 
-    // Build request with auth cookie
     let method = reqwest::Method::from_bytes(req.method.as_bytes())
         .unwrap_or(reqwest::Method::GET);
 
     let mut http_req = client.request(method, &url);
 
-    // Inject auth cookie (slave computes session token from its own auth_token)
     let session_token = crate::hub::compute_session_token(auth_token);
     http_req = http_req.header("cookie", format!("session_token={}", session_token));
 
-    // Add headers from tunnel request
     for (k, v) in &req.headers {
         let k_lower = k.to_lowercase();
         if k_lower != "cookie" && k_lower != "host" {
@@ -251,14 +413,12 @@ async fn handle_tunnel_request(req: TunnelRequest, local_port: u16, auth_token: 
         }
     }
 
-    // Add body if present (base64 decoded)
     if let Some(body_b64) = &req.body {
         if let Ok(body_bytes) = base64::engine::general_purpose::STANDARD.decode(body_b64) {
             http_req = http_req.body(body_bytes);
         }
     }
 
-    // Execute request
     match http_req.send().await {
         Ok(resp) => {
             let status = resp.status().as_u16();
