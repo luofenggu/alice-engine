@@ -5,7 +5,9 @@
 //! Callers (prompt module) are responsible for extracting raw data from Alice.
 
 use crate::inference::safe_render;
+use crate::inference::Action;
 use crate::policy::messages;
+use mad_hatter::llm::FromMarkdown as _;
 
 // Compile-time embedded templates
 const TEMPLATE_SYSTEM: &str = include_str!("../../templates/react_system.txt");
@@ -84,8 +86,12 @@ impl BeatRequest {
         let current_time = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
         let system_start_time = self.system_start_time.format("%Y%m%d%H%M%S").to_string();
 
-        // System prompt
-        let system_prompt = safe_render(TEMPLATE_SYSTEM, &[("{{TOKEN}}", &self.action_token)]);
+        // System prompt: template + auto-generated action schema
+        let action_schema = Action::schema_markdown(&self.action_token);
+        let system_prompt = safe_render(TEMPLATE_SYSTEM, &[
+            ("{{TOKEN}}", &self.action_token),
+            ("{{ACTION_SCHEMA}}", &action_schema),
+        ]);
 
         // Format raw data into display strings
         let history_display = if self.history_content.is_empty() {

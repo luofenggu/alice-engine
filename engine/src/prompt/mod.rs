@@ -268,7 +268,7 @@ mod tests {
         let mut request = build_beat_request(&alice, None, String::new(), String::new());
         request.action_token = "abc".to_string();
         let (system, user, _) = request.render();
-        assert!(system.contains("###ACTION_abc###-"));
+        assert!(system.contains("Action-abc"));
         assert!(user.contains("(空)"));
         assert!(request.history_content.is_empty());
         assert!(request.current_content.is_empty());

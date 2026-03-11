@@ -39,7 +39,7 @@ pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) 
         Action::ReplaceInFile { path, blocks } => execute_replace_in_file(alice, tx, path, blocks),
         Action::Summary { content } => execute_summary(alice, tx, content),
 
-        Action::SetProfile { update } => execute_set_profile(alice, tx, &update),
+        Action::SetProfile { content } => execute_set_profile(alice, tx, &content),
         Action::CreateInstance { name, knowledge } => {
             execute_create_instance(alice, tx, name, knowledge)
         }
@@ -489,9 +489,33 @@ fn execute_distill(
 fn execute_set_profile(
     alice: &mut Alice,
     tx: &mut Transaction,
-    update: &crate::persist::Settings,
+    content: &str,
 ) -> Result<String> {
     info!("[ACTION-{}] set_profile", tx.instance_id);
+
+    // Parse key:value lines into Settings
+    let mut update = crate::persist::Settings::default();
+    let _known_keys = ["name", "color", "avatar"];
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(colon_pos) = line.find(':') {
+            let key = line[..colon_pos].trim().to_lowercase();
+            let value = line[colon_pos + 1..].trim().to_string();
+            let value_opt = if value.is_empty() { None } else { Some(value) };
+            match key.as_str() {
+                "name" => update.name = value_opt,
+                "color" => update.color = value_opt,
+                "avatar" => update.avatar = value_opt,
+                _ => {
+                    return Ok(out::profile_unknown_key(&key));
+                }
+            }
+        }
+    }
 
     let settings = alice.instance.settings.load()?;
     let mut merged = update.clone();
@@ -502,7 +526,7 @@ fn execute_set_profile(
     alice.privileged = merged.privileged_or_default();
     alice.instance_name = merged.name.clone();
 
-    Ok(out::profile_updated(update))
+    Ok(out::profile_updated(&update))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────

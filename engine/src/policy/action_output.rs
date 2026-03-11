@@ -425,18 +425,9 @@ pub fn build_doing_description(action: &Action) -> String {
         }
         Action::ReplaceInFile { path, .. } => format!("replace in file [{}]", path),
         Action::Summary { .. } => "summary (小结)".to_string(),
-        Action::SetProfile { update } => {
-            let mut fields = Vec::new();
-            if update.name.is_some() {
-                fields.push("name");
-            }
-            if update.color.is_some() {
-                fields.push("color");
-            }
-            if update.avatar.is_some() {
-                fields.push("avatar");
-            }
-            format!("set_profile [{}]", fields.join(", "))
+        Action::SetProfile { content } => {
+            let preview = crate::util::safe_truncate(content, 60);
+            format!("set_profile [{}]", preview)
         }
         Action::CreateInstance { name, knowledge } => format!(
             "create_instance: {} ({} bytes knowledge)",

@@ -36,7 +36,7 @@ use tracing::{error, info, warn};
 
 use crate::inference::beat::BeatRequest;
 use crate::inference::compress::CompressRequest;
-use crate::inference::parse_actions;
+use crate::inference::parse_single_action_chunk;
 /// Token usage info from LLM response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageInfo {
@@ -406,8 +406,8 @@ impl LlmClient {
 
         let config = self.current_config();
         let http_client = self.http_client.clone();
-        let separator = format!("###ACTION_{}###-", separator_token);
-        let separator_for_parse = format!("###ACTION_{}", separator_token);
+        let separator = format!("Action-{}\n", separator_token);
+        let end_marker = format!("Action-end-{}", separator_token);
         let separator_token_owned = separator_token.to_string();
         let log_path_clone = log_path.clone();
 
@@ -443,7 +443,7 @@ impl LlmClient {
                     &http_client,
                     messages,
                     &separator,
-                    &separator_for_parse,
+                    &end_marker,
                     &separator_token_owned,
                     &log_path_clone,
                     &instance_id,
@@ -843,7 +843,7 @@ async fn run_inference(
     http_client: &reqwest::Client,
     messages: Vec<ChatMessage>,
     separator: &str,
-    separator_for_parse: &str,
+    end_marker: &str,
     separator_token: &str,
     log_path: &Path,
     instance_id: &str,
@@ -969,24 +969,22 @@ async fn run_inference(
             }
 
             // Check for complete actions in accumulated text
-            // Look for separator patterns from last_parsed_pos
+            // Look for separator + end_marker pairs from last_parsed_pos
             while let Some(action_start) = full_text[last_parsed_pos..].find(separator) {
                 let abs_start = last_parsed_pos + action_start;
+                let after_sep = abs_start + separator.len();
 
-                // Find the next separator or end of text
-                let after_start = abs_start + separator.len();
-                let next_sep = full_text[after_start..].find(separator);
-
-                if let Some(next_offset) = next_sep {
-                    // Complete action found between two separators
-                    let action_text = &full_text[abs_start..after_start + next_offset];
+                // Find end_marker after separator
+                if let Some(end_offset) = full_text[after_sep..].find(end_marker) {
+                    // Complete action found between separator and end_marker
+                    let action_body = full_text[after_sep..after_sep + end_offset].trim();
                     info!(
                         "[INFER-{}] Stream action detected: {:?}",
                         instance_id,
-                        crate::util::safe_truncate(action_text, 80)
+                        crate::util::safe_truncate(action_body, 80)
                     );
-                    let actions = parse_actions(action_text, separator_for_parse, separator_token)
-                        .unwrap_or_default();
+                    let actions =
+                        parse_single_action_chunk(action_body, separator_token);
                     info!(
                         "[INFER-{}] Parsed {} actions from stream chunk",
                         instance_id,
@@ -995,9 +993,9 @@ async fn run_inference(
                     for action in actions {
                         let _ = tx.send(StreamItem::Action(action));
                     }
-                    last_parsed_pos = after_start + next_offset;
+                    last_parsed_pos = after_sep + end_offset + end_marker.len();
                 } else {
-                    // No next separator yet — wait for more data
+                    // No end_marker yet — wait for more data
                     break;
                 }
             }
@@ -1013,20 +1011,26 @@ async fn run_inference(
             remaining.len(),
             crate::util::safe_truncate(remaining, 100)
         );
-        if remaining.contains(separator) {
-            info!("[INFER-{}] Parsing remaining actions", instance_id);
-            let actions =
-                parse_actions(remaining, separator_for_parse, separator_token).unwrap_or_default();
-            info!(
-                "[INFER-{}] Parsed {} remaining actions",
-                instance_id,
-                actions.len()
-            );
-            for action in actions {
-                let _ = tx.send(StreamItem::Action(action));
+        // Try to parse any remaining separator+end_marker pairs
+        let mut rem_pos = 0;
+        while let Some(action_start) = remaining[rem_pos..].find(separator) {
+            let abs_start = rem_pos + action_start;
+            let after_sep = abs_start + separator.len();
+            if let Some(end_offset) = remaining[after_sep..].find(end_marker) {
+                let action_body = remaining[after_sep..after_sep + end_offset].trim();
+                info!("[INFER-{}] Parsing remaining action", instance_id);
+                let actions =
+                    parse_single_action_chunk(action_body, separator_token);
+                for action in actions {
+                    let _ = tx.send(StreamItem::Action(action));
+                }
+                rem_pos = after_sep + end_offset + end_marker.len();
+            } else {
+                break;
             }
-        } else {
-            info!("[INFER-{}] No separator in remaining text", instance_id);
+        }
+        if rem_pos == 0 {
+            info!("[INFER-{}] No complete action in remaining text", instance_id);
         }
     } else {
         info!(

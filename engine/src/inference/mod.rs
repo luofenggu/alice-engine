@@ -50,60 +50,111 @@ pub fn safe_render(template: &str, vars: &[(&str, &str)]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Marker constants
-// ---------------------------------------------------------------------------
-
-/// `<<<SEARCH` marker for replace_in_file blocks.
-const SEARCH_MARKER: &str = "<<<SEARCH";
-/// `===REPLACE` marker for replace_in_file blocks
-const REPLACE_MARKER: &str = "===REPLACE";
-/// `>>>END` end marker for replace_in_file blocks
-const BLOCK_END_MARKER: &str = ">>>END";
-
-use crate::persist::Settings;
-use anyhow::{bail, Result};
-use std::fmt;
-
-// ---------------------------------------------------------------------------
 // Action enum
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+use mad_hatter::FromMarkdown;
+use mad_hatter::llm::FromMarkdown as _;
+use std::fmt;
+
+#[derive(Debug, Clone, FromMarkdown)]
 pub enum Action {
+    /// 什么都不做（继续等待）
+    /// 礼貌规则: 用户只能看到信件，看不到你的其它行为，因此，进入idle之前需检查已读信件，如有未回复消息，优先回复（寄出信件）
+    /// ⚠️ sleep vs idle：shell脚本里的sleep是同步阻塞——等待期间你无法响应任何消息；idle是异步等待——来信会立刻唤醒你。需要等待时永远用idle，不要用sleep
+    /// ⚠️ 默认不加参数：等用户消息时直接idle不带秒数，来信自动唤醒。只有"启动了后台任务、需要过一会儿检查结果"这种场景才加秒数
+    /// 💡 idle可以紧跟在其他action后面连续输出。比如你send_msg回复了用户后需要等待确认，直接跟一个idle，不用浪费一次推理
+    /// 💡 idle 120：等待120秒后自动醒来检查状态（期间有来信也会提前醒）。适合异步运维场景
     Idle {
+        /// 秒数（如120，表示等待120秒后自动醒来）
         timeout_secs: Option<u64>,
     },
+    /// 阅读收件箱（未读来信=0时无效）
+    /// 来信中sender为"user"代表已鉴权的你的专属用户
     ReadMsg,
+    /// 寄出信件
+    /// 收件人填"user"代表发给你的专属用户
+    /// 信件中引用文件路径时使用 [[file:相对路径]] 格式，前端会渲染为可点击的文件链接
+    /// 信件中的URL会自动识别为可点击链接，无需特殊格式
+    /// 信件内容支持markdown格式（标题、列表、代码块、表格等），前端会自动渲染
     SendMsg {
+        /// 收件人
         recipient: String,
+        /// 信件内容
         content: String,
     },
+    /// 记录思考
+    /// 可以在实施action之前先记录planning-thinking（思考计划）
+    /// 也可以在关键action之后记录reflection-thinking（观察结果）
     Thinking {
+        /// thinking内容
         content: String,
     },
+    /// 执行本地脚本
+    /// 系统将会自动cd到工作目录下执行你的脚本
     Script {
+        /// 脚本内容
         content: String,
     },
+    /// 写入文件
+    /// 路径是工作目录中的相对路径。如果需要操作工作目录之外的文件，可以使用绝对路径（需要开启privileged权限，可以跟用户商量）
+    /// 写入后系统自动提取文件骨架（接口+注释）记入 `current`，不记全文
+    /// 如果需要记住写入的关键细节，在thinking中提前记录
     WriteFile {
+        /// file_path
         path: String,
+        /// 文件完整内容
         content: String,
     },
+    /// 搜索替换文件内容（增量修改）
+    /// 搜索文本必须在文件中唯一匹配，匹配0次或多次都会报错
+    /// 比write_file省token：只需输出变更区域，不用全量输出文件
+    /// 比script中的sed更可靠：引擎内置实现，不依赖系统命令
+    /// 路径是工作目录中的相对路径。如果需要操作工作目录之外的文件，可以使用绝对路径（需要开启privileged权限，可以跟用户商量）
     ReplaceInFile {
+        /// file_path
         path: String,
+        /// 替换块
         blocks: Vec<ReplaceBlock>,
     },
+    /// 小结（回顾对话）
+    /// 当current变得很长时，用这个action释放空间
+    /// 执行后current清空、小结合入近况
+    /// 对话小结按过程顺序记录：关键思考、决策和结论；重要操作及其结果；进行中尚未完成的工作的上下文和指引；新出现的知识术语；读到用户信件时的感受和温度
     Summary {
+        /// 对话小结
         content: String,
     },
+    /// 设置个人资料
+    /// 已知key: name（显示名称）, color（主题色，如#FF6B6B）, avatar（头像emoji）
     SetProfile {
-        update: Settings,
+        /// 设置项（每行一个 key:value）
+        content: String,
     },
+    /// 创建新实例（裂变）
+    /// 创建一个新的agent实例，引擎会自动发现并启动
+    /// 用于裂变场景：将部分职责和知识委托给新实例
+    /// 新实例会继承当前用户，获得随机ID和颜色
+    /// ⚠️ 未经用户授权不得执行裂变
+    /// knowledge内容与自己当前的知识保持结构基本一致，按用户要求提炼局部内容
     CreateInstance {
+        /// 实例显示名称
         name: String,
+        /// knowledge内容（新实例的初始知识）
         knowledge: String,
     },
+    /// 提炼（压缩action块）
+    /// 将current中指定action的内容替换为你的提炼总结，释放空间
+    /// 总结直接写入原action位置，前面会自动加[已提炼]标记
+    /// 💡 时机：脚本执行结果确认后立刻提炼——编译输出、文件列表、curl响应等一次性验证内容，确认结论后就不需要保留原文
+    /// 💡 效果：信息不丢失，只是从原文压缩为结论。比如100行find输出提炼为"日志在xxx目录，最新文件是xxx"
+    /// 适用场景：大段脚本输出、重复代码阅读、冗长的中间过程
+    /// 不能提炼自身action，不能提炼不存在的编号
+    /// ⚠️ 提炼不可逆，确保总结保留了关键信息再执行
     Distill {
+        /// 要提炼的action编号（从行为编号标记中获取）
         target_action_id: String,
+        /// 提炼总结（替换原action的完整内容）
         summary: String,
     },
 }
@@ -124,19 +175,7 @@ impl fmt::Display for Action {
                 write!(f, "replace_in_file → {} ({} blocks)", path, blocks.len())
             }
             Action::Summary { .. } => write!(f, "summary"),
-            Action::SetProfile { update } => {
-                let mut fields = Vec::new();
-                if update.name.is_some() {
-                    fields.push("name");
-                }
-                if update.color.is_some() {
-                    fields.push("color");
-                }
-                if update.avatar.is_some() {
-                    fields.push("avatar");
-                }
-                write!(f, "set_profile → {}", fields.join(", "))
-            }
+            Action::SetProfile { .. } => write!(f, "set_profile"),
             Action::CreateInstance { name, .. } => write!(f, "create_instance → {}", name),
             Action::Distill {
                 target_action_id, ..
@@ -145,9 +184,11 @@ impl fmt::Display for Action {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FromMarkdown)]
 pub struct ReplaceBlock {
+    /// 要搜索的精确文本（多行）
     pub search: String,
+    /// 要替换成的文本（多行）
     pub replace: String,
 }
 
@@ -160,168 +201,101 @@ pub struct ActionRecord {
 }
 
 // ---------------------------------------------------------------------------
-// Action name constants
-// ---------------------------------------------------------------------------
-
-const ACTION_NAMES: &[(&str, ActionKind)] = &[
-    ("idle", ActionKind::Idle),
-    ("read_msg", ActionKind::ReadMsg),
-    ("send_msg", ActionKind::SendMsg),
-    ("thinking", ActionKind::Thinking),
-    ("script", ActionKind::Script),
-    ("write_file", ActionKind::WriteFile),
-    ("replace_in_file", ActionKind::ReplaceInFile),
-    ("summary", ActionKind::Summary),
-    ("set_profile", ActionKind::SetProfile),
-    ("create_instance", ActionKind::CreateInstance),
-    ("distill", ActionKind::Distill),
-    ("forget", ActionKind::Distill),
-];
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ActionKind {
-    Idle,
-    ReadMsg,
-    SendMsg,
-    Thinking,
-    Script,
-    WriteFile,
-    ReplaceInFile,
-    Summary,
-    SetProfile,
-    CreateInstance,
-    Distill,
-}
-
-// ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
 
-pub fn parse_actions(
-    raw: &str,
-    action_separator: &str,
-    separator_token: &str,
-) -> Result<Vec<Action>> {
-    let mut actions = Vec::new();
-    let prefix = format!("{}###-", action_separator);
+use anyhow::Result;
 
-    let parts: Vec<&str> = raw.split(&prefix).collect();
-
-    for part in parts.iter().skip(1) {
-        match parse_single_action(part, separator_token) {
-            Ok(action) => actions.push(action),
-            Err(e) => {
-                let error_msg = format!(
-                    "⚠️ action解析失败: {}\n原始输出: {}",
-                    e,
-                    crate::util::safe_truncate(part, 200)
-                );
-                tracing::warn!("[PARSE] {}", error_msg);
-                actions.push(Action::Thinking { content: error_msg });
+/// Parse actions from LLM output using FromMarkdown.
+///
+/// The raw text is expected to contain action blocks separated by `Action-{token}`
+/// markers, ending with `Action-end-{token}`.
+///
+/// Post-process a single action: strip markdown code blocks, validate required fields.
+/// Actions with empty required fields are converted to Thinking.
+fn post_process_action(action: Action) -> Action {
+    match action {
+        Action::Script { content } => Action::Script {
+            content: strip_markdown_code_block(&content),
+        },
+        Action::WriteFile { path, content } => {
+            if path.trim().is_empty() {
+                Action::Thinking {
+                    content: "⚠️ write_file: 缺少文件路径".to_string(),
+                }
+            } else {
+                Action::WriteFile {
+                    path,
+                    content: strip_markdown_code_block(&content),
+                }
             }
         }
+        Action::SendMsg { recipient, content } => {
+            if recipient.trim().is_empty() {
+                Action::Thinking {
+                    content: "⚠️ send_msg: 缺少收件人".to_string(),
+                }
+            } else {
+                Action::SendMsg { recipient, content }
+            }
+        }
+        other => other,
     }
-
-    Ok(actions)
 }
 
-fn parse_single_action(text: &str, separator_token: &str) -> Result<Action> {
-    let (first_line, rest) = match text.find('\n') {
-        Some(pos) => (text[..pos].trim(), &text[pos + 1..]),
-        None => (text.trim(), ""),
+/// Post-processing: Script and WriteFile content is stripped of markdown code blocks.
+/// Actions with empty required fields are converted to Thinking.
+pub fn parse_actions(raw: &str, separator_token: &str) -> Result<Vec<Action>> {
+    let element_sep = format!("Action-{}", separator_token);
+    let end_marker = format!("Action-end-{}", separator_token);
+
+    // Check if raw contains any action separator
+    if !raw.contains(&element_sep) {
+        return Ok(Vec::new());
+    }
+
+    // Ensure end marker is present for from_markdown
+    let input = if raw.trim().ends_with(&end_marker) {
+        raw.to_string()
+    } else {
+        format!("{}\n{}", raw.trim(), end_marker)
     };
 
-    let kind = ACTION_NAMES
-        .iter()
-        .find(|(name, _)| *name == first_line)
-        .map(|(_, kind)| *kind)
-        .ok_or_else(|| anyhow::anyhow!("Unknown action type: '{}'", first_line))?;
-
-    match kind {
-        ActionKind::Idle => {
-            let timeout_secs = if rest.trim().is_empty() {
-                None
-            } else {
-                let first_rest_line = rest.lines().next().unwrap_or("").trim();
-                if first_rest_line.is_empty() {
-                    None
-                } else {
-                    Some(first_rest_line.parse::<u64>().map_err(|_| {
-                        anyhow::anyhow!(
-                            "Invalid idle timeout: '{}' (expected number of seconds)",
-                            first_rest_line
-                        )
-                    })?)
-                }
-            };
-            Ok(Action::Idle { timeout_secs })
+    match Action::from_markdown(&input, separator_token) {
+        Ok(actions) => {
+            let actions = actions.into_iter().map(post_process_action).collect();
+            Ok(actions)
         }
-        ActionKind::ReadMsg => Ok(Action::ReadMsg),
-        ActionKind::SendMsg => {
-            let (recipient, content) = split_first_line(rest, "send_msg")?;
-            Ok(Action::SendMsg {
-                recipient: recipient.to_string(),
-                content: content.to_string(),
-            })
-        }
-        ActionKind::Thinking => Ok(Action::Thinking {
-            content: rest.to_string(),
-        }),
-        ActionKind::Script => Ok(Action::Script {
-            content: strip_markdown_code_block(rest),
-        }),
-        ActionKind::WriteFile => {
-            let (path, content) = split_first_line(rest, "write_file")?;
-            Ok(Action::WriteFile {
-                path: path.to_string(),
-                content: strip_markdown_code_block(content),
-            })
-        }
-        ActionKind::ReplaceInFile => {
-            let (path, blocks_text) = split_first_line(rest, "replace_in_file")?;
-            let blocks = parse_replace_blocks(blocks_text, separator_token)?;
-            Ok(Action::ReplaceInFile {
-                path: path.to_string(),
-                blocks,
-            })
-        }
-        ActionKind::Summary => Ok(Action::Summary {
-            content: rest.trim().to_string(),
-        }),
-        ActionKind::SetProfile => parse_set_profile(rest),
-        ActionKind::CreateInstance => {
-            let (name, knowledge) = split_first_line(rest, "create_instance")?;
-            Ok(Action::CreateInstance {
-                name: name.to_string(),
-                knowledge: knowledge.to_string(),
-            })
-        }
-        ActionKind::Distill => {
-            let (target_action_id, summary) = split_first_line(rest, "distill")?;
-            Ok(Action::Distill {
-                target_action_id: target_action_id.to_string(),
-                summary: summary.to_string(),
-            })
+        Err(e) => {
+            let error_msg = format!(
+                "⚠️ action解析失败: {}\n原始输出: {}",
+                e,
+                crate::util::safe_truncate(raw, 200)
+            );
+            tracing::warn!("[PARSE] {}", error_msg);
+            Ok(vec![Action::Thinking { content: error_msg }])
         }
     }
 }
 
-fn split_first_line<'a>(text: &'a str, action_name: &str) -> Result<(&'a str, &'a str)> {
-    let text = text.trim_start_matches('\n');
-    match text.find('\n') {
-        Some(pos) => {
-            let first = text[..pos].trim();
-            if first.is_empty() {
-                bail!("{}: expected first line parameter", action_name);
-            }
-            Ok((first, &text[pos + 1..]))
-        }
-        None => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                bail!("{}: expected first line parameter", action_name);
-            }
-            Ok((trimmed, ""))
+/// Parse a single action from a body chunk (used by streaming parser).
+/// Wraps the body in Action-{token} and Action-end-{token} markers
+/// before calling from_markdown.
+pub fn parse_single_action_chunk(body: &str, separator_token: &str) -> Vec<Action> {
+    let element_sep = format!("Action-{}", separator_token);
+    let end_marker = format!("Action-end-{}", separator_token);
+    let input = format!("{}\n{}\n{}", element_sep, body.trim(), end_marker);
+
+    match Action::from_markdown(&input, separator_token) {
+        Ok(actions) => actions.into_iter().map(post_process_action).collect(),
+        Err(e) => {
+            let error_msg = format!(
+                "⚠️ action解析失败: {}\n原始输出: {}",
+                e,
+                crate::util::safe_truncate(body, 200)
+            );
+            tracing::warn!("[PARSE] {}", error_msg);
+            vec![Action::Thinking { content: error_msg }]
         }
     }
 }
@@ -338,115 +312,6 @@ fn strip_markdown_code_block(text: &str) -> String {
     lines[1..lines.len() - 1].join("\n")
 }
 
-fn find_own_line_marker(text: &str, marker: &str) -> Option<usize> {
-    if text.starts_with(marker) {
-        let after = marker.len();
-        if after >= text.len() || text.as_bytes()[after] == b'\n' {
-            return Some(0);
-        }
-    }
-    let nl_marker = format!("\n{}", marker);
-    let mut from = 0;
-    while let Some(p) = text[from..].find(&nl_marker) {
-        let abs = from + p;
-        let after = abs + nl_marker.len();
-        if after >= text.len() || text.as_bytes()[after] == b'\n' {
-            return Some(abs + 1);
-        }
-        from = abs + 1;
-    }
-    None
-}
-
-fn parse_replace_blocks(text: &str, separator_token: &str) -> Result<Vec<ReplaceBlock>> {
-    let search_marker = format!("{}_{}", SEARCH_MARKER, separator_token);
-    let replace_marker = format!("{}_{}", REPLACE_MARKER, separator_token);
-    let end_marker = format!("{}_{}", BLOCK_END_MARKER, separator_token);
-
-    let mut blocks = Vec::new();
-    let mut remaining = text;
-
-    while let Some(search_pos) = find_own_line_marker(remaining, &search_marker) {
-        let after_search_end = search_pos + search_marker.len();
-        if remaining.as_bytes().get(after_search_end) != Some(&b'\n') {
-            bail!("<<<SEARCH must be followed by newline");
-        }
-        let after_search = &remaining[after_search_end + 1..];
-
-        let replace_pos = find_own_line_marker(after_search, &replace_marker)
-            .ok_or_else(|| anyhow::anyhow!("Missing ===REPLACE marker"))?;
-        let after_replace_end = replace_pos + replace_marker.len();
-        if after_search.as_bytes().get(after_replace_end) != Some(&b'\n') {
-            bail!("===REPLACE must be followed by newline");
-        }
-        let after_replace = &after_search[after_replace_end + 1..];
-
-        let end_pos = find_own_line_marker(after_replace, &end_marker)
-            .ok_or_else(|| anyhow::anyhow!("Missing block end marker (must be on its own line)"))?;
-
-        let search = &after_search[..replace_pos];
-        let replace = &after_replace[..end_pos];
-
-        let search = search.strip_suffix('\n').unwrap_or(search);
-        let replace = replace.strip_suffix('\n').unwrap_or(replace);
-
-        blocks.push(ReplaceBlock {
-            search: search.to_string(),
-            replace: replace.to_string(),
-        });
-
-        remaining = &after_replace[end_pos + end_marker.len()..];
-    }
-
-    if blocks.is_empty() {
-        bail!("No replace blocks found");
-    }
-
-    Ok(blocks)
-}
-
-// ---------------------------------------------------------------------------
-// REMEMBER marker utilities
-// ---------------------------------------------------------------------------
-
-/// Parse set_profile action content.
-fn parse_set_profile(text: &str) -> Result<Action> {
-    let mut update = Settings::default();
-    let known_keys = ["name", "color", "avatar"];
-    let mut count = 0;
-
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(colon_pos) = line.find(':') {
-            let key = line[..colon_pos].trim().to_lowercase();
-            let value = line[colon_pos + 1..].trim().to_string();
-            let value_opt = if value.is_empty() { None } else { Some(value) };
-            match key.as_str() {
-                "name" => update.name = value_opt,
-                "color" => update.color = value_opt,
-                "avatar" => update.avatar = value_opt,
-                _ => bail!(
-                    "set_profile: unknown key '{}' (known: {})",
-                    key,
-                    known_keys.join(", ")
-                ),
-            }
-            count += 1;
-        } else {
-            bail!("set_profile: invalid line '{}' (expected key: value)", line);
-        }
-    }
-
-    if count == 0 {
-        bail!("set_profile: no entries found");
-    }
-
-    Ok(Action::SetProfile { update })
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -455,22 +320,14 @@ fn parse_set_profile(text: &str) -> Result<Action> {
 mod tests {
     use super::*;
 
-    const SEP: &str = "###ACTION_test123";
-    const TEST_TOKEN: &str = "test123";
-    macro_rules! sm {
-        () => {
-            "<<<SEARCH_test123"
-        };
+    const TOKEN: &str = "test123";
+
+    fn sep() -> String {
+        format!("Action-{}", TOKEN)
     }
-    macro_rules! rm {
-        () => {
-            "===REPLACE_test123"
-        };
-    }
-    macro_rules! em {
-        () => {
-            ">>>END_test123"
-        };
+
+    fn end() -> String {
+        format!("Action-end-{}", TOKEN)
     }
 
     #[test]
@@ -532,16 +389,16 @@ mod tests {
 
     #[test]
     fn test_parse_idle() {
-        let raw = format!("some preamble\n{}###-idle", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let raw = format!("{}\nidle\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], Action::Idle { timeout_secs: None }));
     }
 
     #[test]
     fn test_parse_idle_with_timeout() {
-        let raw = format!("{}###-idle\n120", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let raw = format!("{}\nidle\n120\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::Idle {
@@ -553,9 +410,10 @@ mod tests {
 
     #[test]
     fn test_parse_idle_with_invalid_timeout() {
-        let raw = format!("{}###-idle\nabc", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let raw = format!("{}\nidle\nabc\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
+        // FromMarkdown will fail to parse "abc" as u64, resulting in error → Thinking
         assert!(matches!(actions[0], Action::Thinking { .. }));
     }
 
@@ -575,16 +433,19 @@ mod tests {
 
     #[test]
     fn test_parse_read_msg() {
-        let raw = format!("{}###-read_msg", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let raw = format!("{}\nread_msg\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], Action::ReadMsg));
     }
 
     #[test]
     fn test_parse_send_msg() {
-        let raw = format!("{}###-send_msg\n24007\nHello there!\nSecond line.", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let raw = format!(
+            "{}\nsend_msg\nrecipient-{}\n24007\ncontent-{}\nHello there!\nSecond line.\n{}",
+            sep(), TOKEN, TOKEN, end()
+        );
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::SendMsg { recipient, content } => {
@@ -598,10 +459,10 @@ mod tests {
     #[test]
     fn test_parse_thinking() {
         let raw = format!(
-            "{}###-thinking\nI need to plan this carefully.\nStep 1...",
-            SEP
+            "{}\nthinking\nI need to plan this carefully.\nStep 1...\n{}",
+            sep(), end()
         );
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::Thinking { content } => assert!(content.contains("plan this carefully")),
@@ -611,8 +472,8 @@ mod tests {
 
     #[test]
     fn test_parse_script() {
-        let raw = format!("{}###-script\necho hello\nls -la", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let raw = format!("{}\nscript\necho hello\nls -la\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::Script { content } => assert_eq!(content, "echo hello\nls -la"),
@@ -622,8 +483,11 @@ mod tests {
 
     #[test]
     fn test_parse_write_file() {
-        let raw = format!("{}###-write_file\ntest.txt\nfile content here\nline 2", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let raw = format!(
+            "{}\nwrite_file\npath-{}\ntest.txt\ncontent-{}\nfile content here\nline 2\n{}",
+            sep(), TOKEN, TOKEN, end()
+        );
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::WriteFile { path, content } => {
@@ -637,13 +501,10 @@ mod tests {
     #[test]
     fn test_parse_replace_in_file() {
         let raw = format!(
-            "{}###-replace_in_file\nconfig.toml\n{}\nold text\n{}\nnew text\n{}",
-            SEP,
-            sm!(),
-            rm!(),
-            em!()
+            "{}\nreplace_in_file\npath-{}\nconfig.toml\nblocks-{}\nReplaceBlock-{}\nsearch-{}\nold text\nreplace-{}\nnew text\nReplaceBlock-end-{}\n{}",
+            sep(), TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, end()
         );
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::ReplaceInFile { path, blocks } => {
@@ -659,16 +520,10 @@ mod tests {
     #[test]
     fn test_parse_replace_multiple_blocks() {
         let raw = format!(
-            "{}###-replace_in_file\nfile.rs\n{}\nfoo\n{}\nbar\n{}\n{}\nbaz\n{}\nqux\n{}",
-            SEP,
-            sm!(),
-            rm!(),
-            em!(),
-            sm!(),
-            rm!(),
-            em!()
+            "{}\nreplace_in_file\npath-{}\nfile.rs\nblocks-{}\nReplaceBlock-{}\nsearch-{}\nfoo\nreplace-{}\nbar\nReplaceBlock-{}\nsearch-{}\nbaz\nreplace-{}\nqux\nReplaceBlock-end-{}\n{}",
+            sep(), TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, end()
         );
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         match &actions[0] {
             Action::ReplaceInFile { blocks, .. } => {
                 assert_eq!(blocks.len(), 2);
@@ -683,8 +538,11 @@ mod tests {
 
     #[test]
     fn test_parse_summary() {
-        let raw = format!("{}###-summary\nAlice读了代码，修改了配置文件。", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let raw = format!(
+            "{}\nsummary\nAlice读了代码，修改了配置文件。\n{}",
+            sep(), end()
+        );
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::Summary { content } => {
@@ -697,10 +555,10 @@ mod tests {
     #[test]
     fn test_parse_multiple_actions() {
         let raw = format!(
-            "preamble\n{}###-thinking\nplanning...\n{}###-script\necho test\n{}###-idle",
-            SEP, SEP, SEP
+            "{}\nthinking\nplanning...\n{}\nscript\necho test\n{}\nidle\n{}",
+            sep(), sep(), sep(), end()
         );
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 3);
         assert!(matches!(actions[0], Action::Thinking { .. }));
         assert!(matches!(actions[1], Action::Script { .. }));
@@ -737,13 +595,12 @@ mod tests {
 
     #[test]
     fn test_parse_unknown_action_becomes_thinking() {
-        let raw = format!("{}###-unknown_action", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let raw = format!("{}\nunknown_action\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::Thinking { content } => {
                 assert!(content.contains("action解析失败"));
-                assert!(content.contains("unknown_action"));
             }
             _ => panic!("Expected Thinking with parse error"),
         }
@@ -794,16 +651,18 @@ mod tests {
 
     #[test]
     fn test_parse_send_msg_empty_becomes_thinking() {
-        let raw = format!("{}###-send_msg\n", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        // Empty send_msg with no fields should fail parsing
+        let raw = format!("{}\nsend_msg\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], Action::Thinking { .. }));
     }
 
     #[test]
     fn test_parse_write_file_empty_becomes_thinking() {
-        let raw = format!("{}###-write_file\n", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        // Empty write_file with no fields should fail parsing
+        let raw = format!("{}\nwrite_file\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], Action::Thinking { .. }));
     }
@@ -813,15 +672,10 @@ mod tests {
         let rust_code_search = "    connections: RwLock<HashMap<String, Arc<Mutex<Chat>>>>,\n}";
         let rust_code_replace = "    connections: RwLock<HashMap<String, Arc<Mutex<Chat>>>>,\n    extra_field: bool,\n}";
         let raw = format!(
-            "{}###-replace_in_file\nmod.rs\n{}\n{}\n{}\n{}\n{}",
-            SEP,
-            sm!(),
-            rust_code_search,
-            rm!(),
-            rust_code_replace,
-            em!()
+            "{}\nreplace_in_file\npath-{}\nmod.rs\nblocks-{}\nReplaceBlock-{}\nsearch-{}\n{}\nreplace-{}\n{}\nReplaceBlock-end-{}\n{}",
+            sep(), TOKEN, TOKEN, TOKEN, TOKEN, rust_code_search, TOKEN, rust_code_replace, TOKEN, end()
         );
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
+        let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::ReplaceInFile { path, blocks } => {
@@ -835,56 +689,93 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_replace_end_marker_own_line_variants() {
-        let sm = format!("{}_{}", SEARCH_MARKER, TEST_TOKEN);
-        let rm = format!("{}_{}", REPLACE_MARKER, TEST_TOKEN);
-        let em = format!("{}_{}", BLOCK_END_MARKER, TEST_TOKEN);
-
-        let text1 = format!("{}\nold\n{}\nnew\n{}", sm, rm, em);
-        let blocks1 = parse_replace_blocks(&text1, TEST_TOKEN).unwrap();
-        assert_eq!(blocks1.len(), 1);
-        assert_eq!(blocks1[0].replace, "new");
-
-        let text2 = format!("{}\nold\n{}\nnew\n{}\n", sm, rm, em);
-        let blocks2 = parse_replace_blocks(&text2, TEST_TOKEN).unwrap();
-        assert_eq!(blocks2.len(), 1);
-        assert_eq!(blocks2[0].replace, "new");
-
-        let text3 = format!("{}\nold\n{}\nline with {}suffix\n{}\n", sm, rm, em, em);
-        let blocks3 = parse_replace_blocks(&text3, TEST_TOKEN).unwrap();
-        assert_eq!(blocks3.len(), 1);
-        assert_eq!(blocks3[0].replace, format!("line with {}suffix", em));
+    fn test_parse_no_actions() {
+        let raw = "some random text without any action markers";
+        let actions = parse_actions(raw, TOKEN).unwrap();
+        assert_eq!(actions.len(), 0);
     }
 
     #[test]
-    fn test_parse_replace_in_file_no_blocks_becomes_thinking() {
-        let raw = format!("{}###-replace_in_file\nsome/file.rs\nno blocks here", SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Thinking { .. }));
-    }
-
-    #[test]
-    fn test_parse_mixed_valid_and_invalid_actions() {
+    fn test_parse_set_profile() {
         let raw = format!(
-            "{}###-thinking\nplanning\n{}###-send_msg\n{}###-idle",
-            SEP, SEP, SEP
+            "{}\nset_profile\nname: TestBot\ncolor: #FF0000\n{}",
+            sep(), end()
         );
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
-        assert_eq!(actions.len(), 3);
-        assert!(matches!(actions[0], Action::Thinking { .. }));
-        assert!(matches!(actions[1], Action::Thinking { .. }));
-        assert!(matches!(actions[2], Action::Idle { timeout_secs: None }));
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::SetProfile { content } => {
+                assert!(content.contains("name: TestBot"));
+                assert!(content.contains("color: #FF0000"));
+            }
+            _ => panic!("Expected SetProfile"),
+        }
     }
 
     #[test]
-    fn test_parse_send_msg_trailing_separator() {
-        let raw = format!("{}###-send_msg\n24007\nHello!\n{}###-idle", SEP, SEP);
-        let actions = parse_actions(&raw, SEP, TEST_TOKEN).unwrap();
-        assert_eq!(actions.len(), 2);
+    fn test_parse_distill() {
+        let raw = format!(
+            "{}\ndistill\ntarget_action_id-{}\n20260101_abc123\nsummary-{}\nThis is the summary.\n{}",
+            sep(), TOKEN, TOKEN, end()
+        );
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        assert_eq!(actions.len(), 1);
         match &actions[0] {
-            Action::SendMsg { content, .. } => assert_eq!(content, "Hello!\n"),
-            _ => panic!("Expected SendMsg"),
+            Action::Distill {
+                target_action_id,
+                summary,
+            } => {
+                assert_eq!(target_action_id, "20260101_abc123");
+                assert_eq!(summary, "This is the summary.");
+            }
+            _ => panic!("Expected Distill"),
         }
+    }
+
+    #[test]
+    fn test_parse_create_instance() {
+        let raw = format!(
+            "{}\ncreate_instance\nname-{}\nMyBot\nknowledge-{}\nSome initial knowledge.\n{}",
+            sep(), TOKEN, TOKEN, end()
+        );
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::CreateInstance { name, knowledge } => {
+                assert_eq!(name, "MyBot");
+                assert_eq!(knowledge, "Some initial knowledge.");
+            }
+            _ => panic!("Expected CreateInstance"),
+        }
+    }
+
+    #[test]
+    fn test_parse_single_action_chunk() {
+        let body = "idle\n120";
+        let actions = parse_single_action_chunk(body, TOKEN);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Idle {
+                timeout_secs: Some(120),
+            } => {}
+            other => panic!("Expected Idle with 120s, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_schema_markdown_contains_all_variants() {
+        let schema = Action::schema_markdown(TOKEN);
+        assert!(schema.contains("idle"));
+        assert!(schema.contains("read_msg"));
+        assert!(schema.contains("send_msg"));
+        assert!(schema.contains("thinking"));
+        assert!(schema.contains("script"));
+        assert!(schema.contains("write_file"));
+        assert!(schema.contains("replace_in_file"));
+        assert!(schema.contains("summary"));
+        assert!(schema.contains("set_profile"));
+        assert!(schema.contains("create_instance"));
+        assert!(schema.contains("distill"));
+        assert!(schema.contains(&format!("Action-end-{}", TOKEN)));
     }
 }
