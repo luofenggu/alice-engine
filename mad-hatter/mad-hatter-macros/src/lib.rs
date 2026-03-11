@@ -100,7 +100,7 @@ pub fn derive_to_markdown(input: TokenStream) -> TokenStream {
 ///     },
 /// }
 /// ```
-#[proc_macro_derive(FromMarkdown)]
+#[proc_macro_derive(FromMarkdown, attributes(markdown))]
 pub fn derive_from_markdown(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     llm::derive_from_markdown(input).into()

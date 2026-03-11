@@ -96,6 +96,23 @@ pub fn infer<Req: ToMarkdown, Resp: FromMarkdown>(
     Resp::from_markdown(&full_text, &token)
 }
 
+/// 去除LLM输出中可能的代码块包裹。
+///
+/// LLM有时会把输出包在 ` ```markdown ``` ` 或 ` ``` ``` ` 里，
+/// 此函数自动检测并剥离外层代码块。
+/// 框架内置能力，在from_markdown中自动调用，开发者无感。
+pub fn strip_code_block(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("```") {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = trimmed.lines().collect();
+    if lines.len() < 2 || lines.last().map(|l| l.trim()) != Some("```") {
+        return text.to_string();
+    }
+    lines[1..lines.len() - 1].join("\n")
+}
+
 /// 生成随机token（用于分隔符，不需要密码学安全）
 fn generate_token() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

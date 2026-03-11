@@ -379,6 +379,7 @@ struct VariantInfo {
 
 /// Information about a single field within a variant.
 struct FromFieldInfo {
+    is_required: bool,
     name: String,
     doc: String,
     is_option: bool,
@@ -430,7 +431,8 @@ fn derive_from_markdown_enum(input: DeriveInput) -> TokenStream {
                     let fdoc = if fdocs.is_empty() { fname.clone() } else { fdocs.join(" ") };
                     let (is_option, inner_type) = check_option_type(&f.ty);
                     let (is_vec, vec_inner_type, vec_inner_syn_type) = check_vec_type(&f.ty);
-                    FromFieldInfo { name: fname, doc: fdoc, is_option, is_vec, inner_type, vec_inner_type, vec_inner_syn_type }
+                    let is_required = has_markdown_required(&f.attrs);
+                    FromFieldInfo { name: fname, doc: fdoc, is_option, is_vec, inner_type, vec_inner_type, vec_inner_syn_type, is_required }
                 }).collect()
             }
             Fields::Unit => Vec::new(),
@@ -619,11 +621,26 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                     }
                 });
             } else {
-                match_arms.push(quote! {
-                    #snake => {
-                        __results.push(#enum_name::#variant_ident { #field_ident: __body.trim_end().to_string() });
-                    }
-                });
+                let fname_str = &f.name;
+                if f.is_required {
+                    match_arms.push(quote! {
+                        #snake => {
+                            let __val = __body.trim_end().to_string();
+                            if __val.trim().is_empty() {
+                                return ::std::result::Result::Err(
+                                    ::std::format!("Required field '{}' of variant '{}' is empty", #fname_str, #snake)
+                                );
+                            }
+                            __results.push(#enum_name::#variant_ident { #field_ident: __val });
+                        }
+                    });
+                } else {
+                    match_arms.push(quote! {
+                        #snake => {
+                            __results.push(#enum_name::#variant_ident { #field_ident: __body.trim_end().to_string() });
+                        }
+                    });
+                }
             }
         } else {
             let multi_parse = gen_multi_field_parse(enum_name, vi);
@@ -636,6 +653,9 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
     }
 
     quote! {
+        let __stripped = ::mad_hatter::llm::strip_code_block(text);
+        let text = __stripped.as_str();
+
         let mut __results: ::std::vec::Vec<#enum_name> = ::std::vec::Vec::new();
         let __element_sep = ::std::format!("{}-{}", #enum_name_str, token);
         let __end_marker = ::std::format!("{}-end-{}", #enum_name_str, token);
@@ -743,16 +763,36 @@ fn gen_multi_field_parse(enum_name: &syn::Ident, vi: &VariantInfo) -> TokenStrea
                 });
             }
         } else {
-            field_extractions.push(quote! {
-                let #var_name = {
-                    let __raw = __field_values.get(#i).map(|s| *s).unwrap_or("");
-                    if #i == #field_count - 1 {
-                        __raw.trim_end().to_string()
-                    } else {
-                        __raw.trim_end_matches('\n').to_string()
-                    }
-                };
-            });
+            let fname_str = &f.name;
+            if f.is_required {
+                field_extractions.push(quote! {
+                    let #var_name = {
+                        let __raw = __field_values.get(#i).map(|s| *s).unwrap_or("");
+                        let __val = if #i == #field_count - 1 {
+                            __raw.trim_end().to_string()
+                        } else {
+                            __raw.trim_end_matches('\n').to_string()
+                        };
+                        if __val.trim().is_empty() {
+                            return ::std::result::Result::Err(
+                                ::std::format!("Required field '{}' of variant '{}' is empty", #fname_str, #snake)
+                            );
+                        }
+                        __val
+                    };
+                });
+            } else {
+                field_extractions.push(quote! {
+                    let #var_name = {
+                        let __raw = __field_values.get(#i).map(|s| *s).unwrap_or("");
+                        if #i == #field_count - 1 {
+                            __raw.trim_end().to_string()
+                        } else {
+                            __raw.trim_end_matches('\n').to_string()
+                        }
+                    };
+                });
+            }
         }
 
         field_var_names.push(var_name);
@@ -839,7 +879,8 @@ fn derive_from_markdown_struct(input: DeriveInput) -> TokenStream {
         let fdoc = if fdocs.is_empty() { fname.clone() } else { fdocs.join(" ") };
         let (is_option, inner_type) = check_option_type(&f.ty);
         let (is_vec, vec_inner_type, vec_inner_syn_type) = check_vec_type(&f.ty);
-        field_infos.push(FromFieldInfo { name: fname, doc: fdoc, is_option, is_vec, inner_type, vec_inner_type, vec_inner_syn_type });
+        let is_required = has_markdown_required(&f.attrs);
+        field_infos.push(FromFieldInfo { name: fname, doc: fdoc, is_option, is_vec, inner_type, vec_inner_type, vec_inner_syn_type, is_required });
     }
 
     let _field_count = field_infos.len();
@@ -943,16 +984,36 @@ fn gen_struct_from_markdown(struct_name: &syn::Ident, struct_name_str: &str, fie
                 });
             }
         } else {
-            field_extractions.push(quote! {
-                let #var_name = {
-                    let __raw = __field_values.get(#i).map(|s| *s).unwrap_or("");
-                    if #i == #field_count - 1 {
-                        __raw.trim_end().to_string()
-                    } else {
-                        __raw.trim_end_matches('\n').to_string()
-                    }
-                };
-            });
+            let fname_str = &f.name;
+            if f.is_required {
+                field_extractions.push(quote! {
+                    let #var_name = {
+                        let __raw = __field_values.get(#i).map(|s| *s).unwrap_or("");
+                        let __val = if #i == #field_count - 1 {
+                            __raw.trim_end().to_string()
+                        } else {
+                            __raw.trim_end_matches('\n').to_string()
+                        };
+                        if __val.trim().is_empty() {
+                            return ::std::result::Result::Err(
+                                ::std::format!("Required field '{}' is empty", #fname_str)
+                            );
+                        }
+                        __val
+                    };
+                });
+            } else {
+                field_extractions.push(quote! {
+                    let #var_name = {
+                        let __raw = __field_values.get(#i).map(|s| *s).unwrap_or("");
+                        if #i == #field_count - 1 {
+                            __raw.trim_end().to_string()
+                        } else {
+                            __raw.trim_end_matches('\n').to_string()
+                        }
+                    };
+                });
+            }
         }
 
         field_var_names.push(var_name);
@@ -963,6 +1024,9 @@ fn gen_struct_from_markdown(struct_name: &syn::Ident, struct_name_str: &str, fie
     }).collect();
 
     quote! {
+        let __stripped = ::mad_hatter::llm::strip_code_block(text);
+        let text = __stripped.as_str();
+
         let mut __results: ::std::vec::Vec<#struct_name> = ::std::vec::Vec::new();
         let __element_sep = ::std::format!("{}-{}", #struct_name_str, token);
         let __end_marker = ::std::format!("{}-end-{}", #struct_name_str, token);
@@ -1129,6 +1193,20 @@ fn has_markdown_skip(attrs: &[syn::Attribute]) -> bool {
         if attr.path().is_ident("markdown") {
             if let Ok(nested) = attr.parse_args::<syn::Ident>() {
                 if nested == "skip" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a field has `#[markdown(required)]` attribute.
+fn has_markdown_required(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("markdown") {
+            if let Ok(nested) = attr.parse_args::<syn::Ident>() {
+                if nested == "required" {
                     return true;
                 }
             }
