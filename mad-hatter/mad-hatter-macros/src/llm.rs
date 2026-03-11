@@ -703,9 +703,15 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
             } else {
                 __text_trimmed.to_string()
             };
-            return ::std::result::Result::Err(
-                ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #enum_name_str, __end_marker, __tail)
-            );
+            if __text_trimmed.contains(&__element_sep) {
+                return ::std::result::Result::Err(
+                    ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #enum_name_str, __end_marker, __tail)
+                );
+            } else {
+                return ::std::result::Result::Err(
+                    ::std::format!("[{}] No valid element found. Expected '{}' to start output. Content (up to 200 chars): {}", #enum_name_str, __element_sep, __tail)
+                );
+            }
         }
 
         // Remove end marker
@@ -1095,10 +1101,20 @@ fn gen_struct_from_markdown(struct_name: &syn::Ident, struct_name_str: &str, fie
 
         // Check end marker
         if !__text_trimmed.ends_with(&__end_marker) {
-            let __tail: &str = if __text_trimmed.len() > 200 { &__text_trimmed[__text_trimmed.len()-200..] } else { __text_trimmed };
-            return ::std::result::Result::Err(
-                ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #struct_name_str, __end_marker, __tail)
-            );
+            let __tail: ::std::string::String = if __text_trimmed.len() > 200 {
+                ::std::format!("...{}", &__text_trimmed[__text_trimmed.len() - 200..])
+            } else {
+                __text_trimmed.to_string()
+            };
+            if __text_trimmed.contains(&__element_sep) {
+                return ::std::result::Result::Err(
+                    ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #struct_name_str, __end_marker, __tail)
+                );
+            } else {
+                return ::std::result::Result::Err(
+                    ::std::format!("[{}] No valid element found. Expected '{}' to start output. Content (up to 200 chars): {}", #struct_name_str, __element_sep, __tail)
+                );
+            }
         }
 
         // Remove end marker

@@ -286,7 +286,7 @@ fn test_infer_missing_end_marker() {
     let result: Result<Vec<SimpleAction>, String> = infer(&NoEndChannel, &request);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("end marker"), "Error should mention end marker: {}", err);
+    assert!(err.contains("No valid element found") || err.contains("end marker"), "Error should mention missing element or end marker: {}", err);
 }
 
 #[test]

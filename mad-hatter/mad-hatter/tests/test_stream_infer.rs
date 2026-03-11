@@ -125,7 +125,7 @@ fn test_stream_infer_missing_end_marker() {
     let err = result.unwrap();
     assert!(err.is_err());
     let err_msg = err.unwrap_err();
-    assert!(err_msg.contains("end marker"), "Error should mention end marker: {}", err_msg);
+    assert!(err_msg.contains("No valid element found") || err_msg.contains("end marker"), "Error should mention missing element or end marker: {}", err_msg);
 }
 
 #[test]

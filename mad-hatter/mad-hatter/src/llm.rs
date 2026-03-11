@@ -352,10 +352,17 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
                     } else {
                         self.buffer.clone()
                     };
-                    return Some(Err(format!(
-                        "[{}] Stream ended without end marker '{}'. Parsed {} element(s) successfully. Buffer tail (up to 200 chars): {}",
-                        self.type_name, end_marker, self.parsed_count, tail
-                    )));
+                    if self.parsed_count == 0 {
+                        return Some(Err(format!(
+                            "[{}] No valid element found. Expected '{}-{}' to start output. Buffer tail (up to 200 chars): {}",
+                            self.type_name, self.type_name, self.token, tail
+                        )));
+                    } else {
+                        return Some(Err(format!(
+                            "[{}] Missing end marker '{}' after {} element(s). Buffer tail (up to 200 chars): {}",
+                            self.type_name, end_marker, self.parsed_count, tail
+                        )));
+                    }
                 }
             }
         }
