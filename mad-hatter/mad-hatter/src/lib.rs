@@ -39,6 +39,7 @@
 pub use mad_hatter_macros::http_service;
 pub use mad_hatter_macros::bind_http;
 pub use mad_hatter_macros::ToMarkdown;
+pub use mad_hatter_macros::FromMarkdown;
 
 pub mod llm;
 

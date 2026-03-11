@@ -76,3 +76,32 @@ pub fn derive_to_markdown(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     llm::derive_to_markdown(input).into()
 }
+
+/// Derive `FromMarkdown` for an enum.
+///
+/// Generates both format schema (for LLM prompts) and parser (for LLM output).
+///
+/// ```ignore
+/// #[derive(FromMarkdown)]
+/// enum Action {
+///     /// 阅读收件箱
+///     ReadMsg,
+///     /// 记录思考
+///     Thinking {
+///         /// 思考内容
+///         content: String,
+///     },
+///     /// 寄出信件
+///     SendMsg {
+///         /// 收件人
+///         recipient: String,
+///         /// 信件内容
+///         content: String,
+///     },
+/// }
+/// ```
+#[proc_macro_derive(FromMarkdown)]
+pub fn derive_from_markdown(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    llm::derive_from_markdown(input).into()
+}
