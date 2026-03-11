@@ -360,8 +360,7 @@ mod tests {
         use crate::inference::Action;
 
         let request = crate::inference::beat::BeatRequest {
-            skill: r#"### skill ###
-### knowledge: app-development ###
+            skill: r#"### knowledge: app-development ###
 # App 开发指南
 
 当用户要求你开发app时，你拥有以下能力：

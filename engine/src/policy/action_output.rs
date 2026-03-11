@@ -386,7 +386,7 @@ pub fn inference_interrupted() -> &'static str {
 }
 
 /// Format hallucination defense interruption marker.
-/// Uses "幻觉防御" terminology consistent with prompt template (react_system.txt).
+/// Uses "幻觉防御" terminology consistent with prompt (BeatRequest / Action doc comments).
 pub fn hallucination_defense_interrupted(reason: &str) -> String {
     format!("---------幻觉防御中断---------\n{}\n", reason)
 }
