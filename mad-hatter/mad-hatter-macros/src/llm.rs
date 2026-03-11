@@ -101,6 +101,19 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
         tm_fields.push(ToMarkdownField { ident, kind, section_title, skip });
     }
 
+    // Name collision detection: case-insensitive check struct name vs field names
+    {
+        let struct_lower = struct_name.to_string().to_lowercase();
+        for f in &tm_fields {
+            if f.ident.to_string().to_lowercase() == struct_lower {
+                return syn::Error::new_spanned(
+                    &f.ident,
+                    format!("field name '{}' collides with struct name '{}' (case-insensitive). This would cause ambiguous separators in markdown format.", f.ident, struct_name)
+                ).to_compile_error();
+            }
+        }
+    }
+
     let depth_renders: Vec<TokenStream> = tm_fields.iter().map(|f| {
         if f.skip { return quote! {}; }
         gen_depth_render(f)
@@ -134,6 +147,7 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
                 __out
             }
         }
+        impl ::mad_hatter::llm::StructInput for #struct_name {}
     }
 }
 
@@ -450,9 +464,23 @@ fn derive_from_markdown_enum(input: DeriveInput) -> TokenStream {
         });
     }
 
+    // Name collision detection (case-insensitive)
+    {
+        let type_lower = enum_name_str.to_lowercase();
+        for vi in &variants {
+            for f in &vi.fields {
+                if f.name.to_lowercase() == type_lower {
+                    return syn::Error::new_spanned(
+                        enum_name,
+                        format!("FromMarkdown: field name '{}' collides with type name '{}' (case-insensitive). This would cause ambiguous separators.", f.name, enum_name_str)
+                    ).to_compile_error();
+                }
+            }
+        }
+    }
+
     let schema_body = gen_schema_markdown(&enum_name_str, &variants);
     let parse_body = gen_from_markdown(enum_name, &enum_name_str, &variants);
-
     quote! {
         impl ::mad_hatter::llm::FromMarkdown for #enum_name {
             fn schema_markdown(token: &str) -> ::std::string::String {
@@ -461,7 +489,11 @@ fn derive_from_markdown_enum(input: DeriveInput) -> TokenStream {
             fn from_markdown(text: &str, token: &str) -> ::std::result::Result<::std::vec::Vec<Self>, ::std::string::String> {
                 #parse_body
             }
+            fn type_name() -> &'static str {
+                #enum_name_str
+            }
         }
+        impl ::mad_hatter::llm::StructOutput for #enum_name {}
     }
 }
 
@@ -886,6 +918,19 @@ fn derive_from_markdown_struct(input: DeriveInput) -> TokenStream {
     let _field_count = field_infos.len();
 
     // Generate schema_markdown for struct
+    // Name collision detection (case-insensitive)
+    {
+        let type_lower = struct_name_str.to_lowercase();
+        for f in &field_infos {
+            if f.name.to_lowercase() == type_lower {
+                return syn::Error::new_spanned(
+                    struct_name,
+                    format!("FromMarkdown: field name '{}' collides with type name '{}' (case-insensitive). This would cause ambiguous separators.", f.name, struct_name_str)
+                ).to_compile_error();
+            }
+        }
+    }
+
     let schema_body = gen_struct_schema_markdown(&struct_name_str, &field_infos);
 
     // Generate from_markdown for struct
@@ -899,7 +944,11 @@ fn derive_from_markdown_struct(input: DeriveInput) -> TokenStream {
             fn from_markdown(text: &str, token: &str) -> ::std::result::Result<::std::vec::Vec<Self>, ::std::string::String> {
                 #parse_body
             }
+            fn type_name() -> &'static str {
+                #struct_name_str
+            }
         }
+        impl ::mad_hatter::llm::StructOutput for #struct_name {}
     }
 }
 

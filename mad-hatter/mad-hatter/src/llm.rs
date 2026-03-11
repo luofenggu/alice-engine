@@ -1,124 +1,367 @@
-/// LLM推理组件 — trait定义
-///
-/// ToMarkdown: struct → markdown prompt文本
-/// FromMarkdown: markdown输出 → enum解析
-
-/// 输入侧：struct → markdown prompt文本
+/// ToMarkdown: struct → markdown prompt for LLM input
 pub trait ToMarkdown {
-    /// Render as markdown with default heading depth (###)
     fn to_markdown(&self) -> String {
         self.to_markdown_depth(2)
     }
-
-    /// Render as markdown with specified heading depth.
-    /// depth=2 → ### headings, depth=3 → #### headings, etc.
     fn to_markdown_depth(&self, depth: usize) -> String;
-
-    /// Compact rendering for Vec elements: "field: value" format.
-    /// Default implementation falls back to to_markdown_depth.
     fn to_markdown_item(&self) -> String {
-        self.to_markdown_depth(2)
+        String::new()
     }
 }
 
-/// 输出侧：LLM输出 → enum解析
-///
-/// enum定义是唯一真相源，derive宏同时生成：
-/// - schema_markdown: 格式说明（告诉LLM怎么输出）
-/// - from_markdown: 解析器（把LLM输出解析回enum）
+/// FromMarkdown: parse LLM markdown output → structured data
 pub trait FromMarkdown: Sized {
-    /// 生成格式说明文本（塞进prompt告诉LLM输出规范）
     fn schema_markdown(token: &str) -> String;
-    /// 解析LLM输出为多个action实例
     fn from_markdown(text: &str, token: &str) -> Result<Vec<Self>, String>;
+    fn type_name() -> &'static str;
 }
 
-// ---------------------------------------------------------------------------
-// LLM Channel — engine实现此trait提供流式文本
-// ---------------------------------------------------------------------------
+/// Marker trait: only derived on structs via #[derive(ToMarkdown)]
+/// Used to enforce struct-only constraint on infer/stream_infer input
+pub trait StructInput {}
 
-/// LLM推理通道。
-///
-/// Engine实现此trait，内部调用LLM API（OpenAI兼容SSE流式协议），
-/// 将SSE chunk中的delta.content提取为纯文本chunk返回。
-///
-/// 框架不关心HTTP/SSE细节，只消费文本流。
+/// Marker trait: only derived on enums/structs via #[derive(FromMarkdown)]
+/// Used to enforce struct-only constraint on infer/stream_infer output
+pub trait StructOutput {}
+
+/// LlmChannel: abstraction for LLM text streaming
+/// Engine implements this trait to provide streaming text from any LLM backend.
+/// Framework provides OpenAiChannel as a built-in implementation.
 pub trait LlmChannel {
-    /// 流式调用LLM，返回逐chunk文本迭代器。
-    ///
-    /// `prompt` 是框架拼接好的完整prompt（包含输入+格式说明）。
-    /// 返回的迭代器每次yield一个文本chunk（对应SSE中的delta.content）。
     fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String>;
 }
 
-// ---------------------------------------------------------------------------
-// infer — 框架提供的高层推理函数
-// ---------------------------------------------------------------------------
-
-/// 执行LLM推理：拼接prompt → 调用channel → 解析响应。
-///
-/// 开发者只需定义 `Req: ToMarkdown`（输入）和 `Resp: FromMarkdown`（输出），
-/// 框架自动完成：
-/// 1. 将request序列化为markdown prompt
-/// 2. 生成Resp的格式说明（含随机token）
-/// 3. 拼接完整prompt并调用LLM
-/// 4. 累积流式响应文本
-/// 5. 用FromMarkdown解析为结构化结果
-///
-/// # Example
-/// ```ignore
-/// let actions = mad_hatter::infer::<BeatRequest, Action>(&channel, &request)?;
-/// ```
-pub fn infer<Req: ToMarkdown, Resp: FromMarkdown>(
-    channel: &dyn LlmChannel,
-    request: &Req,
-) -> Result<Vec<Resp>, String> {
-    let token = generate_token();
-
-    // 1. 拼接prompt
-    let input = request.to_markdown();
-    let schema = Resp::schema_markdown(&token);
-    let prompt = format!(
-        "{}\n\n### 输出规范 ###\n{}\n你必须严格按照以上格式输出。\n",
-        input, schema
-    );
-
-    // 2. 调用channel获取流式响应
-    let stream = channel.infer_stream(prompt)?;
-
-    // 3. 累积所有chunk
-    let mut full_text = String::new();
-    for chunk in stream {
-        full_text.push_str(&chunk);
-    }
-
-    // 4. 解析
-    Resp::from_markdown(&full_text, &token)
+/// OpenAI-compatible LLM channel configuration
+pub struct OpenAiChannel {
+    pub endpoint: String,
+    pub model: String,
+    pub api_key: String,
+    pub max_tokens: Option<u32>,
 }
 
-/// 去除LLM输出中可能的代码块包裹。
-///
-/// LLM有时会把输出包在 ` ```markdown ``` ` 或 ` ``` ``` ` 里，
-/// 此函数自动检测并剥离外层代码块。
-/// 框架内置能力，在from_markdown中自动调用，开发者无感。
+impl OpenAiChannel {
+    pub fn new(endpoint: impl Into<String>, model: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            model: model.into(),
+            api_key: api_key.into(),
+            max_tokens: None,
+        }
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+}
+
+/// SSE response types for OpenAI streaming
+#[derive(serde::Deserialize)]
+struct SseResponse {
+    choices: Vec<SseChoice>,
+}
+
+#[derive(serde::Deserialize)]
+struct SseChoice {
+    delta: SseDelta,
+}
+
+#[derive(serde::Deserialize)]
+struct SseDelta {
+    content: Option<String>,
+}
+
+impl LlmChannel for OpenAiChannel {
+    fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        let url = format!("{}/v1/chat/completions", self.endpoint.trim_end_matches('/'));
+
+        let mut body = serde_json::json!({
+            "model": &self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": true
+        });
+        if let Some(max_tokens) = self.max_tokens {
+            body["max_tokens"] = serde_json::json!(max_tokens);
+        }
+
+        let client = reqwest::blocking::Client::new();
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response.text().unwrap_or_default();
+            return Err(format!("HTTP {}: {}", status, body_text));
+        }
+
+        Ok(Box::new(SseIterator::new(response)))
+    }
+}
+
+/// Iterator that reads SSE stream and yields text content chunks
+struct SseIterator {
+    reader: std::io::BufReader<reqwest::blocking::Response>,
+    done: bool,
+}
+
+impl SseIterator {
+    fn new(response: reqwest::blocking::Response) -> Self {
+        Self {
+            reader: std::io::BufReader::new(response),
+            done: false,
+        }
+    }
+}
+
+impl Iterator for SseIterator {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        use std::io::BufRead;
+
+        if self.done {
+            return None;
+        }
+
+        loop {
+            let mut line = String::new();
+            match self.reader.read_line(&mut line) {
+                Ok(0) => {
+                    self.done = true;
+                    return None;
+                }
+                Ok(_) => {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if line == "data: [DONE]" {
+                        self.done = true;
+                        return None;
+                    }
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if let Ok(sse) = serde_json::from_str::<SseResponse>(data) {
+                            if let Some(choice) = sse.choices.first() {
+                                if let Some(content) = &choice.delta.content {
+                                    if !content.is_empty() {
+                                        return Some(content.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    self.done = true;
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// Strip markdown code block wrapper (```...```) from LLM output
 pub fn strip_code_block(text: &str) -> String {
     let trimmed = text.trim();
-    if !trimmed.starts_with("```") {
-        return text.to_string();
+    if trimmed.starts_with("```") && trimmed.ends_with("```") {
+        let inner = &trimmed[3..trimmed.len() - 3];
+        // Skip optional language tag on first line
+        let inner = if let Some(newline_pos) = inner.find('\n') {
+            let first_line = &inner[..newline_pos];
+            if first_line.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                &inner[newline_pos + 1..]
+            } else {
+                inner
+            }
+        } else {
+            inner
+        };
+        inner.trim().to_string()
+    } else {
+        text.to_string()
     }
-    let lines: Vec<&str> = trimmed.lines().collect();
-    if lines.len() < 2 || lines.last().map(|l| l.trim()) != Some("```") {
-        return text.to_string();
-    }
-    lines[1..lines.len() - 1].join("\n")
 }
 
-/// 生成随机token（用于分隔符，不需要密码学安全）
-fn generate_token() -> String {
+/// Generate a random token from nanosecond timestamp
+pub fn generate_token() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     format!("{:x}", nanos)
+}
+
+/// Build the full prompt for LLM inference
+fn build_prompt<Req: ToMarkdown, Resp: FromMarkdown>(request: &Req, token: &str) -> String {
+    let request_text = request.to_markdown();
+    let schema = Resp::schema_markdown(token);
+    format!(
+        "{}\n\n### 输出规范 ###\n{}\n\n最后输出: {}-end-{}\n",
+        request_text,
+        schema,
+        Resp::type_name(),
+        token
+    )
+}
+
+/// Stream inference: yields parsed elements one by one as they arrive
+///
+/// Each time a complete element is detected in the stream (delimited by
+/// `{TypeName}-{token}`), it is parsed and yielded immediately.
+pub fn stream_infer<'a, Req, Resp>(
+    channel: &'a dyn LlmChannel,
+    request: &Req,
+) -> Result<StreamInfer<'a, Resp>, String>
+where
+    Req: ToMarkdown + StructInput,
+    Resp: FromMarkdown,
+{
+    let token = generate_token();
+    let prompt = build_prompt::<Req, Resp>(request, &token);
+    let stream = channel.infer_stream(prompt)?;
+
+    Ok(StreamInfer {
+        stream,
+        buffer: String::new(),
+        token,
+        type_name: Resp::type_name().to_string(),
+        done: false,
+        _phantom: std::marker::PhantomData,
+    })
+}
+
+/// Iterator that yields parsed elements from a streaming LLM response
+pub struct StreamInfer<'a, T: FromMarkdown> {
+    stream: Box<dyn Iterator<Item = String> + 'a>,
+    buffer: String,
+    token: String,
+    type_name: String,
+    done: bool,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<'a, T: FromMarkdown> StreamInfer<'a, T> {
+    /// Get the token used for this inference session
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
+    type Item = Result<T, String>;
+
+    fn next(&mut self) -> Option<Result<T, String>> {
+        if self.done {
+            return None;
+        }
+
+        let separator = format!("{}-{}", self.type_name, self.token);
+        let end_marker = format!("{}-end-{}", self.type_name, self.token);
+
+        loop {
+            // Priority 1: Try to extract a complete element between two separators
+            // This must be checked BEFORE end_marker, because end_marker substring
+            // could be found in buffer while there are still unprocessed elements.
+            let first_sep = self.buffer.find(&separator);
+            if let Some(first_pos) = first_sep {
+                let after_first = first_pos + separator.len();
+                // Look for second separator OR end_marker after the first separator
+                let next_sep = self.buffer[after_first..].find(&separator);
+                let next_end = self.buffer[after_first..].find(&end_marker);
+
+                // Determine the boundary of the current element
+                let boundary = match (next_sep, next_end) {
+                    (Some(s), Some(e)) => {
+                        // Both found — use whichever comes first
+                        if s <= e {
+                            Some(("sep", after_first + s))
+                        } else {
+                            Some(("end", after_first + e))
+                        }
+                    }
+                    (Some(s), None) => Some(("sep", after_first + s)),
+                    (None, Some(e)) => Some(("end", after_first + e)),
+                    (None, None) => None,
+                };
+
+                match boundary {
+                    Some(("sep", boundary_pos)) => {
+                        // Complete element between two separators
+                        let element_text = self.buffer[after_first..boundary_pos].trim();
+                        if !element_text.is_empty() {
+                            let parse_input = format!("{}\n{}\n{}", separator, element_text, end_marker);
+                            self.buffer = self.buffer[boundary_pos..].to_string();
+                            match T::from_markdown(&parse_input, &self.token) {
+                                Ok(mut items) if !items.is_empty() => return Some(Ok(items.remove(0))),
+                                Ok(_) => { continue; }
+                                Err(e) => return Some(Err(e)),
+                            }
+                        } else {
+                            self.buffer = self.buffer[boundary_pos..].to_string();
+                            continue;
+                        }
+                    }
+                    Some(("end", boundary_pos)) => {
+                        // Last element before end marker
+                        let element_text = self.buffer[after_first..boundary_pos].trim();
+                        self.done = true;
+                        if !element_text.is_empty() {
+                            let parse_input = format!("{}\n{}\n{}", separator, element_text, end_marker);
+                            match T::from_markdown(&parse_input, &self.token) {
+                                Ok(mut items) if !items.is_empty() => return Some(Ok(items.remove(0))),
+                                Ok(_) => return None,
+                                Err(e) => return Some(Err(e)),
+                            }
+                        }
+                        return None;
+                    }
+                    _ => {
+                        // No boundary found yet — need more data
+                    }
+                }
+            }
+
+            // Need more data - read from stream
+            match self.stream.next() {
+                Some(chunk) => {
+                    self.buffer.push_str(&chunk);
+                }
+                None => {
+                    // Stream ended without end marker — truncation error
+                    self.done = true;
+                    if self.buffer.contains(&end_marker) {
+                        // End marker present but no more elements to extract
+                        return None;
+                    }
+                    return Some(Err(format!("Missing end marker: {}", end_marker)));
+                }
+            }
+        }
+    }
+}
+
+/// Full inference: collects all elements from stream
+///
+/// Sends request to LLM and parses the complete response.
+/// For streaming element-by-element processing, use `stream_infer()`.
+pub fn infer<Req, Resp>(
+    channel: &dyn LlmChannel,
+    request: &Req,
+) -> Result<Vec<Resp>, String>
+where
+    Req: ToMarkdown + StructInput,
+    Resp: FromMarkdown,
+{
+    let stream = stream_infer::<Req, Resp>(channel, request)?;
+    let mut results = Vec::new();
+    for item in stream {
+        results.push(item?);
+    }
+    Ok(results)
 }
