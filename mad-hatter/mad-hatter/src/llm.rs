@@ -220,7 +220,7 @@ pub fn stream_infer<'a, Req, Resp>(
 ) -> Result<StreamInfer<'a, Resp>, String>
 where
     Req: ToMarkdown + StructInput,
-    Resp: FromMarkdown,
+    Resp: FromMarkdown + StructOutput,
 {
     let token = generate_token();
     let prompt = build_prompt::<Req, Resp>(request, &token);
@@ -356,7 +356,7 @@ pub fn infer<Req, Resp>(
 ) -> Result<Vec<Resp>, String>
 where
     Req: ToMarkdown + StructInput,
-    Resp: FromMarkdown,
+    Resp: FromMarkdown + StructOutput,
 {
     let stream = stream_infer::<Req, Resp>(channel, request)?;
     let mut results = Vec::new();
