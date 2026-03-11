@@ -202,7 +202,7 @@ fn build_prompt<Req: ToMarkdown, Resp: FromMarkdown>(request: &Req, token: &str)
     let request_text = request.to_markdown();
     let schema = Resp::schema_markdown(token);
     format!(
-        "{}\n\n### 输出规范 ###\n{}\n\n最后输出: {}-end-{}\n",
+        "{}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{}\n\n最后输出: {}-end-{}\n",
         request_text,
         schema,
         Resp::type_name(),
@@ -232,6 +232,7 @@ where
         token,
         type_name: Resp::type_name().to_string(),
         done: false,
+        parsed_count: 0,
         _phantom: std::marker::PhantomData,
     })
 }
@@ -243,6 +244,7 @@ pub struct StreamInfer<'a, T: FromMarkdown> {
     token: String,
     type_name: String,
     done: bool,
+    parsed_count: usize,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -298,7 +300,10 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
                             let parse_input = format!("{}\n{}\n{}", separator, element_text, end_marker);
                             self.buffer = self.buffer[boundary_pos..].to_string();
                             match T::from_markdown(&parse_input, &self.token) {
-                                Ok(mut items) if !items.is_empty() => return Some(Ok(items.remove(0))),
+                                Ok(mut items) if !items.is_empty() => {
+                                    self.parsed_count += 1;
+                                    return Some(Ok(items.remove(0)));
+                                }
                                 Ok(_) => { continue; }
                                 Err(e) => return Some(Err(e)),
                             }
@@ -314,7 +319,10 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
                         if !element_text.is_empty() {
                             let parse_input = format!("{}\n{}\n{}", separator, element_text, end_marker);
                             match T::from_markdown(&parse_input, &self.token) {
-                                Ok(mut items) if !items.is_empty() => return Some(Ok(items.remove(0))),
+                                Ok(mut items) if !items.is_empty() => {
+                                    self.parsed_count += 1;
+                                    return Some(Ok(items.remove(0)));
+                                }
                                 Ok(_) => return None,
                                 Err(e) => return Some(Err(e)),
                             }
@@ -339,7 +347,15 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
                         // End marker present but no more elements to extract
                         return None;
                     }
-                    return Some(Err(format!("Missing end marker: {}", end_marker)));
+                    let tail: String = if self.buffer.len() > 200 {
+                        format!("...{}", &self.buffer[self.buffer.len() - 200..])
+                    } else {
+                        self.buffer.clone()
+                    };
+                    return Some(Err(format!(
+                        "[{}] Stream ended without end marker '{}'. Parsed {} element(s) successfully. Buffer tail (up to 200 chars): {}",
+                        self.type_name, end_marker, self.parsed_count, tail
+                    )));
                 }
             }
         }

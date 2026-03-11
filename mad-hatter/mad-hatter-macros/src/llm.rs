@@ -596,6 +596,7 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
 /// Generate the body of `from_markdown` for enum.
 fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[VariantInfo]) -> TokenStream {
     let mut match_arms = Vec::new();
+    let variant_list_str = variants.iter().map(|v| v.snake_name.as_str()).collect::<Vec<&str>>().join(", ");
 
     for vi in variants {
         let snake = &vi.snake_name;
@@ -614,6 +615,7 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
 
             if f.is_option {
                 let inner = &f.inner_type;
+                let fname_str = &f.name;
                 if is_numeric_inner_type(inner) {
                     match_arms.push(quote! {
                         #snake => {
@@ -624,7 +626,7 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                                 match __val_str.parse() {
                                     Ok(v) => ::std::option::Option::Some(v),
                                     Err(e) => return ::std::result::Result::Err(
-                                        ::std::format!("Failed to parse optional field: {}", e)
+                                        ::std::format!("[{}] Failed to parse optional field '{}' of variant '{}': {}", #enum_name_str, #fname_str, #snake, e)
                                     ),
                                 }
                             };
@@ -660,7 +662,7 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                             let __val = __body.trim_end().to_string();
                             if __val.trim().is_empty() {
                                 return ::std::result::Result::Err(
-                                    ::std::format!("Required field '{}' of variant '{}' is empty", #fname_str, #snake)
+                                    ::std::format!("[{}] Required field '{}' of variant '{}' is empty", #enum_name_str, #fname_str, #snake)
                                 );
                             }
                             __results.push(#enum_name::#variant_ident { #field_ident: __val });
@@ -675,7 +677,7 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                 }
             }
         } else {
-            let multi_parse = gen_multi_field_parse(enum_name, vi);
+            let multi_parse = gen_multi_field_parse(enum_name, enum_name_str, vi);
             match_arms.push(quote! {
                 #snake => {
                     #multi_parse
@@ -696,8 +698,13 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
 
         // Check end marker
         if !__text_trimmed.ends_with(&__end_marker) {
+            let __tail: ::std::string::String = if __text_trimmed.len() > 200 {
+                ::std::format!("...{}", &__text_trimmed[__text_trimmed.len() - 200..])
+            } else {
+                __text_trimmed.to_string()
+            };
             return ::std::result::Result::Err(
-                ::std::format!("Missing end marker: {}", __end_marker)
+                ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #enum_name_str, __end_marker, __tail)
             );
         }
 
@@ -707,6 +714,8 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
         // Split by element separator
         let __sep_with_newline = ::std::format!("{}\n", __element_sep);
         let __chunks: ::std::vec::Vec<&str> = __text_body.split(&__sep_with_newline).collect();
+
+        let mut __parsed_count: usize = 0;
 
         for __chunk in __chunks {
             let __chunk = __chunk.trim();
@@ -722,10 +731,12 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                 #(#match_arms)*
                 _ => {
                     return ::std::result::Result::Err(
-                        ::std::format!("Unknown variant: {}", __variant_line)
+                        ::std::format!("[{}] Unknown variant '{}'. Parsed {} element(s) successfully. Expected one of: {}", #enum_name_str, __variant_line, __parsed_count, #variant_list_str)
                     );
                 }
             }
+
+            __parsed_count += 1;
         }
 
         ::std::result::Result::Ok(__results)
@@ -733,7 +744,7 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
 }
 
 /// Generate parsing code for a variant with N>=2 fields.
-fn gen_multi_field_parse(enum_name: &syn::Ident, vi: &VariantInfo) -> TokenStream {
+fn gen_multi_field_parse(enum_name: &syn::Ident, enum_name_str: &str, vi: &VariantInfo) -> TokenStream {
     let variant_ident = &vi.ident;
     let snake = &vi.snake_name;
 
@@ -776,7 +787,7 @@ fn gen_multi_field_parse(enum_name: &syn::Ident, vi: &VariantInfo) -> TokenStrea
                             match __raw.parse() {
                                 Ok(v) => ::std::option::Option::Some(v),
                                 Err(e) => return ::std::result::Result::Err(
-                                    ::std::format!("Failed to parse field '{}' of variant '{}': {}", #fname, #snake, e)
+                                    ::std::format!("[{}] Failed to parse field '{}' of variant '{}': {}", #enum_name_str, #fname, #snake, e)
                                 ),
                             }
                         }
@@ -807,7 +818,7 @@ fn gen_multi_field_parse(enum_name: &syn::Ident, vi: &VariantInfo) -> TokenStrea
                         };
                         if __val.trim().is_empty() {
                             return ::std::result::Result::Err(
-                                ::std::format!("Required field '{}' of variant '{}' is empty", #fname_str, #snake)
+                                ::std::format!("[{}] Required field '{}' of variant '{}' is empty", #enum_name_str, #fname_str, #snake)
                             );
                         }
                         __val
@@ -1014,7 +1025,7 @@ fn gen_struct_from_markdown(struct_name: &syn::Ident, struct_name_str: &str, fie
                             match __raw.parse() {
                                 Ok(v) => ::std::option::Option::Some(v),
                                 Err(e) => return ::std::result::Result::Err(
-                                    ::std::format!("Failed to parse field '{}': {}", #fname, e)
+                                    ::std::format!("[{}] Failed to parse field '{}': {}", #struct_name_str, #fname, e)
                                 ),
                             }
                         }
@@ -1045,7 +1056,7 @@ fn gen_struct_from_markdown(struct_name: &syn::Ident, struct_name_str: &str, fie
                         };
                         if __val.trim().is_empty() {
                             return ::std::result::Result::Err(
-                                ::std::format!("Required field '{}' is empty", #fname_str)
+                                ::std::format!("[{}] Required field '{}' is empty", #struct_name_str, #fname_str)
                             );
                         }
                         __val
@@ -1084,8 +1095,9 @@ fn gen_struct_from_markdown(struct_name: &syn::Ident, struct_name_str: &str, fie
 
         // Check end marker
         if !__text_trimmed.ends_with(&__end_marker) {
+            let __tail: &str = if __text_trimmed.len() > 200 { &__text_trimmed[__text_trimmed.len()-200..] } else { __text_trimmed };
             return ::std::result::Result::Err(
-                ::std::format!("Missing end marker: {}", __end_marker)
+                ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #struct_name_str, __end_marker, __tail)
             );
         }
 
