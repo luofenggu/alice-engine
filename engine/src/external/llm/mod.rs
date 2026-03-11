@@ -343,7 +343,7 @@ impl LlmClient {
             .collect();
         request.action_token = token;
 
-        let (system_prompt, user_prompt, _snapshot) = request.render();
+        let (system_prompt, user_prompt) = request.render();
 
         // Write input log if enabled
         if infer_log_enabled {

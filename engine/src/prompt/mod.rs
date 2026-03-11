@@ -6,8 +6,11 @@
 //! Protocol definitions (templates, rendering, parsing) live in `inference/`.
 
 use crate::core::Alice;
-use crate::inference::beat::{BeatRequest, PromptMessage, SessionBlockData, SessionEntryData};
+use crate::inference::beat::{
+    self, BeatRequest, PromptMessage, SessionBlockData, SessionEntryData,
+};
 use crate::inference::capture::CaptureRequest;
+use crate::policy::messages;
 
 // ---------------------------------------------------------------------------
 // Session block data extraction (depends on Alice for chat DB access)
@@ -63,8 +66,8 @@ pub fn extract_session_block_data(
 /// Build a BeatRequest from Alice's current state.
 ///
 /// Reads memory, chat, config from Alice and assembles a BeatRequest struct
-/// with raw data. The caller passes this to LlmClient which handles
-/// rendering and inference internally.
+/// with pre-rendered field values. The caller passes this to LlmClient which
+/// handles system prompt rendering and inference internally.
 pub fn build_beat_request(
     alice: &Alice,
     host: Option<&str>,
@@ -72,34 +75,66 @@ pub fn build_beat_request(
     extra_skills: String,
 ) -> BeatRequest {
     let knowledge_content = load_knowledge_raw(alice);
-
     let history_content = alice.instance.memory.history.read().unwrap_or_default();
-
     let session_blocks = extract_all_session_blocks(alice);
-
     let current_content = alice.instance.memory.current.read().unwrap_or_default();
-
     let skill_content = alice.instance.skill.read().unwrap_or_default();
+    let unread_count: usize = alice.count_unread_messages().try_into().unwrap_or(0);
 
-    let unread_count = alice.count_unread_messages();
+    // Build pre-rendered field values
+    let skill = beat::build_skill_content(
+        host,
+        &alice.instance.id,
+        alice.env_config.http_port,
+        &skill_content,
+        &extra_skills,
+    );
+
+    let knowledge = beat::build_knowledge_content(&knowledge_content);
+
+    let history = if history_content.is_empty() {
+        messages::empty_placeholder().to_string()
+    } else {
+        history_content.clone()
+    };
+
+    let sessions = beat::render_session_blocks(&session_blocks, &alice.instance.id);
+
+    let environment = beat::build_environment(
+        &alice.instance.id,
+        alice.instance_name.as_deref(),
+        &contacts_info,
+        alice.shell_env.as_deref().unwrap_or_default(),
+        host,
+    );
+
+    let current = if current_content.is_empty() {
+        messages::empty_placeholder().to_string()
+    } else {
+        current_content.clone()
+    };
+
+    let status = beat::build_status(
+        &alice.instance.id,
+        alice.instance_name.as_deref(),
+        alice.system_start_time,
+        unread_count,
+        history.len(),
+        sessions.len(),
+        current.len(),
+        knowledge.len(),
+        skill.len(),
+    );
 
     BeatRequest {
         action_token: String::new(), // filled by infer_beat internally
-        instance_id: alice.instance.id.clone(),
-        instance_name: alice.instance_name.clone(),
-
-        shell_env: alice.shell_env.clone().unwrap_or_default(),
-        host: host.map(|s| s.to_string()),
-        system_start_time: alice.system_start_time,
-        knowledge_content,
-        skill_content,
-        history_content,
-        session_blocks,
-        current_content,
-        unread_count: unread_count.try_into().unwrap_or(0),
-        contacts_info,
-        extra_skills,
-        http_port: alice.env_config.http_port,
+        skill,
+        knowledge,
+        history,
+        sessions,
+        environment,
+        current,
+        status,
     }
 }
 
@@ -267,11 +302,9 @@ mod tests {
         let (alice, _tmp) = setup_alice();
         let mut request = build_beat_request(&alice, None, String::new(), String::new());
         request.action_token = "abc".to_string();
-        let (system, user, _) = request.render();
+        let (system, user) = request.render();
         assert!(system.contains("Action-abc"));
         assert!(user.contains("(空)"));
-        assert!(request.history_content.is_empty());
-        assert!(request.current_content.is_empty());
     }
 
     #[test]
@@ -293,7 +326,7 @@ mod tests {
             .unwrap();
 
         let request = build_beat_request(&alice, None, String::new(), String::new());
-        let (_, user, _) = request.render();
+        let (_, user) = request.render();
         assert!(user.contains("user [20260223120000]: hi there"));
         assert!(user.contains("[总结] User said hi"));
     }
@@ -321,8 +354,9 @@ mod tests {
             .write("# 泛准则\n- 谨慎加信任")
             .unwrap();
         let request = build_beat_request(&alice, None, String::new(), String::new());
-        let (_, user, _) = request.render();
+        let (_, user) = request.render();
         assert!(user.contains("### 要点与知识 ###"));
         assert!(user.contains("谨慎加信任"));
     }
 }
+

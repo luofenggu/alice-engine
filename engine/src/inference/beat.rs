@@ -8,10 +8,11 @@ use crate::inference::safe_render;
 use crate::inference::Action;
 use crate::policy::messages;
 use mad_hatter::llm::FromMarkdown as _;
+use mad_hatter::llm::ToMarkdown as _;
+use mad_hatter::ToMarkdown;
 
 // Compile-time embedded templates
 const TEMPLATE_SYSTEM: &str = include_str!("../../templates/react_system.txt");
-const TEMPLATE_USER: &str = include_str!("../../templates/react_user.txt");
 const RESERVED_SKILL_TEMPLATE: &str = include_str!("../../templates/reserved_skill.txt");
 
 pub const INITIAL_HISTORY: &str = include_str!("../../templates/initial_history.txt");
@@ -50,42 +51,31 @@ pub struct SessionBlockData {
 // ---------------------------------------------------------------------------
 
 /// All data needed to render one beat's prompts.
-/// Callers fill this struct from Alice's state; render() is a pure function.
+/// Callers fill this struct; render() produces system + user prompts.
+#[derive(ToMarkdown)]
 pub struct BeatRequest {
+    #[markdown(skip)]
     pub action_token: String,
-    pub instance_id: String,
-    pub instance_name: Option<String>,
-
-    pub shell_env: String,
-    pub host: Option<String>,
-    pub system_start_time: chrono::DateTime<chrono::Local>,
-    pub knowledge_content: String,
-    pub history_content: String,
-    pub session_blocks: Vec<SessionBlockData>,
-    pub current_content: String,
-    pub skill_content: String,
-    pub unread_count: usize,
-    /// Contacts info string to inject into environment section (from hooks).
-    pub contacts_info: String,
-    /// Extra skills content from hooks, merged into skill section.
-    pub extra_skills: String,
-    /// HTTP port for local API references (e.g. vision API).
-    pub http_port: u16,
-}
-
-/// Snapshot of memory state at the time of prompt rendering.
-pub struct MemorySnapshot {
+    /// skill
+    pub skill: String,
+    /// 知识
+    pub knowledge: String,
+    /// 经历
     pub history: String,
+    /// 近况
+    pub sessions: String,
+    /// 环境信息
+    pub environment: String,
+    /// current
     pub current: String,
+    /// 当前状态
+    pub status: String,
 }
 
 impl BeatRequest {
     /// Render system and user prompts from this request's data.
-    /// Returns `(system_prompt, user_prompt, memory_snapshot)`.
-    pub fn render(&self) -> (String, String, MemorySnapshot) {
-        let current_time = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
-        let system_start_time = self.system_start_time.format("%Y%m%d%H%M%S").to_string();
-
+    /// Returns `(system_prompt, user_prompt)`.
+    pub fn render(&self) -> (String, String) {
         // System prompt: template + auto-generated action schema
         let action_schema = Action::schema_markdown(&self.action_token);
         let system_prompt = safe_render(TEMPLATE_SYSTEM, &[
@@ -93,133 +83,12 @@ impl BeatRequest {
             ("{{ACTION_SCHEMA}}", &action_schema),
         ]);
 
-        // Format raw data into display strings
-        let history_display = if self.history_content.is_empty() {
-            messages::empty_placeholder().to_string()
-        } else {
-            self.history_content.clone()
-        };
+        // User prompt: ToMarkdown auto-generates sections from field doc comments
+        let user_prompt = format!("{}\n请输出你的下一个行为：\n", self.to_markdown());
 
-        let current_display = if self.current_content.is_empty() {
-            messages::empty_placeholder().to_string()
-        } else {
-            self.current_content.clone()
-        };
-
-        let daily_rendered = self.render_session_blocks();
-
-        // Knowledge section (without app guide)
-        let knowledge_section = self.build_knowledge_section();
-
-        // Skill section: default skill (app guide) + instance custom skill
-        let skill_section = self.build_skill_section();
-
-        // Memory status
-        let memory_status = make_memory_status(
-            &self.instance_id,
-            self.instance_name.as_deref(),
-            history_display.len(),
-            daily_rendered.len(),
-            current_display.len(),
-            knowledge_section.len() + skill_section.len(),
-        );
-
-        let host_line = make_host_line(self.host.as_deref());
-
-        // Identity info for environment section
-        let identity_info = {
-            let name_part = match &self.instance_name {
-                Some(name) if !name.is_empty() => format!("{}（{}）", name, self.instance_id),
-                _ => self.instance_id.clone(),
-            };
-            let base = format!("你是{}", name_part);
-            if self.contacts_info.is_empty() {
-                base
-            } else {
-                format!("{}\n{}", base, self.contacts_info)
-            }
-        };
-
-        // User prompt
-        let user_prompt = safe_render(
-            TEMPLATE_USER,
-            &[
-                ("{{CURRENT_TIME}}", &current_time),
-                ("{{SYSTEM_START_TIME}}", &system_start_time),
-                ("{{UNREAD_COUNT}}", &self.unread_count.to_string()),
-                ("{{MEMORY_STATUS}}", &memory_status),
-                ("{{IDENTITY_INFO}}", &identity_info),
-                ("{{SHELL_ENV}}", &self.shell_env),
-                ("{{HOST_INFO}}", &host_line),
-                ("{{SKILL}}", &skill_section),
-                ("{{KNOWLEDGE}}", &knowledge_section),
-                ("{{HISTORY_MEMORY}}", &history_display),
-                ("{{DAILY_MEMORY}}", &daily_rendered),
-                ("{{CURRENT_MEMORY}}", &current_display),
-            ],
-        );
-
-        let snapshot = MemorySnapshot {
-            history: self.history_content.clone(),
-            current: self.current_content.clone(),
-        };
-
-        (system_prompt, user_prompt, snapshot)
-    }
-
-    /// Render all session blocks into display text.
-    fn render_session_blocks(&self) -> String {
-        if self.session_blocks.is_empty() {
-            return String::new();
-        }
-
-        let mut sections = Vec::new();
-        for block in &self.session_blocks {
-            let rendered = format_session_entries(&block.entries, &self.instance_id);
-            if !rendered.is_empty() {
-                sections.push(format!("[{}]\n{}", block.block_name, rendered));
-            }
-        }
-        sections.join("\n\n")
-    }
-
-    /// Build knowledge section (pure knowledge, no app guide).
-    fn build_knowledge_section(&self) -> String {
-        if self.knowledge_content.trim().is_empty() {
-            String::new()
-        } else {
-            messages::knowledge_section(&self.knowledge_content)
-        }
-    }
-
-    /// Build skill section: default skill (app guide) + instance custom skill.
-    fn build_skill_section(&self) -> String {
-        let default_skill = make_reserved_skill(self.host.as_deref(), &self.instance_id, self.http_port);
-
-        // Merge: default_skill + instance skill_content + extra_skills (from hooks)
-        let mut parts: Vec<&str> = Vec::new();
-        if !default_skill.is_empty() {
-            parts.push(&default_skill);
-        }
-        if !self.skill_content.trim().is_empty() {
-            parts.push(&self.skill_content);
-        }
-        if !self.extra_skills.trim().is_empty() {
-            parts.push(&self.extra_skills);
-        }
-
-        if parts.is_empty() {
-            return String::new();
-        }
-
-        let combined = parts.join("\n\n");
-        format!("### skill ###\n{}\n", combined)
+        (system_prompt, user_prompt)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Public formatting — used by both render() and compress
-// ---------------------------------------------------------------------------
 
 impl From<&crate::persist::SessionBlockEntry> for SessionEntryData {
     fn from(entry: &crate::persist::SessionBlockEntry) -> Self {
@@ -230,8 +99,12 @@ impl From<&crate::persist::SessionBlockEntry> for SessionEntryData {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Public formatting — used by both prompt building and compress
+// ---------------------------------------------------------------------------
+
 /// Format session entries into display text.
-/// Used by render() for beat prompts and by compress for history rolling.
+/// Used by prompt builder for beat prompts and by compress for history rolling.
 pub fn format_session_entries(entries: &[SessionEntryData], self_id: &str) -> String {
     let truncate_len = EngineConfig::get().memory.message_truncate_length;
 
@@ -260,6 +133,22 @@ pub fn format_session_entries(entries: &[SessionEntryData], self_id: &str) -> St
 
         if !parts.is_empty() {
             sections.push(parts.join("\n"));
+        }
+    }
+    sections.join("\n\n")
+}
+
+/// Render session blocks into display text.
+pub fn render_session_blocks(blocks: &[SessionBlockData], self_id: &str) -> String {
+    if blocks.is_empty() {
+        return String::new();
+    }
+
+    let mut sections = Vec::new();
+    for block in blocks {
+        let rendered = format_session_entries(&block.entries, self_id);
+        if !rendered.is_empty() {
+            sections.push(format!("[{}]\n{}", block.block_name, rendered));
         }
     }
     sections.join("\n\n")
@@ -355,6 +244,95 @@ pub fn extract_msg_ids(text: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 // Helper functions (pure, no Alice dependency)
 // ---------------------------------------------------------------------------
+
+/// Build skill content: default skill (app guide) + instance custom skill + extra skills.
+/// Returns combined content WITHOUT section header (caller/ToMarkdown adds it).
+pub fn build_skill_content(
+    host: Option<&str>,
+    instance_id: &str,
+    http_port: u16,
+    skill_content: &str,
+    extra_skills: &str,
+) -> String {
+    let default_skill = make_reserved_skill(host, instance_id, http_port);
+
+    let mut parts: Vec<&str> = Vec::new();
+    if !default_skill.is_empty() {
+        parts.push(&default_skill);
+    }
+    if !skill_content.trim().is_empty() {
+        parts.push(skill_content);
+    }
+    if !extra_skills.trim().is_empty() {
+        parts.push(extra_skills);
+    }
+
+    parts.join("\n\n")
+}
+
+/// Build knowledge content with sub-section header.
+/// Returns content WITH "### 要点与知识 ###" sub-header, or empty string.
+pub fn build_knowledge_content(knowledge_content: &str) -> String {
+    if knowledge_content.trim().is_empty() {
+        String::new()
+    } else {
+        messages::knowledge_section(knowledge_content)
+    }
+}
+
+/// Build environment info string.
+pub fn build_environment(
+    instance_id: &str,
+    instance_name: Option<&str>,
+    contacts_info: &str,
+    shell_env: &str,
+    host: Option<&str>,
+) -> String {
+    let name_part = match instance_name {
+        Some(name) if !name.is_empty() => format!("{}（{}）", name, instance_id),
+        _ => instance_id.to_string(),
+    };
+    let mut lines = vec![format!("你是{}", name_part)];
+    if !contacts_info.is_empty() {
+        lines.push(contacts_info.to_string());
+    }
+    lines.push(format!("脚本环境：{}", shell_env));
+    let host_line = make_host_line(host);
+    if !host_line.is_empty() {
+        lines.push(host_line);
+    }
+    lines.join("\n")
+}
+
+/// Build status string for the "当前状态" section.
+pub fn build_status(
+    instance_id: &str,
+    instance_name: Option<&str>,
+    system_start_time: chrono::DateTime<chrono::Local>,
+    unread_count: usize,
+    history_size: usize,
+    sessions_size: usize,
+    current_size: usize,
+    knowledge_size: usize,
+    skill_size: usize,
+) -> String {
+    let current_time = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+    let start_time = system_start_time.format("%Y%m%d%H%M%S").to_string();
+
+    let memory_status = make_memory_status(
+        instance_id,
+        instance_name,
+        history_size,
+        sessions_size,
+        current_size,
+        knowledge_size + skill_size,
+    );
+
+    format!(
+        "现在时刻：[{}]\n系统启动时刻：[{}]\n收件箱未读来信：[{}] 条\n{}",
+        current_time, start_time, unread_count, memory_status
+    )
+}
 
 /// Build memory status report with character counts and optional warning.
 fn make_memory_status(
@@ -556,4 +534,74 @@ mod tests {
         let entries: Vec<SessionEntryData> = vec![];
         assert_eq!(format_session_entries(&entries, "test_self"), "");
     }
+
+    #[test]
+    fn test_build_skill_content() {
+        let result = build_skill_content(Some("1.2.3.4:8080"), "test", 8081, "custom skill", "extra");
+        assert!(result.contains("custom skill"));
+        assert!(result.contains("extra"));
+    }
+
+    #[test]
+    fn test_build_skill_content_empty() {
+        let result = build_skill_content(None, "test", 8081, "", "");
+        // Should still have reserved skill (app guide)
+        assert!(result.contains("localhost:8081"));
+    }
+
+    #[test]
+    fn test_build_knowledge_content() {
+        let result = build_knowledge_content("# 泛准则\n- 谨慎加信任");
+        assert!(result.contains("### 要点与知识 ###"));
+        assert!(result.contains("谨慎加信任"));
+    }
+
+    #[test]
+    fn test_build_knowledge_content_empty() {
+        assert_eq!(build_knowledge_content(""), "");
+        assert_eq!(build_knowledge_content("  "), "");
+    }
+
+    #[test]
+    fn test_build_environment() {
+        let env = build_environment("abc123", Some("TestBot"), "联系人列表", "Linux x86_64", Some("1.2.3.4:8080"));
+        assert!(env.contains("TestBot（abc123）"));
+        assert!(env.contains("联系人列表"));
+        assert!(env.contains("脚本环境：Linux x86_64"));
+        assert!(env.contains("1.2.3.4:8080"));
+    }
+
+    #[test]
+    fn test_build_environment_no_contacts() {
+        let env = build_environment("abc123", None, "", "Linux x86_64", None);
+        assert!(env.contains("你是abc123"));
+        assert!(!env.contains("联系人"));
+    }
+
+    #[test]
+    fn test_render_returns_two_strings() {
+        let request = BeatRequest {
+            action_token: "abc".to_string(),
+            skill: String::new(),
+            knowledge: String::new(),
+            history: "(空)".to_string(),
+            sessions: String::new(),
+            environment: "你是test".to_string(),
+            current: "(空)".to_string(),
+            status: "现在时刻：[20260311120000]".to_string(),
+        };
+        let (system, user) = request.render();
+        assert!(system.contains("Action-abc"));
+        assert!(user.contains("(空)"));
+        assert!(user.contains("请输出你的下一个行为："));
+        // Empty skill and knowledge should be skipped by ToMarkdown
+        assert!(!user.contains("### skill ###"));
+        assert!(!user.contains("### 知识 ###"));
+        // Non-empty fields should have headers
+        assert!(user.contains("### 经历 ###"));
+        assert!(user.contains("### 环境信息 ###"));
+        assert!(user.contains("### current ###"));
+        assert!(user.contains("### 当前状态 ###"));
+    }
 }
+
