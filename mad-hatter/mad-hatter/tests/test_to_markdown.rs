@@ -5,6 +5,7 @@ use mad_hatter::llm::ToMarkdown as _;
 // P0 tests (preserved)
 // ============================================================
 
+#[allow(dead_code)]
 #[derive(ToMarkdown)]
 /// 你是一个知识提炼专家。请根据以下信息更新知识文档。
 struct CaptureInput {
@@ -299,6 +300,7 @@ struct SessionBlock {
     entries: Vec<SessionEntry>,
 }
 
+#[allow(dead_code)]
 #[derive(ToMarkdown)]
 /// 你醒了
 struct BeatRequestMini {
