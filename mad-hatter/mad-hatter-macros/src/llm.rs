@@ -273,6 +273,7 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
     quote! {
         let mut __out = ::std::string::String::new();
         #(#variant_schemas)*
+        __out.push_str(&::std::format!("最后输出: {ename}-end-{token}\n", ename = #enum_name_str, token = token));
         __out
     }
 }
@@ -357,9 +358,21 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
     quote! {
         let mut __results: ::std::vec::Vec<#enum_name> = ::std::vec::Vec::new();
         let __separator = ::std::format!("{}-{}", #enum_name_str, token);
+        let __end_marker = ::std::format!("{}-end-{}", #enum_name_str, token);
+
+        // Check for end marker (truncation defense)
+        let __trimmed = text.trim_end();
+        if !__trimmed.ends_with(&__end_marker) {
+            return ::std::result::Result::Err(
+                ::std::format!("Output truncated: missing end marker {}", __end_marker)
+            );
+        }
+
+        // Strip end marker before parsing
+        let __text_without_end = &__trimmed[..__trimmed.len() - __end_marker.len()];
 
         // Split by separator line
-        let __blocks: ::std::vec::Vec<&str> = text.split(&__separator).collect();
+        let __blocks: ::std::vec::Vec<&str> = __text_without_end.split(&__separator).collect();
 
         // Skip first block (content before first separator, usually empty or preamble)
         for __block in __blocks.iter().skip(1) {

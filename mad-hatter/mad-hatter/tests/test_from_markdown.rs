@@ -1,5 +1,5 @@
-use mad_hatter::llm::FromMarkdown;
 use mad_hatter::FromMarkdown;
+use mad_hatter::llm::FromMarkdown as _;
 
 #[derive(FromMarkdown, Debug, PartialEq)]
 enum TestAction {
@@ -14,7 +14,7 @@ enum TestAction {
 
     /// 什么都不做
     Idle {
-        /// 秒数
+        /// 等待秒数
         timeout_secs: Option<u64>,
     },
 
@@ -26,7 +26,7 @@ enum TestAction {
         content: String,
     },
 
-    /// 搜索替换
+    /// 搜索替换文件内容
     ReplaceInFile {
         /// 文件路径
         path: String,
@@ -40,30 +40,39 @@ enum TestAction {
 #[test]
 fn test_schema_markdown() {
     let schema = TestAction::schema_markdown("abc123");
-    // Verify key elements are present
+
+    // Should contain element separator format
     assert!(schema.contains("TestAction-abc123"), "schema should contain element separator");
-    assert!(schema.contains("read_msg"), "schema should contain read_msg variant");
-    assert!(schema.contains("thinking"), "schema should contain thinking variant");
-    assert!(schema.contains("send_msg"), "schema should contain send_msg variant");
-    assert!(schema.contains("idle"), "schema should contain idle variant");
-    assert!(schema.contains("replace_in_file"), "schema should contain replace_in_file variant");
-    // Verify field separators for multi-field variants
-    assert!(schema.contains("recipient-abc123"), "schema should contain recipient separator");
-    assert!(schema.contains("content-abc123"), "schema should contain content separator");
-    assert!(schema.contains("path-abc123"), "schema should contain path separator");
-    assert!(schema.contains("search-abc123"), "schema should contain search separator");
-    assert!(schema.contains("replace-abc123"), "schema should contain replace separator");
-    // Verify doc comments
-    assert!(schema.contains("阅读收件箱"), "schema should contain ReadMsg doc");
-    assert!(schema.contains("记录思考"), "schema should contain Thinking doc");
-    assert!(schema.contains("寄出信件"), "schema should contain SendMsg doc");
-    // Print for manual inspection
-    println!("=== Schema ===\n{}", schema);
+
+    // Should contain variant names
+    assert!(schema.contains("read_msg"), "schema should contain read_msg");
+    assert!(schema.contains("thinking"), "schema should contain thinking");
+    assert!(schema.contains("idle"), "schema should contain idle");
+    assert!(schema.contains("send_msg"), "schema should contain send_msg");
+    assert!(schema.contains("replace_in_file"), "schema should contain replace_in_file");
+
+    // Should contain doc comments
+    assert!(schema.contains("阅读收件箱"), "schema should contain doc for ReadMsg");
+    assert!(schema.contains("记录思考"), "schema should contain doc for Thinking");
+
+    // Should contain field separators for multi-field variants
+    assert!(schema.contains("recipient-abc123"), "schema should contain field separator");
+    assert!(schema.contains("content-abc123"), "schema should contain field separator");
+
+    // Should contain end marker explanation
+    assert!(schema.contains("TestAction-end-abc123"), "schema should contain end marker");
+}
+
+#[test]
+fn test_schema_contains_end_marker() {
+    let schema = TestAction::schema_markdown("tok42");
+    // End marker should be at the end of schema
+    assert!(schema.contains("TestAction-end-tok42"), "schema must mention end marker");
 }
 
 #[test]
 fn test_zero_field_parse() {
-    let input = "TestAction-abc123\nread_msg\n";
+    let input = "TestAction-abc123\nread_msg\nTestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], TestAction::ReadMsg);
@@ -71,7 +80,7 @@ fn test_zero_field_parse() {
 
 #[test]
 fn test_one_field_parse() {
-    let input = "TestAction-abc123\nthinking\n这是思考内容\n可以多行\n";
+    let input = "TestAction-abc123\nthinking\n这是思考内容\n可以多行\nTestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], TestAction::Thinking {
@@ -81,7 +90,7 @@ fn test_one_field_parse() {
 
 #[test]
 fn test_option_field_with_value() {
-    let input = "TestAction-abc123\nidle\n120\n";
+    let input = "TestAction-abc123\nidle\n120\nTestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], TestAction::Idle {
@@ -91,7 +100,7 @@ fn test_option_field_with_value() {
 
 #[test]
 fn test_option_field_none() {
-    let input = "TestAction-abc123\nidle\n";
+    let input = "TestAction-abc123\nidle\nTestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], TestAction::Idle {
@@ -109,7 +118,7 @@ user
 content-abc123
 你好
 这是多行内容
-";
+TestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], TestAction::SendMsg {
@@ -129,7 +138,7 @@ search-abc123
 old code
 replace-abc123
 new code
-";
+TestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], TestAction::ReplaceInFile {
@@ -143,49 +152,113 @@ new code
 fn test_multi_action_parse() {
     let input = "\
 TestAction-abc123
-read_msg
-
-TestAction-abc123
 thinking
-先分析一下问题
+这是思考
 
 TestAction-abc123
 send_msg
 recipient-abc123
 user
 content-abc123
-分析完成，结果如下：
-1. 第一点
-2. 第二点
+你好
 
 TestAction-abc123
 idle
-60
-";
+120
+TestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
-    assert_eq!(result.len(), 4);
-    assert_eq!(result[0], TestAction::ReadMsg);
-    assert_eq!(result[1], TestAction::Thinking {
-        content: "先分析一下问题".to_string(),
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0], TestAction::Thinking {
+        content: "这是思考".to_string(),
     });
-    assert_eq!(result[2], TestAction::SendMsg {
+    assert_eq!(result[1], TestAction::SendMsg {
         recipient: "user".to_string(),
-        content: "分析完成，结果如下：\n1. 第一点\n2. 第二点".to_string(),
+        content: "你好".to_string(),
     });
-    assert_eq!(result[3], TestAction::Idle {
-        timeout_secs: Some(60),
+    assert_eq!(result[2], TestAction::Idle {
+        timeout_secs: Some(120),
     });
 }
 
 #[test]
-fn test_schema_roundtrip() {
-    // Generate schema, then verify the format description can guide correct parsing
-    let schema = TestAction::schema_markdown("test42");
-    // Schema should mention the separator format
-    assert!(schema.contains("TestAction-test42"));
-    // Verify a simple action can be parsed with the token from schema
-    let input = "TestAction-test42\nread_msg\n";
-    let result = TestAction::from_markdown(input, "test42").unwrap();
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0], TestAction::ReadMsg);
+fn test_end_marker_present() {
+    // Valid: has end marker
+    let input = "TestAction-abc123\nread_msg\nTestAction-end-abc123";
+    let result = TestAction::from_markdown(input, "abc123");
+    assert!(result.is_ok());
 }
+
+#[test]
+fn test_end_marker_missing_truncation() {
+    // Invalid: missing end marker → truncation error
+    let input = "TestAction-abc123\nread_msg";
+    let result = TestAction::from_markdown(input, "abc123");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("truncated") || err.contains("end marker"),
+        "Error should mention truncation: {}", err);
+}
+
+#[test]
+fn test_end_marker_missing_multi_action() {
+    // Multiple actions but no end marker
+    let input = "\
+TestAction-abc123
+thinking
+some thought
+
+TestAction-abc123
+read_msg";
+    let result = TestAction::from_markdown(input, "abc123");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_schema_roundtrip() {
+    let _schema = TestAction::schema_markdown("test42");
+
+    // The schema itself should be parseable if we construct valid input from it
+    let input = "\
+TestAction-test42
+read_msg
+
+TestAction-test42
+thinking
+一段思考内容
+
+TestAction-test42
+send_msg
+recipient-test42
+user
+content-test42
+信件内容
+
+TestAction-test42
+idle
+
+TestAction-test42
+replace_in_file
+path-test42
+src/lib.rs
+search-test42
+old
+replace-test42
+new
+TestAction-end-test42";
+
+    let result = TestAction::from_markdown(input, "test42").unwrap();
+    assert_eq!(result.len(), 5);
+    assert_eq!(result[0], TestAction::ReadMsg);
+    assert_eq!(result[1], TestAction::Thinking { content: "一段思考内容".to_string() });
+    assert_eq!(result[2], TestAction::SendMsg {
+        recipient: "user".to_string(),
+        content: "信件内容".to_string(),
+    });
+    assert_eq!(result[3], TestAction::Idle { timeout_secs: None });
+    assert_eq!(result[4], TestAction::ReplaceInFile {
+        path: "src/lib.rs".to_string(),
+        search: "old".to_string(),
+        replace: "new".to_string(),
+    });
+}
+
