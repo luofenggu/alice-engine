@@ -1752,22 +1752,25 @@ let isPolling = false;
 async function pollReplies() {
     if (!currentInstance || isSending || isPolling) return;
     isPolling = true;
-    if (!messages[currentInstance]) messages[currentInstance] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
-    const data = messages[currentInstance];
+    const instanceId = currentInstance; // Capture instance ID to detect switch during await
+    if (!messages[instanceId]) messages[instanceId] = { msgs: [], total: 0, earliestId: 0, fullyLoaded: true, lastMsgId: 0 };
+    const data = messages[instanceId];
     const afterId = data.lastMsgId || 0;
     let replies;
     try {
-        replies = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/replies?after_id=' + afterId);
+        replies = await api('GET', 'api/instances/' + encodeURIComponent(instanceId) + '/replies?after_id=' + afterId);
     } catch(e) {
         if (e.status === 502 || e.status === 504) {
-            showUnavailableBanner(currentInstance);
+            showUnavailableBanner(instanceId);
             stopPolling();
             stopInferencePolling();
         }
-        frontendLog('ERROR', 'poll_replies', 'instance=' + currentInstance + ' error=' + e.message);
+        frontendLog('ERROR', 'poll_replies', 'instance=' + instanceId + ' error=' + e.message);
         isPolling = false;
         return;
     }
+    // If instance switched during await, discard stale results
+    if (currentInstance !== instanceId) { isPolling = false; return; }
     if (Array.isArray(replies) && replies.length > 0) {
         let added = 0;
         replies.forEach(r => {
