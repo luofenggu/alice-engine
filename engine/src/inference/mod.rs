@@ -754,4 +754,201 @@ mod tests {
         assert!(schema.contains("distill"));
         assert!(schema.contains(&format!("Action-end-{}", TOKEN)));
     }
+
+    // ─── Format anomaly tests: error messages enter current ─────────
+
+    #[test]
+    fn test_format_anomaly_garbage_before_separator() {
+        // LLM outputs garbage before the first action separator
+        // from_markdown should return "Unexpected content before first separator"
+        // parse_actions should convert it to Thinking with error message
+        let raw = format!("这是一些废话blah blah\n{}\nidle\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Thinking { content } => {
+                assert!(
+                    content.contains("action解析失败"),
+                    "Error should contain 'action解析失败', got: {}",
+                    content
+                );
+                assert!(
+                    content.contains("Unexpected content before first"),
+                    "Error should mention unexpected content, got: {}",
+                    content
+                );
+            }
+            other => panic!("Expected Thinking with error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_format_anomaly_complete_garbage_no_separator() {
+        // LLM outputs complete garbage without any action separator
+        // parse_actions returns empty Vec (no separator found)
+        let raw = "completely random garbage text 完全乱码 no actions here";
+        let actions = parse_actions(raw, TOKEN).unwrap();
+        assert_eq!(
+            actions.len(),
+            0,
+            "Complete garbage without separator should return empty Vec"
+        );
+    }
+
+    #[test]
+    fn test_format_anomaly_misspelled_variant() {
+        // LLM outputs correct separator but misspells the variant name
+        // from_markdown should fail to match any variant → Thinking with error
+        let raw = format!("{}\nidel\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Thinking { content } => {
+                assert!(
+                    content.contains("action解析失败"),
+                    "Error should contain 'action解析失败', got: {}",
+                    content
+                );
+            }
+            other => panic!("Expected Thinking with error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_format_anomaly_empty_after_separator() {
+        // LLM outputs separator but no content before end marker
+        let raw = format!("{}\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        // Empty chunk after separator — should either be empty or error
+        // The key point: no panic, graceful handling
+        for action in &actions {
+            if let Action::Thinking { content } = action {
+                // If it becomes a Thinking, the error message should be informative
+                assert!(
+                    content.contains("action解析失败") || content.contains("⚠️"),
+                    "Error Thinking should have informative message, got: {}",
+                    content
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_format_anomaly_multiple_actions_with_bad_middle() {
+        // Multiple actions where the middle one has an invalid variant
+        // from_markdown processes all chunks; bad variant causes error for entire parse
+        let raw = format!(
+            "{}\nthinking\nok\n{}\nbad_action_name\n{}\nidle\n{}",
+            sep(),
+            sep(),
+            sep(),
+            end()
+        );
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        // Should have at least one action; the bad one becomes Thinking with error
+        // OR the entire parse fails and becomes a single Thinking
+        let has_error = actions.iter().any(|a| match a {
+            Action::Thinking { content } => content.contains("action解析失败"),
+            _ => false,
+        });
+        assert!(
+            has_error,
+            "Should contain at least one Thinking with parse error. Got: {:?}",
+            actions
+        );
+    }
+
+    #[test]
+    fn test_format_anomaly_missing_end_marker_auto_appended() {
+        // LLM output has separator and valid content but no end marker
+        // parse_actions auto-appends end marker, so this should parse successfully
+        let raw = format!("{}\nidle\n", sep());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(actions[0], Action::Idle { .. }),
+            "Auto-appended end marker should allow successful parse"
+        );
+    }
+
+    #[test]
+    fn test_format_anomaly_partial_separator() {
+        // LLM outputs something that looks like a separator but isn't complete
+        let raw = format!("Action-\nidle\n{}", end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        // "Action-" doesn't match "Action-{TOKEN}", so no separator found → empty
+        assert_eq!(
+            actions.len(),
+            0,
+            "Partial separator should not match"
+        );
+    }
+
+    #[test]
+    fn test_format_anomaly_error_message_includes_original_output() {
+        // Verify that error messages include truncated original output for debugging
+        let raw = format!("废话废话废话\n{}\nnonexistent_action\n{}", sep(), end());
+        let actions = parse_actions(&raw, TOKEN).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Thinking { content } => {
+                assert!(
+                    content.contains("原始输出"),
+                    "Error should include original output snippet, got: {}",
+                    content
+                );
+            }
+            other => panic!("Expected Thinking with error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_format_anomaly_from_markdown_direct_no_separator() {
+        // Directly test from_markdown with content that has no separator at all
+        let result = Action::from_markdown("just some random text", TOKEN);
+        assert!(
+            result.is_err(),
+            "from_markdown should return Err for text without separator"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Missing end marker"),
+            "Error should mention missing end marker, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_format_anomaly_from_markdown_direct_garbage_before_separator() {
+        // Directly test from_markdown with garbage before separator
+        let input = format!("garbage here\n{}\nidle\n{}", sep(), end());
+        let result = Action::from_markdown(&input, TOKEN);
+        assert!(
+            result.is_err(),
+            "from_markdown should return Err for garbage before separator"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Unexpected content before first"),
+            "Error should mention unexpected content, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_format_anomaly_from_markdown_direct_missing_end_marker() {
+        // Directly test from_markdown with separator but no end marker
+        let input = format!("{}\nidle\n", sep());
+        let result = Action::from_markdown(&input, TOKEN);
+        assert!(
+            result.is_err(),
+            "from_markdown should return Err for missing end marker"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Missing end marker"),
+            "Error should mention missing end marker, got: {}",
+            err
+        );
+    }
 }

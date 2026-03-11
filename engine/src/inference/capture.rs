@@ -6,7 +6,6 @@
 //! End-marker protection is handled automatically by the mad-hatter framework.
 
 use mad_hatter::llm::{StructInput, ToMarkdown};
-use mad_hatter::FromMarkdown;
 
 /// Instructions for the knowledge capture LLM (inlined from capture_system.txt).
 const CAPTURE_INSTRUCTIONS: &str = r#"你是agent的知识维护者。你的任务是基于当前知识、近况、当前增量和本次小结，产出新的完整知识文件。
@@ -188,7 +187,7 @@ pub struct CaptureRequest {
 }
 
 impl ToMarkdown for CaptureRequest {
-    fn to_markdown(&self) -> String {
+    fn to_markdown_depth(&self, _depth: usize) -> String {
         format!(
             "{}\n\n## 当前知识\n{}\n\n## 近况\n{}\n\n## 当前增量\n{}\n\n## 本次小结\n{}",
             CAPTURE_INSTRUCTIONS,
@@ -203,7 +202,7 @@ impl ToMarkdown for CaptureRequest {
 impl StructInput for CaptureRequest {}
 
 /// 知识捕获结果
-#[derive(FromMarkdown)]
+#[derive(mad_hatter::FromMarkdown)]
 pub struct CaptureOutput {
     /// 知识文件
     #[markdown(required)]
@@ -248,13 +247,14 @@ mod tests {
 
     #[test]
     fn capture_output_parses() {
+        use mad_hatter::llm::FromMarkdown;
         let token = "test123";
         let input = format!(
-            "CaptureOutput-{}\n知识文件\nsome knowledge content\nCaptureOutput-end-{}",
-            token, token
+            "CaptureOutput-{t}\nknowledge-{t}\nsome knowledge content\nCaptureOutput-end-{t}",
+            t = token
         );
-        let results = CaptureOutput::from_markdown(&input, token);
+        let results = CaptureOutput::from_markdown(&input, token).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].as_ref().unwrap().knowledge, "some knowledge content");
+        assert_eq!(results[0].knowledge, "some knowledge content");
     }
 }
