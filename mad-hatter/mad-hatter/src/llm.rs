@@ -272,6 +272,22 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
             // could be found in buffer while there are still unprocessed elements.
             let first_sep = self.buffer.find(&separator);
             if let Some(first_pos) = first_sep {
+                // Expect: first element must start at beginning (no preamble allowed)
+                // Exception: code block markers (```) are allowed (consistent with from_markdown's strip_code_block)
+                if self.parsed_count == 0 && first_pos > 0 {
+                    let before = self.buffer[..first_pos].trim();
+                    if !before.is_empty() && !before.lines().all(|l| {
+                        let t = l.trim();
+                        t.is_empty() || t.starts_with("```")
+                    }) {
+                        self.done = true;
+                        return Some(Err(format!(
+                            "[{}] Unexpected content before first element separator '{}': {}",
+                            self.type_name, separator, before
+                        )));
+                    }
+                }
+
                 let after_first = first_pos + separator.len();
                 // Look for second separator OR end_marker after the first separator
                 let next_sep = self.buffer[after_first..].find(&separator);
@@ -352,17 +368,10 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
                     } else {
                         self.buffer.clone()
                     };
-                    if self.parsed_count == 0 {
-                        return Some(Err(format!(
-                            "[{}] No valid element found. Expected '{}-{}' to start output. Buffer tail (up to 200 chars): {}",
-                            self.type_name, self.type_name, self.token, tail
-                        )));
-                    } else {
-                        return Some(Err(format!(
-                            "[{}] Missing end marker '{}' after {} element(s). Buffer tail (up to 200 chars): {}",
-                            self.type_name, end_marker, self.parsed_count, tail
-                        )));
-                    }
+                    return Some(Err(format!(
+                        "[{}] Missing end marker '{}' after {} element(s). Buffer tail (up to 200 chars): {}",
+                        self.type_name, end_marker, self.parsed_count, tail
+                    )));
                 }
             }
         }

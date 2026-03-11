@@ -703,15 +703,9 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
             } else {
                 __text_trimmed.to_string()
             };
-            if __text_trimmed.contains(&__element_sep) {
-                return ::std::result::Result::Err(
-                    ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #enum_name_str, __end_marker, __tail)
-                );
-            } else {
-                return ::std::result::Result::Err(
-                    ::std::format!("[{}] No valid element found. Expected '{}' to start output. Content (up to 200 chars): {}", #enum_name_str, __element_sep, __tail)
-                );
-            }
+            return ::std::result::Result::Err(
+                ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #enum_name_str, __end_marker, __tail)
+            );
         }
 
         // Remove end marker
@@ -720,6 +714,16 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
         // Split by element separator
         let __sep_with_newline = ::std::format!("{}\n", __element_sep);
         let __chunks: ::std::vec::Vec<&str> = __text_body.split(&__sep_with_newline).collect();
+
+        // Expect: first chunk (before first separator) must be empty
+        if let ::std::option::Option::Some(__first_chunk) = __chunks.first() {
+            let __first_trimmed = __first_chunk.trim();
+            if !__first_trimmed.is_empty() {
+                return ::std::result::Result::Err(
+                    ::std::format!("[{}] Unexpected content before first element separator '{}': {}", #enum_name_str, __element_sep, __first_trimmed)
+                );
+            }
+        }
 
         let mut __parsed_count: usize = 0;
 
@@ -1106,15 +1110,9 @@ fn gen_struct_from_markdown(struct_name: &syn::Ident, struct_name_str: &str, fie
             } else {
                 __text_trimmed.to_string()
             };
-            if __text_trimmed.contains(&__element_sep) {
-                return ::std::result::Result::Err(
-                    ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #struct_name_str, __end_marker, __tail)
-                );
-            } else {
-                return ::std::result::Result::Err(
-                    ::std::format!("[{}] No valid element found. Expected '{}' to start output. Content (up to 200 chars): {}", #struct_name_str, __element_sep, __tail)
-                );
-            }
+            return ::std::result::Result::Err(
+                ::std::format!("[{}] Missing end marker '{}'. Content tail (up to 200 chars): {}", #struct_name_str, __end_marker, __tail)
+            );
         }
 
         // Remove end marker
@@ -1123,6 +1121,16 @@ fn gen_struct_from_markdown(struct_name: &syn::Ident, struct_name_str: &str, fie
         // Split by element separator
         let __sep_with_newline = ::std::format!("{}\n", __element_sep);
         let __chunks: ::std::vec::Vec<&str> = __text_body.split(&__sep_with_newline).collect();
+
+        // Expect: first chunk (before first separator) must be empty
+        if let ::std::option::Option::Some(__first_chunk) = __chunks.first() {
+            let __first_trimmed = __first_chunk.trim();
+            if !__first_trimmed.is_empty() {
+                return ::std::result::Result::Err(
+                    ::std::format!("[{}] Unexpected content before first element separator '{}': {}", #struct_name_str, __element_sep, __first_trimmed)
+                );
+            }
+        }
 
         for __chunk in __chunks {
             let __chunk = __chunk.trim();
