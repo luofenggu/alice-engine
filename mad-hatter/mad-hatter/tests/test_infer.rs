@@ -325,8 +325,8 @@ fn test_infer_prompt_contains_schema() {
     assert!(prompt.contains("测试上下文"), "prompt should contain context");
 
     // Prompt should contain schema
-    assert!(prompt.contains("action 回复用户"), "prompt should contain schema");
-    assert!(prompt.contains("action 什么都不做"), "prompt should contain idle schema");
+    assert!(prompt.contains("action // 回复用户"), "prompt should contain schema");
+    assert!(prompt.contains("action // 什么都不做"), "prompt should contain idle schema");
     assert!(prompt.contains("SimpleAction-"), "prompt should contain element separator");
     assert!(prompt.contains("SimpleAction-end-"), "prompt should contain end marker");
 

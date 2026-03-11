@@ -85,7 +85,7 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
 
     // Extract struct-level doc comment as header
     let struct_docs = extract_doc_comments(&input.attrs);
-    let struct_header = struct_docs.join(" ");
+    let struct_header = join_as_comment(&struct_docs);
 
     let mut tm_fields: Vec<ToMarkdownField> = Vec::new();
     for field in fields.iter() {
@@ -448,7 +448,7 @@ fn derive_from_markdown_enum(input: DeriveInput) -> TokenStream {
     let mut variants: Vec<VariantInfo> = Vec::new();
     for v in variants_data {
         let docs = extract_doc_comments(&v.attrs);
-        let doc = docs.join(" ");
+        let doc = join_as_comment(&docs);
         let snake_name = to_snake_case(&v.ident.to_string());
 
         let fields = match &v.fields {
@@ -456,7 +456,7 @@ fn derive_from_markdown_enum(input: DeriveInput) -> TokenStream {
                 named.named.iter().map(|f| {
                     let fname = f.ident.as_ref().unwrap().to_string();
                     let fdocs = extract_doc_comments(&f.attrs);
-                    let fdoc = if fdocs.is_empty() { fname.clone() } else { fdocs.join(" ") };
+                    let fdoc = if fdocs.is_empty() { fname.clone() } else { join_as_comment(&fdocs) };
                     let (is_option, inner_type) = check_option_type(&f.ty);
                     let (is_vec, vec_inner_type, vec_inner_syn_type) = check_vec_type(&f.ty);
                     let is_required = has_markdown_required(&f.attrs);
@@ -943,7 +943,7 @@ fn derive_from_markdown_struct(input: DeriveInput) -> TokenStream {
     for f in fields.iter() {
         let fname = f.ident.as_ref().unwrap().to_string();
         let fdocs = extract_doc_comments(&f.attrs);
-        let fdoc = if fdocs.is_empty() { fname.clone() } else { fdocs.join(" ") };
+        let fdoc = if fdocs.is_empty() { fname.clone() } else { join_as_comment(&fdocs) };
         let (is_option, inner_type) = check_option_type(&f.ty);
         let (is_vec, vec_inner_type, vec_inner_syn_type) = check_vec_type(&f.ty);
         let is_required = has_markdown_required(&f.attrs);
@@ -1286,6 +1286,11 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
     docs
 }
 
+
+/// Join doc comments as comment lines with "// " prefix, preserving original line breaks.
+fn join_as_comment(docs: &[String]) -> String {
+    docs.iter().map(|d| format!("// {}", d)).collect::<Vec<_>>().join("\n")
+}
 /// Check if a field has `#[markdown(skip)]` attribute.
 fn has_markdown_skip(attrs: &[syn::Attribute]) -> bool {
     for attr in attrs {

@@ -52,8 +52,8 @@ fn test_schema_markdown() {
     assert!(schema.contains("replace_in_file"), "schema should contain replace_in_file");
 
     // Should contain doc comments
-    assert!(schema.contains("阅读收件箱"), "schema should contain doc for ReadMsg");
-    assert!(schema.contains("记录思考"), "schema should contain doc for Thinking");
+    assert!(schema.contains("// 阅读收件箱"), "schema should contain doc for ReadMsg");
+    assert!(schema.contains("// 记录思考"), "schema should contain doc for Thinking");
 
     // Should contain field separators for multi-field variants
     assert!(schema.contains("recipient-abc123"), "schema should contain field separator");

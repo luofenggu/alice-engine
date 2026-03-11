@@ -34,7 +34,7 @@ fn test_capture_to_markdown() {
     let md = input.to_markdown();
 
     // struct级doc comment → 头部
-    assert!(md.starts_with("你是一个知识提炼专家"), "should start with struct doc comment");
+    assert!(md.starts_with("// 你是一个知识提炼专家"), "should start with struct doc comment");
 
     // 字段级doc comment → 单行String用inline格式
     assert!(md.contains("当前知识内容: 已有知识..."), "should have knowledge inline");
@@ -63,7 +63,7 @@ fn test_all_empty_fields() {
     };
     let md = input.to_markdown();
     // 只有头部，没有任何section
-    assert!(md.contains("你是一个知识提炼专家"));
+    assert!(md.contains("// 你是一个知识提炼专家"));
     assert!(!md.contains("###"));
 }
 
@@ -132,7 +132,7 @@ fn test_nested_struct() {
     let md = o.to_markdown();
 
     // 顶层header
-    assert!(md.contains("顶层结构"), "should have struct doc header");
+    assert!(md.contains("// 顶层结构"), "should have struct doc header");
 
     // 顶层String字段：单行用inline格式
     assert!(md.contains("标题: 一些标题文本"), "title should use inline format");
@@ -332,7 +332,7 @@ fn test_mixed_nested() {
     let md = req.to_markdown();
 
     // Header
-    assert!(md.contains("你醒了"), "struct doc header");
+    assert!(md.contains("// 你醒了"), "struct doc header");
 
     // Skip field
     assert!(!md.contains("TOKEN123"), "skip field should not appear");
