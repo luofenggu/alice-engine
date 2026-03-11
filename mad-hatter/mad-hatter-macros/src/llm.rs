@@ -2,6 +2,62 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Lit, Meta};
 
+// ============================================================
+// Field type classification (for ToMarkdown)
+// ============================================================
+
+enum FieldKind {
+    String,
+    Bool,
+    Numeric,
+    Vec(syn::Type),
+    Option(Box<FieldKind>),
+    Other,
+}
+
+fn classify_field_type(ty: &syn::Type) -> FieldKind {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(seg) = type_path.path.segments.last() {
+            let name = seg.ident.to_string();
+            match name.as_str() {
+                "String" => return FieldKind::String,
+                "bool" => return FieldKind::Bool,
+                "u8" | "u16" | "u32" | "u64" | "usize" |
+                "i8" | "i16" | "i32" | "i64" | "isize" |
+                "f32" | "f64" => return FieldKind::Numeric,
+                "Vec" => {
+                    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                        if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+                            return FieldKind::Vec(inner.clone());
+                        }
+                    }
+                }
+                "Option" => {
+                    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                        if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+                            let inner_kind = classify_field_type(inner);
+                            return FieldKind::Option(Box::new(inner_kind));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    FieldKind::Other
+}
+
+// ============================================================
+// ToMarkdown derive
+// ============================================================
+
+/// Collected info about a struct field for ToMarkdown generation.
+struct ToMarkdownField {
+    ident: syn::Ident,
+    section_title: String,
+    kind: FieldKind,
+}
+
 /// Generate `impl ToMarkdown for Struct` from derive attributes.
 pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
     let struct_name = &input.ident;
@@ -24,46 +80,41 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
         }
     };
 
-    // Process each field
-    let mut field_renders = Vec::new();
+    // Collect field info
+    let mut tm_fields: Vec<ToMarkdownField> = Vec::new();
 
     for field in fields {
-        let field_name = field.ident.as_ref().unwrap();
+        let field_ident = field.ident.as_ref().unwrap().clone();
 
-        // Check for #[markdown(skip)]
         if has_markdown_skip(&field.attrs) {
             continue;
         }
 
-        // Extract field-level doc comments
         let field_docs = extract_doc_comments(&field.attrs);
-
-        // Determine section title: doc comment if present, otherwise field name
         let section_title = if field_docs.is_empty() {
-            field_name.to_string()
+            field_ident.to_string()
         } else {
             field_docs.join("\n")
         };
 
-        // Generate render code for this field
-        // P0: only String fields supported
-        field_renders.push(quote! {
-            {
-                let value = &self.#field_name;
-                let s: &str = value.as_ref();
-                if !s.is_empty() {
-                    if !__out.is_empty() && !__out.ends_with('\n') {
-                        __out.push('\n');
-                    }
-                    __out.push_str("\n### ");
-                    __out.push_str(#section_title);
-                    __out.push_str(" ###\n");
-                    __out.push_str(s);
-                    __out.push('\n');
-                }
-            }
+        let kind = classify_field_type(&field.ty);
+
+        tm_fields.push(ToMarkdownField {
+            ident: field_ident,
+            section_title,
+            kind,
         });
     }
+
+    // Generate to_markdown_depth field renders
+    let depth_renders: Vec<TokenStream> = tm_fields.iter().map(|f| {
+        gen_depth_render(f)
+    }).collect();
+
+    // Generate to_markdown_item field renders
+    let item_renders: Vec<TokenStream> = tm_fields.iter().map(|f| {
+        gen_item_render(f)
+    }).collect();
 
     // Build the header from struct-level doc comments
     let header = if struct_docs.is_empty() {
@@ -78,11 +129,266 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
 
     quote! {
         impl ::mad_hatter::llm::ToMarkdown for #struct_name {
-            fn to_markdown(&self) -> ::std::string::String {
+            fn to_markdown_depth(&self, __depth: usize) -> ::std::string::String {
                 let mut __out = ::std::string::String::new();
                 #header
-                #(#field_renders)*
+                #(#depth_renders)*
                 __out
+            }
+
+            fn to_markdown_item(&self) -> ::std::string::String {
+                let mut __out = ::std::string::String::new();
+                #(#item_renders)*
+                __out
+            }
+        }
+    }
+}
+
+/// Generate rendering code for a field in to_markdown_depth mode (heading-based).
+fn gen_depth_render(f: &ToMarkdownField) -> TokenStream {
+    let ident = &f.ident;
+    let title = &f.section_title;
+
+    match &f.kind {
+        FieldKind::String => {
+            quote! {
+                {
+                    let __val: &str = self.#ident.as_ref();
+                    if !__val.is_empty() {
+                        let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                        __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                        __out.push_str(__val);
+                        __out.push('\n');
+                    }
+                }
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                {
+                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                    __out.push_str(&self.#ident.to_string());
+                    __out.push('\n');
+                }
+            }
+        }
+        FieldKind::Vec(inner_ty) => {
+            let inner_kind = classify_field_type(inner_ty);
+            let element_render = gen_vec_element_render_depth(&inner_kind);
+            quote! {
+                {
+                    let __items = &self.#ident;
+                    if !__items.is_empty() {
+                        let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                        __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                        for (__i, __item) in __items.iter().enumerate() {
+                            if __i > 0 {
+                                __out.push('\n');
+                            }
+                            #element_render
+                        }
+                    }
+                }
+            }
+        }
+        FieldKind::Option(inner_kind) => {
+            gen_option_depth_render(ident, title, inner_kind)
+        }
+        FieldKind::Other => {
+            quote! {
+                {
+                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                    __out.push_str(&::mad_hatter::llm::ToMarkdown::to_markdown_depth(&self.#ident, __depth + 1));
+                }
+            }
+        }
+    }
+}
+
+/// Generate code to render a single Vec element in depth mode.
+fn gen_vec_element_render_depth(inner_kind: &FieldKind) -> TokenStream {
+    match inner_kind {
+        FieldKind::String => {
+            quote! {
+                __out.push_str(__item.as_str());
+                __out.push('\n');
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                __out.push_str(&__item.to_string());
+                __out.push('\n');
+            }
+        }
+        _ => {
+            // Struct or other complex type: use to_markdown_item for compact format
+            quote! {
+                __out.push_str(&::mad_hatter::llm::ToMarkdown::to_markdown_item(__item));
+            }
+        }
+    }
+}
+
+/// Generate depth-mode rendering for Option<T> fields.
+fn gen_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKind) -> TokenStream {
+    let value_render = match inner_kind {
+        FieldKind::String => {
+            quote! {
+                let __s: &str = __val.as_ref();
+                if !__s.is_empty() {
+                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                    __out.push_str(__s);
+                    __out.push('\n');
+                }
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                __out.push_str(&__val.to_string());
+                __out.push('\n');
+            }
+        }
+        _ => {
+            quote! {
+                let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                __out.push_str(&::mad_hatter::llm::ToMarkdown::to_markdown_depth(__val, __depth + 1));
+            }
+        }
+    };
+
+    quote! {
+        {
+            if let ::std::option::Option::Some(__val) = &self.#ident {
+                #value_render
+            }
+        }
+    }
+}
+
+/// Generate rendering code for a field in to_markdown_item mode (compact "field: value" format).
+fn gen_item_render(f: &ToMarkdownField) -> TokenStream {
+    let ident = &f.ident;
+    let field_name = ident.to_string();
+
+    match &f.kind {
+        FieldKind::String => {
+            quote! {
+                {
+                    let __val: &str = self.#ident.as_ref();
+                    if !__val.is_empty() {
+                        __out.push_str(#field_name);
+                        __out.push_str(": ");
+                        __out.push_str(__val);
+                        __out.push('\n');
+                    }
+                }
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                {
+                    __out.push_str(#field_name);
+                    __out.push_str(": ");
+                    __out.push_str(&self.#ident.to_string());
+                    __out.push('\n');
+                }
+            }
+        }
+        FieldKind::Vec(inner_ty) => {
+            let inner_kind = classify_field_type(inner_ty);
+            let element_render = gen_vec_element_render_item(&inner_kind);
+            quote! {
+                {
+                    let __items = &self.#ident;
+                    if !__items.is_empty() {
+                        for __item in __items.iter() {
+                            #element_render
+                        }
+                    }
+                }
+            }
+        }
+        FieldKind::Option(inner_kind) => {
+            gen_option_item_render(ident, &field_name, inner_kind)
+        }
+        FieldKind::Other => {
+            // Nested struct in item mode: render its item form
+            quote! {
+                {
+                    __out.push_str(&::mad_hatter::llm::ToMarkdown::to_markdown_item(&self.#ident));
+                }
+            }
+        }
+    }
+}
+
+/// Generate code to render a single Vec element in item mode.
+fn gen_vec_element_render_item(inner_kind: &FieldKind) -> TokenStream {
+    match inner_kind {
+        FieldKind::String => {
+            quote! {
+                __out.push_str(__item.as_str());
+                __out.push('\n');
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                __out.push_str(&__item.to_string());
+                __out.push('\n');
+            }
+        }
+        _ => {
+            quote! {
+                __out.push_str(&::mad_hatter::llm::ToMarkdown::to_markdown_item(__item));
+                __out.push('\n');
+            }
+        }
+    }
+}
+
+/// Generate item-mode rendering for Option<T> fields.
+fn gen_option_item_render(ident: &syn::Ident, field_name: &str, inner_kind: &FieldKind) -> TokenStream {
+    let value_render = match inner_kind {
+        FieldKind::String => {
+            quote! {
+                let __s: &str = __val.as_ref();
+                if !__s.is_empty() {
+                    __out.push_str(#field_name);
+                    __out.push_str(": ");
+                    __out.push_str(__s);
+                    __out.push('\n');
+                }
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                __out.push_str(#field_name);
+                __out.push_str(": ");
+                __out.push_str(&__val.to_string());
+                __out.push('\n');
+            }
+        }
+        _ => {
+            quote! {
+                __out.push_str(#field_name);
+                __out.push_str(": ");
+                __out.push_str(&::mad_hatter::llm::ToMarkdown::to_markdown_item(__val));
+                __out.push('\n');
+            }
+        }
+    };
+
+    quote! {
+        {
+            if let ::std::option::Option::Some(__val) = &self.#ident {
+                #value_render
             }
         }
     }
@@ -170,33 +476,6 @@ pub fn derive_from_markdown(input: DeriveInput) -> TokenStream {
 }
 
 /// Generate the body of `schema_markdown`.
-///
-/// New format: `{TypeName}-{token}` as element separator, first line is variant name.
-///
-/// 0 fields:
-///   action {doc}
-///   首行输出: {TypeName}-{token}
-///   第二行输出: {variant_name}
-///
-/// 1 field (non-option):
-///   action {doc}
-///   首行输出: {TypeName}-{token}
-///   第二行输出: {variant_name}
-///   第三行开始多行输出{field_doc}
-///
-/// 0 required + 1 option field (like Idle):
-///   action {doc}
-///   首行输出: {TypeName}-{token}
-///   第二行输出: {variant_name}
-///   第三行可选输出: {field_doc}
-///
-/// N>=2 fields:
-///   action {doc}
-///   首行输出: {TypeName}-{token}
-///   第二行输出: {variant_name}
-///   {field_name}-{token}
-///   {field_doc}
-///   ...
 fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenStream {
     let mut variant_schemas = Vec::new();
 
@@ -208,7 +487,6 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
         let total = vi.fields.len();
 
         if total == 0 {
-            // 0 fields: just variant name
             variant_schemas.push(quote! {
                 __out.push_str(&::std::format!(
                     "action {doc}\n首行输出: {ename}-{token}\n第二行输出: {snake}\n",
@@ -216,7 +494,6 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
                 ));
             });
         } else if total == 1 && option_fields.len() == 1 {
-            // 0 required + 1 option (like Idle)
             let fdoc = &option_fields[0].doc;
             variant_schemas.push(quote! {
                 __out.push_str(&::std::format!(
@@ -225,7 +502,6 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
                 ));
             });
         } else if total == 1 && required_fields.len() == 1 {
-            // 1 required field
             let fdoc = &required_fields[0].doc;
             variant_schemas.push(quote! {
                 __out.push_str(&::std::format!(
@@ -234,7 +510,6 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
                 ));
             });
         } else {
-            // N>=2 fields: use field separators
             let mut field_lines = Vec::new();
             for f in &vi.fields {
                 let fname = &f.name;
@@ -264,7 +539,6 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
             });
         }
 
-        // Add blank line between variants
         variant_schemas.push(quote! {
             __out.push('\n');
         });
@@ -279,10 +553,7 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
 }
 
 /// Generate the body of `from_markdown`.
-///
-/// Split by `{TypeName}-{token}`, then parse each block.
 fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[VariantInfo]) -> TokenStream {
-    // Build match arms for each variant
     let mut match_arms = Vec::new();
 
     for vi in variants {
@@ -293,14 +564,12 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
         let option_fields: Vec<&FieldInfo> = vi.fields.iter().filter(|f| f.is_option).collect();
 
         if total == 0 {
-            // 0 fields
             match_arms.push(quote! {
                 #snake => {
                     __results.push(#enum_name::#variant_ident);
                 }
             });
         } else if total == 1 && option_fields.len() == 1 {
-            // 0 required + 1 option field (like Idle { timeout_secs: Option<u64> })
             let field_name_ident = syn::Ident::new(&option_fields[0].name, proc_macro2::Span::call_site());
             let inner = &option_fields[0].inner_type;
 
@@ -322,7 +591,6 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                     }
                 });
             } else {
-                // Option<String>
                 match_arms.push(quote! {
                     #snake => {
                         let __rest = __body.trim_end();
@@ -336,7 +604,6 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                 });
             }
         } else if total == 1 && required_fields.len() == 1 {
-            // 1 required field (like Thinking { content: String })
             let field_name_ident = syn::Ident::new(&required_fields[0].name, proc_macro2::Span::call_site());
             match_arms.push(quote! {
                 #snake => {
@@ -345,7 +612,6 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                 }
             });
         } else {
-            // N>=2 fields
             let multi_parse = gen_multi_field_parse(enum_name, vi);
             match_arms.push(quote! {
                 #snake => {
@@ -360,7 +626,6 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
         let __separator = ::std::format!("{}-{}", #enum_name_str, token);
         let __end_marker = ::std::format!("{}-end-{}", #enum_name_str, token);
 
-        // Check for end marker (truncation defense)
         let __trimmed = text.trim_end();
         if !__trimmed.ends_with(&__end_marker) {
             return ::std::result::Result::Err(
@@ -368,22 +633,17 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
             );
         }
 
-        // Strip end marker before parsing
         let __text_without_end = &__trimmed[..__trimmed.len() - __end_marker.len()];
 
-        // Split by separator line
         let __blocks: ::std::vec::Vec<&str> = __text_without_end.split(&__separator).collect();
 
-        // Skip first block (content before first separator, usually empty or preamble)
         for __block in __blocks.iter().skip(1) {
-            // Trim leading newline
             let __block = if __block.starts_with('\n') { &__block[1..] } else { *__block };
 
             if __block.trim().is_empty() {
                 continue;
             }
 
-            // First line is variant name
             let (__variant_line, __body) = match __block.find('\n') {
                 Some(pos) => (__block[..pos].trim(), &__block[pos + 1..]),
                 None => (__block.trim(), ""),
@@ -404,13 +664,10 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
 }
 
 /// Generate parsing code for a variant with N>=2 fields.
-///
-/// Uses `{field_name}-{token}` separators to split the body.
 fn gen_multi_field_parse(enum_name: &syn::Ident, vi: &VariantInfo) -> TokenStream {
     let variant_ident = &vi.ident;
     let snake = &vi.snake_name;
 
-    // Build separator names and field processing
     let mut field_names: Vec<String> = Vec::new();
     let mut field_idents: Vec<syn::Ident> = Vec::new();
     let mut field_is_option: Vec<bool> = Vec::new();
@@ -424,11 +681,8 @@ fn gen_multi_field_parse(enum_name: &syn::Ident, vi: &VariantInfo) -> TokenStrea
     }
 
     let field_count = field_names.len();
-
-    // Generate separator strings at runtime
     let sep_name_literals: Vec<&str> = field_names.iter().map(|s| s.as_str()).collect();
 
-    // Build field extraction code
     let mut field_extractions = Vec::new();
     let mut field_var_names: Vec<syn::Ident> = Vec::new();
 
@@ -482,45 +736,35 @@ fn gen_multi_field_parse(enum_name: &syn::Ident, vi: &VariantInfo) -> TokenStrea
         field_var_names.push(var_name);
     }
 
-    // Build constructor
     let constructor_fields: Vec<TokenStream> = field_idents.iter().zip(field_var_names.iter()).map(|(fi, vn)| {
         quote! { #fi: #vn }
     }).collect();
 
     quote! {
-        // Build separators: ["{field_name}-{token}", ...]
         let __seps: ::std::vec::Vec<::std::string::String> = [#(#sep_name_literals),*]
             .iter()
             .map(|n| ::std::format!("{}-{}", n, token))
             .collect();
 
-        // Split body by field separators sequentially
         let mut __field_values: ::std::vec::Vec<&str> = ::std::vec::Vec::new();
         let mut __remaining = __body;
 
         for (i, sep) in __seps.iter().enumerate() {
-            // Find separator line
             let __sep_with_newline = ::std::format!("{}\n", sep);
             match __remaining.find(&__sep_with_newline) {
                 Some(pos) => {
-                    // Content before this separator belongs to previous field (if any)
-                    // Skip to after separator
                     __remaining = &__remaining[pos + __sep_with_newline.len()..];
                 }
                 None => {
-                    // Check if separator is at end without trailing newline
                     if __remaining.trim_end() == sep.as_str() {
                         __remaining = "";
                     } else {
-                        // For optional fields, separator might not be present
-                        // Push empty and continue
                         __field_values.push("");
                         continue;
                     }
                 }
             }
 
-            // Find next separator to delimit this field's value
             let mut __end = __remaining.len();
             for next_sep in __seps.iter().skip(i + 1) {
                 let __next_sep_with_newline = ::std::format!("{}\n", next_sep);
@@ -528,7 +772,6 @@ fn gen_multi_field_parse(enum_name: &syn::Ident, vi: &VariantInfo) -> TokenStrea
                     __end = pos;
                     break;
                 }
-                // Also check bare separator at end
                 let __trimmed = __remaining.trim_end();
                 if __trimmed.ends_with(next_sep.as_str()) {
                     __end = __trimmed.len() - next_sep.len();
@@ -576,7 +819,6 @@ fn check_option_type(ty: &syn::Type) -> (bool, String) {
             if seg.ident == "Option" {
                 if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                     if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                        // Get the inner type as string
                         let inner_str = quote!(#inner_ty).to_string().replace(' ', "");
                         return (true, inner_str);
                     }
@@ -588,7 +830,6 @@ fn check_option_type(ty: &syn::Type) -> (bool, String) {
 }
 
 /// Extract doc comments from attributes.
-/// `#[doc = " some text"]` → `"some text"` (trimmed)
 fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
     let mut docs = Vec::new();
     for attr in attrs {
@@ -609,7 +850,6 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
 fn has_markdown_skip(attrs: &[syn::Attribute]) -> bool {
     for attr in attrs {
         if attr.path().is_ident("markdown") {
-            // Parse as list: markdown(skip)
             if let Ok(nested) = attr.parse_args::<syn::Ident>() {
                 if nested == "skip" {
                     return true;

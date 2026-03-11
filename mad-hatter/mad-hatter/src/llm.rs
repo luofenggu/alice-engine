@@ -5,7 +5,20 @@
 
 /// 输入侧：struct → markdown prompt文本
 pub trait ToMarkdown {
-    fn to_markdown(&self) -> String;
+    /// Render as markdown with default heading depth (###)
+    fn to_markdown(&self) -> String {
+        self.to_markdown_depth(2)
+    }
+
+    /// Render as markdown with specified heading depth.
+    /// depth=2 → ### headings, depth=3 → #### headings, etc.
+    fn to_markdown_depth(&self, depth: usize) -> String;
+
+    /// Compact rendering for Vec elements: "field: value" format.
+    /// Default implementation falls back to to_markdown_depth.
+    fn to_markdown_item(&self) -> String {
+        self.to_markdown_depth(2)
+    }
 }
 
 /// 输出侧：LLM输出 → enum解析
@@ -19,4 +32,3 @@ pub trait FromMarkdown: Sized {
     /// 解析LLM输出为多个action实例
     fn from_markdown(text: &str, token: &str) -> Result<Vec<Self>, String>;
 }
-
