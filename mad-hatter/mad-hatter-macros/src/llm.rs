@@ -162,10 +162,17 @@ fn gen_depth_render(f: &ToMarkdownField) -> TokenStream {
                 {
                     let __val = &self.#ident;
                     if !__val.is_empty() {
-                        let __hashes: ::std::string::String = "#".repeat(__depth + 1);
-                        __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
-                        __out.push_str(__val);
-                        __out.push('\n');
+                        if __val.contains('\n') {
+                            let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                            __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                            __out.push_str(__val);
+                            __out.push('\n');
+                        } else {
+                            __out.push_str(#title);
+                            __out.push_str(": ");
+                            __out.push_str(__val);
+                            __out.push('\n');
+                        }
                     }
                 }
             }
@@ -234,10 +241,17 @@ fn gen_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKi
         FieldKind::String => {
             quote! {
                 if !__val.is_empty() {
-                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
-                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
-                    __out.push_str(__val);
-                    __out.push('\n');
+                    if __val.contains('\n') {
+                        let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                        __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                        __out.push_str(__val);
+                        __out.push('\n');
+                    } else {
+                        __out.push_str(#title);
+                        __out.push_str(": ");
+                        __out.push_str(__val);
+                        __out.push('\n');
+                    }
                 }
             }
         }

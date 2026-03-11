@@ -36,12 +36,10 @@ fn test_capture_to_markdown() {
     // struct级doc comment → 头部
     assert!(md.starts_with("你是一个知识提炼专家"), "should start with struct doc comment");
 
-    // 字段级doc comment → section标题
-    assert!(md.contains("### 当前知识内容 ###"), "should have knowledge section title");
-    assert!(md.contains("已有知识..."), "should have knowledge content");
+    // 字段级doc comment → 单行String用inline格式
+    assert!(md.contains("当前知识内容: 已有知识..."), "should have knowledge inline");
 
-    assert!(md.contains("### 近况 ###"), "should have recent section title");
-    assert!(md.contains("最近发生..."), "should have recent content");
+    assert!(md.contains("近况: 最近发生..."), "should have recent inline");
 
     // 空字段跳过
     assert!(!md.contains("当前增量"), "empty field should be skipped entirely");
@@ -50,8 +48,8 @@ fn test_capture_to_markdown() {
     assert!(!md.contains("END123"), "skip field should not appear");
     assert!(!md.contains("end_marker"), "skip field name should not appear");
 
-    assert!(md.contains("### 本次小结 ###"), "should have summary section title");
-    assert!(md.contains("本次总结..."), "should have summary content");
+    // 单行String → inline格式
+    assert!(md.contains("本次小结: 本次总结..."), "should have summary inline");
 }
 
 #[test]
@@ -84,11 +82,9 @@ fn test_no_struct_doc_comment() {
         description: "An AI engine".into(),
     };
     let md = s.to_markdown();
-    // 无struct级doc → 没有头部文本，直接section
-    assert!(md.contains("### 名称 ###"));
-    assert!(md.contains("Alice"));
-    assert!(md.contains("### 描述 ###"));
-    assert!(md.contains("An AI engine"));
+    // 无struct级doc → 没有头部文本，单行String用inline格式
+    assert!(md.contains("名称: Alice"));
+    assert!(md.contains("描述: An AI engine"));
 }
 
 #[test]
@@ -99,9 +95,8 @@ fn test_field_without_doc_uses_field_name() {
     }
     let s = NoDocs { title: "Hello".into() };
     let md = s.to_markdown();
-    // 无字段doc → 用字段名作标题
-    assert!(md.contains("### title ###"));
-    assert!(md.contains("Hello"));
+    // 无字段doc → 用字段名，单行String用inline格式
+    assert!(md.contains("title: Hello"));
 }
 
 // ============================================================
@@ -139,18 +134,15 @@ fn test_nested_struct() {
     // 顶层header
     assert!(md.contains("顶层结构"), "should have struct doc header");
 
-    // 顶层字段用 ###
-    assert!(md.contains("### 标题 ###"), "title should use ### heading");
-    assert!(md.contains("一些标题文本"), "title content");
+    // 顶层String字段：单行用inline格式
+    assert!(md.contains("标题: 一些标题文本"), "title should use inline format");
 
-    // 嵌套字段的section标题用 ###
+    // 嵌套struct字段的section标题仍用 ### (FieldKind::Other)
     assert!(md.contains("### 详细信息 ###"), "nested field should have ### heading");
 
-    // 嵌套struct的字段用 #### (depth+1)
-    assert!(md.contains("#### 发送者 ####"), "nested struct fields should use #### heading");
-    assert!(md.contains("alice"), "nested field content");
-    assert!(md.contains("#### 内容 ####"), "nested struct fields should use #### heading");
-    assert!(md.contains("你好"), "nested field content");
+    // 嵌套struct内部的String字段：单行用inline格式
+    assert!(md.contains("发送者: alice"), "nested struct string field should use inline format");
+    assert!(md.contains("内容: 你好"), "nested struct string field should use inline format");
 }
 
 // ============================================================
@@ -260,8 +252,7 @@ fn test_option_non_string() {
 
     assert!(md.contains("### 超时时间 ###"), "Option<u64> Some heading");
     assert!(md.contains("30"), "Option<u64> Some value");
-    assert!(md.contains("### 名称 ###"), "Option<String> Some heading");
-    assert!(md.contains("test"), "Option<String> Some value");
+    assert!(md.contains("名称: test"), "Option<String> Some inline format");
 }
 
 #[test]
@@ -346,9 +337,8 @@ fn test_mixed_nested() {
     // Skip field
     assert!(!md.contains("TOKEN123"), "skip field should not appear");
 
-    // String fields
-    assert!(md.contains("### 你的知识 ###"), "knowledge heading");
-    assert!(md.contains("一些知识"), "knowledge content");
+    // String fields: single-line uses inline format
+    assert!(md.contains("你的知识: 一些知识"), "knowledge inline");
 
     // Vec<SessionBlock> section
     assert!(md.contains("### 近况 ###"), "session_blocks heading");
@@ -364,7 +354,6 @@ fn test_mixed_nested() {
     // summary field
     assert!(md.contains("summary: 对话总结") || md.contains("小结"), "summary in compact format");
 
-    // Current field
-    assert!(md.contains("### 当前状态 ###"), "current heading");
-    assert!(md.contains("当前状态内容"), "current content");
+    // Current field - 单行String → inline格式
+    assert!(md.contains("当前状态: 当前状态内容"), "current inline");
 }
