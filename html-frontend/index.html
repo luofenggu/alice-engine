@@ -1322,6 +1322,7 @@ let cachedInstanceList = [];
 async function switchInstance(name) {
     frontendLog('INFO', 'switch_instance', 'to=' + name);
     currentInstance = name;
+    stopPolling();
     localStorage.setItem('alice_last_instance', name);
     // Immediately update sidebar highlight (async, non-blocking)
     refreshInstances();
