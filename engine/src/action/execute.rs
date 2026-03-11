@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use crate::core::{Alice, Transaction};
 use crate::external::shell::{resolve_action_path, Shell};
-use crate::inference::{Action, ReplaceBlock};
+use crate::inference::Action;
 use crate::persist::hooks::ContactInfo;
 use crate::policy::action_output as out;
 
@@ -36,7 +36,7 @@ pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) 
         Action::Thinking { content } => execute_thinking(alice, tx, content),
         Action::Script { content } => execute_script(alice, tx, content),
         Action::WriteFile { path, content } => execute_write_file(alice, tx, path, content),
-        Action::ReplaceInFile { path, blocks } => execute_replace_in_file(alice, tx, path, blocks),
+        Action::ReplaceInFile { path, search, replace } => execute_replace_in_file(alice, tx, path, search, replace),
         Action::Summary { content } => execute_summary(alice, tx, content),
 
         Action::SetProfile { content } => execute_set_profile(alice, tx, &content),
@@ -321,42 +321,33 @@ fn execute_replace_in_file(
     alice: &mut Alice,
     tx: &mut Transaction,
     path: &str,
-    blocks: &[ReplaceBlock],
+    search: &str,
+    replace: &str,
 ) -> Result<String> {
     info!(
-        "[ACTION-{}] replace_in_file: {} ({} blocks)",
+        "[ACTION-{}] replace_in_file: {}",
         tx.instance_id,
         path,
-        blocks.len()
     );
 
     let abs_path = resolve_action_path(&alice.instance.workspace, path)?;
+    let truncated = crate::util::safe_truncate(search, out::truncate_display_limit());
 
     if alice.privileged {
         // Direct filesystem access for privileged instances
-        let mut content = std::fs::read_to_string(&abs_path)
+        let content = std::fs::read_to_string(&abs_path)
             .with_context(|| format!("Failed to read file: {}", path))?;
 
-        let mut result_lines: Vec<String> = Vec::new();
-        for block in blocks.iter() {
-            let truncated =
-                crate::util::safe_truncate(&block.search, out::truncate_display_limit());
-            match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str())
-            {
-                Ok(new_content) => {
-                    content = new_content;
-                    result_lines.push(out::replace_block_success(&truncated));
-                }
-                Err(count) => {
-                    result_lines.push(out::replace_match_error(&truncated, count));
-                }
+        match crate::util::replace_once(&content, search, replace) {
+            Ok(new_content) => {
+                std::fs::write(&abs_path, &new_content)
+                    .with_context(|| format!("Failed to write file: {}", path))?;
+                Ok(out::replace_success(&truncated))
+            }
+            Err(count) => {
+                Ok(out::replace_match_error(&truncated, count))
             }
         }
-
-        std::fs::write(&abs_path, &content)
-            .with_context(|| format!("Failed to write file: {}", path))?;
-
-        Ok(out::replace_result(&result_lines))
     } else {
         // Shell-based access for sandboxed instances
         let shell = make_shell(alice);
@@ -370,36 +361,26 @@ fn execute_replace_in_file(
             );
         }
 
-        let mut content = read_result.output;
-        let mut result_lines: Vec<String> = Vec::new();
+        let content = read_result.output;
 
-        for block in blocks.iter() {
-            let truncated =
-                crate::util::safe_truncate(&block.search, out::truncate_display_limit());
-            match crate::util::replace_once(&content, block.search.as_str(), block.replace.as_str())
-            {
-                Ok(new_content) => {
-                    content = new_content;
-                    result_lines.push(out::replace_block_success(&truncated));
+        match crate::util::replace_once(&content, search, replace) {
+            Ok(new_content) => {
+                let shell = make_shell(alice);
+                let write_result = shell.write_file(&abs_path.to_string_lossy(), &new_content)?;
+                if !write_result.success() {
+                    bail!(
+                        "replace_in_file: failed to write {} (exit {}): {}",
+                        path,
+                        write_result.exit_code_display(),
+                        write_result.output.trim()
+                    );
                 }
-                Err(count) => {
-                    result_lines.push(out::replace_match_error(&truncated, count));
-                }
+                Ok(out::replace_success(&truncated))
+            }
+            Err(count) => {
+                Ok(out::replace_match_error(&truncated, count))
             }
         }
-
-        let shell = make_shell(alice);
-        let write_result = shell.write_file(&abs_path.to_string_lossy(), &content)?;
-        if !write_result.success() {
-            bail!(
-                "replace_in_file: failed to write {} (exit {}): {}",
-                path,
-                write_result.exit_code_display(),
-                write_result.output.trim()
-            );
-        }
-
-        Ok(out::replace_result(&result_lines))
     }
 }
 
@@ -653,13 +634,11 @@ mod tests {
 
         let action = Action::ReplaceInFile {
             path: "test.txt".to_string(),
-            blocks: vec![ReplaceBlock {
-                search: "hello".to_string(),
-                replace: "goodbye".to_string(),
-            }],
+            search: "hello".to_string(),
+            replace: "goodbye".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("replaced 1 block(s)"));
+        assert!(result.contains("replaced"));
 
         let content = std::fs::read_to_string(alice.instance.workspace.join("test.txt")).unwrap();
         assert_eq!(content, "goodbye world");

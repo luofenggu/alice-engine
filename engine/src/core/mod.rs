@@ -45,7 +45,8 @@ use std::time::Instant;
 use tracing::{error, info, warn};
 
 use crate::action::execute::execute_action;
-use crate::external::llm::{InferenceStream, LlmClient, RecvResult, StreamItem};
+use crate::external::llm::LlmClient;
+use mad_hatter::llm::stream_infer;
 use crate::inference::Action;
 use crate::persist::instance;
 use crate::persist::hooks::HooksCaller;
@@ -352,8 +353,7 @@ pub struct Alice {
     pub safety_max_consecutive_beats: u32,
     /// Safety valve: cooldown duration in seconds after triggering.
     pub safety_cooldown_secs: u64,
-    /// Stream poll interval in milliseconds.
-    pub stream_poll_interval_ms: u64,
+
     /// Global settings store for hot-reloading channels each beat.
     pub global_settings_store: Option<GlobalSettingsStore>,
     /// Hooks caller for external extension points (contacts, relay, skills).
@@ -425,9 +425,7 @@ impl Alice {
             history_kb,
             safety_max_consecutive_beats,
             safety_cooldown_secs,
-            stream_poll_interval_ms: crate::policy::EngineConfig::get()
-                .streaming
-                .poll_interval_ms,
+
             env_config,
             global_settings_store,
             hooks_caller,
@@ -482,15 +480,15 @@ impl Alice {
         // Read current history
         let current_history = self.instance.memory.history.read()?;
 
-        // Generate random end marker for truncation defense
-        let end_marker = generate_end_marker();
-
         // Build LLM prompt via CompressRequest
+        let content = if current_history.is_empty() {
+            rendered_block.clone()
+        } else {
+            format!("{}\n\n{}", current_history, rendered_block)
+        };
         let request = crate::inference::compress::CompressRequest {
-            history_kb: self.history_kb as usize,
-            session_content: rendered_block.clone(),
-            current_history: current_history.clone(),
-            end_marker: end_marker.clone(),
+            requirement: format!("不超过{}KB", self.history_kb),
+            content,
         };
 
         // Clone LLM configs for background thread
@@ -500,7 +498,6 @@ impl Alice {
             request,
             instance_id: self.instance.id.clone(),
             llm_client: self.llm_client.clone(),
-            end_marker,
         }))
     }
 
@@ -564,44 +561,31 @@ impl Alice {
         let current_history = self.instance.memory.history.read()?;
 
         // 3. Build LLM request via CompressRequest
-        let end_marker = generate_end_marker();
+        let content = if current_history.is_empty() {
+            rendered_block.clone()
+        } else {
+            format!("{}\n\n{}", current_history, rendered_block)
+        };
         let request = crate::inference::compress::CompressRequest {
-            history_kb: self.history_kb as usize,
-            session_content: rendered_block.clone(),
-            current_history: current_history.clone(),
-            end_marker: end_marker.clone(),
+            requirement: format!("不超过{}KB", self.history_kb),
+            content,
         };
 
-        // 4. Call LLM (synchronous, blocking)
+        // 4. Call LLM via infer() (synchronous, blocking)
         info!(
             "[ROLL-{}] Calling LLM for history compression",
             self.instance.id
         );
-        let (new_history, _usage) = self.llm_client.infer_compress(request, &self.instance.id)?;
+        let channel = self.llm_client.create_channel();
+        let results = mad_hatter::llm::infer::<_, crate::inference::compress::CompressOutput>(&channel, &request)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let output = results.into_iter().next()
+            .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
 
-        let trimmed = new_history.trim();
-        if trimmed.is_empty() {
-            warn!(
-                "[ROLL-{}] LLM returned empty history, aborting roll",
-                self.instance.id
-            );
-            return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
-        }
-
-        // End-marker defense: reject truncated output
-        let lines: Vec<&str> = trimmed.lines().collect();
-        if lines.last().map(|l| l.trim()) != Some(end_marker.as_str()) {
-            warn!(
-                "[ROLL-{}] History output missing end marker (likely truncated, {} bytes)",
-                self.instance.id, trimmed.len()
-            );
-            return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
-        }
-        let clean_history = lines[..lines.len() - 1].join("\n");
-        let clean_history = clean_history.trim();
+        let clean_history = output.summary.trim();
         if clean_history.is_empty() {
             warn!(
-                "[ROLL-{}] History content empty after stripping end marker",
+                "[ROLL-{}] LLM returned empty history, aborting roll",
                 self.instance.id
             );
             return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
@@ -791,7 +775,7 @@ impl Alice {
         let request = build_beat_request(self, self.host.as_deref(), contacts_info, extra_skills);
 
         // 5. Set up inference log
-        let (log_path, log_timestamp) =
+        let (log_path, _log_timestamp) =
             crate::logging::create_infer_log_path(&self.log_dir, &self.instance.id);
         self.current_infer_log_path = Some(log_path.clone());
 
@@ -815,23 +799,26 @@ impl Alice {
             });
         }
 
-        // 6. LLM inference
+        // 6. LLM inference (via stream_infer)
         info!("[INFER-{}] Starting inference", self.instance.id);
-        let stream: InferenceStream = self.llm_client.infer_beat(
-            request,
-            log_path.clone(),
-            &self.log_dir,
-            &log_timestamp,
-            self.instance.id.clone(),
-            self.env_config.infer_log_enabled,
-        );
+        // TODO: inference logging — OpenAiChannel doesn't support log capture yet
+        let channel = self.llm_client.create_channel();
+        let stream_iter = stream_infer::<_, Action>(&channel, &request)
+            .map_err(|e| {
+                let (backoff, rotation) = self.set_inference_backoff();
+                anyhow::anyhow!(
+                    "{}",
+                    crate::policy::messages::inference_error(&e, backoff, rotation.as_ref())
+                )
+            })?;
 
         // 7. Stream actions: consume and execute (with sequence guard)
         self.last_was_idle = false;
         let mut guard = SequenceGuard::new(&self.instance.id);
+        let mut inference_error: Option<String> = None;
 
-        loop {
-            // Check for interrupt signal before consuming next stream item
+        for result in stream_iter {
+            // Check for interrupt signal between actions
             if self.signals.as_ref().map_or(false, |s| s.check_interrupt()) {
                 warn!(
                     "[INTERRUPT-{}] Interrupt signal detected, aborting inference",
@@ -842,148 +829,134 @@ impl Alice {
                 break;
             }
 
-            match stream.next_or_timeout(std::time::Duration::from_millis(
-                self.stream_poll_interval_ms,
-            )) {
-                RecvResult::Timeout => continue,
-                RecvResult::Disconnected => {
-                    let (backoff, rotation) = self.set_inference_backoff();
-                    anyhow::bail!(
-                        "{}",
-                        crate::policy::messages::inference_disconnected(backoff, rotation.as_ref())
-                    );
-                }
-                RecvResult::Item(item) => match item {
-                    StreamItem::Action(action) => {
-                        // Sequence guard check
-                        match guard.check(&action) {
-                            SequenceVerdict::Allow => {}
-                            SequenceVerdict::Ignore => {
-                                info!(
-                                    "[SEQUENCE-{}] Ignoring action: {}",
-                                    self.instance.id, action
-                                );
-                                continue;
-                            }
-                            SequenceVerdict::Reject(reason) => {
-                                warn!("{}", reason);
-                                let reject_text =
-                                    action_output::hallucination_defense_interrupted(&reason);
-                                self.instance.memory.append_current(&reject_text).ok();
-                                break;
-                            }
-                        }
-
-                        // Build doing text
-                        let doing_text = action_output::build_doing_text(&action);
-
-                        let action_id = tx.record_doing(action.clone(), doing_text);
-
-                        // Phase 1 (Write-Ahead): write doing block before execution
-                        if let Some(record) = tx.action_records.last() {
-                            let doing_block = action_output::action_block_doing(
-                                &record.action_id,
-                                &record.doing_text,
-                            );
-                            self.instance.memory.append_current(&doing_block).ok();
-                        }
-
-                        // Cancel idle if a prior send_msg failed in this beat
-                        if tx.cancel_idle && matches!(action, Action::Idle { .. }) {
+            match result {
+                Ok(action) => {
+                    // Sequence guard check
+                    match guard.check(&action) {
+                        SequenceVerdict::Allow => {}
+                        SequenceVerdict::Ignore => {
                             info!(
-                                "[BEAT-{}] Cancelling idle: send_msg failed earlier in this beat",
-                                self.instance.id
-                            );
-                            // Skip idle execution — don't set last_was_idle, let next beat see the error
-
-                            // Record done
-                            let done_text = action_output::build_done_text(&action_output::idle_cancelled_after_send_failure());
-                            tx.record_done(&action_id, done_text);
-
-                            // Phase 2: append done block
-                            if let Some(record) = tx.action_records.last() {
-                                let done_block = action_output::action_block_done(
-                                    &record.action_id,
-                                    record.done_text.as_deref(),
-                                );
-                                self.instance.memory.append_current(&done_block).ok();
-                            }
-                            continue;
-                        }
-
-                        // Execute action
-                        let result = execute_action(&action, self, &mut tx);
-
-                        // Check if this was an idle action
-                        if let Action::Idle { timeout_secs } = &action {
-                            self.last_was_idle = true;
-                            self.idle_timeout_secs = *timeout_secs;
-                            self.idle_since = Some(
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs(),
-                            );
-                            if !self.born {
-                                self.born = true;
-                                info!("[BORN-{}] Instance born (first idle)", self.instance.id);
-                            }
-                        }
-
-                        // Record done
-                        let done_text = match result {
-                            Ok(ref output) if output.is_empty() => String::new(),
-                            Ok(output) => action_output::build_done_text(&output),
-                            Err(e) => action_output::action_error(&e),
-                        };
-                        tx.record_done(&action_id, done_text);
-
-                        // Phase 2: append done block after execution
-                        // Summary clears current during execution, so skip done block
-                        if !matches!(action, Action::Summary { .. }) {
-                            if let Some(record) = tx.action_records.last() {
-                                let done_block = action_output::action_block_done(
-                                    &record.action_id,
-                                    record.done_text.as_deref(),
-                                );
-                                self.instance.memory.append_current(&done_block).ok();
-                            }
-                        }
-
-                        // Blocking action: end inference after execution
-                        if action.is_blocking() {
-                            info!(
-                                "[BEAT-{}] Blocking action '{}' executed, ending inference",
+                                "[SEQUENCE-{}] Ignoring action: {}",
                                 self.instance.id, action
                             );
+                            continue;
+                        }
+                        SequenceVerdict::Reject(reason) => {
+                            warn!("{}", reason);
+                            let reject_text =
+                                action_output::hallucination_defense_interrupted(&reason);
+                            self.instance.memory.append_current(&reject_text).ok();
                             break;
                         }
                     }
-                    StreamItem::Done(_actions, _usage) => {
-                        // Reset inference backoff on success
-                        if self.inference_failures.value() > 0 {
-                            info!("[BACKOFF-{}] Inference succeeded, resetting backoff (was {} failures)",
-                                self.instance.id, self.inference_failures.value());
-                        }
-                        self.inference_failures.reset();
-                        self.inference_backoff_until = None;
 
-                        info!("[INFER-{}] Inference complete", self.instance.id);
+                    // Build doing text
+                    let doing_text = action_output::build_doing_text(&action);
+
+                    let action_id = tx.record_doing(action.clone(), doing_text);
+
+                    // Phase 1 (Write-Ahead): write doing block before execution
+                    if let Some(record) = tx.action_records.last() {
+                        let doing_block = action_output::action_block_doing(
+                            &record.action_id,
+                            &record.doing_text,
+                        );
+                        self.instance.memory.append_current(&doing_block).ok();
+                    }
+
+                    // Cancel idle if a prior send_msg failed in this beat
+                    if tx.cancel_idle && matches!(action, Action::Idle { .. }) {
+                        info!(
+                            "[BEAT-{}] Cancelling idle: send_msg failed earlier in this beat",
+                            self.instance.id
+                        );
+
+                        // Record done
+                        let done_text = action_output::build_done_text(&action_output::idle_cancelled_after_send_failure());
+                        tx.record_done(&action_id, done_text);
+
+                        // Phase 2: append done block
+                        if let Some(record) = tx.action_records.last() {
+                            let done_block = action_output::action_block_done(
+                                &record.action_id,
+                                record.done_text.as_deref(),
+                            );
+                            self.instance.memory.append_current(&done_block).ok();
+                        }
+                        continue;
+                    }
+
+                    // Execute action
+                    let result = execute_action(&action, self, &mut tx);
+
+                    // Check if this was an idle action
+                    if let Action::Idle { timeout_secs } = &action {
+                        self.last_was_idle = true;
+                        self.idle_timeout_secs = *timeout_secs;
+                        self.idle_since = Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        );
+                        if !self.born {
+                            self.born = true;
+                            info!("[BORN-{}] Instance born (first idle)", self.instance.id);
+                        }
+                    }
+
+                    // Record done
+                    let done_text = match result {
+                        Ok(ref output) if output.is_empty() => String::new(),
+                        Ok(output) => action_output::build_done_text(&output),
+                        Err(e) => action_output::action_error(&e),
+                    };
+                    tx.record_done(&action_id, done_text);
+
+                    // Phase 2: append done block after execution
+                    // Summary clears current during execution, so skip done block
+                    if !matches!(action, Action::Summary { .. }) {
+                        if let Some(record) = tx.action_records.last() {
+                            let done_block = action_output::action_block_done(
+                                &record.action_id,
+                                record.done_text.as_deref(),
+                            );
+                            self.instance.memory.append_current(&done_block).ok();
+                        }
+                    }
+
+                    // Blocking action: end inference after execution
+                    if action.is_blocking() {
+                        info!(
+                            "[BEAT-{}] Blocking action '{}' executed, ending inference",
+                            self.instance.id, action
+                        );
                         break;
                     }
-                    StreamItem::Error(e) => {
-                        let (backoff, rotation) = self.set_inference_backoff();
-                        anyhow::bail!(
-                            "{}",
-                            crate::policy::messages::inference_error(
-                                &e,
-                                backoff,
-                                rotation.as_ref()
-                            )
-                        );
-                    }
-                },
+                }
+                Err(e) => {
+                    inference_error = Some(e);
+                    break;
+                }
             }
+        }
+
+        // Handle inference result
+        if let Some(e) = inference_error {
+            let (backoff, rotation) = self.set_inference_backoff();
+            anyhow::bail!(
+                "{}",
+                crate::policy::messages::inference_error(&e, backoff, rotation.as_ref())
+            );
+        } else {
+            // Inference completed successfully (iterator exhausted or normal break)
+            if self.inference_failures.value() > 0 {
+                info!("[BACKOFF-{}] Inference succeeded, resetting backoff (was {} failures)",
+                    self.instance.id, self.inference_failures.value());
+            }
+            self.inference_failures.reset();
+            self.inference_backoff_until = None;
+            info!("[INFER-{}] Inference complete", self.instance.id);
         }
 
         // 8. Cleanup
@@ -1027,20 +1000,12 @@ impl Alice {
 /// Data needed to execute history rolling in a background thread.
 /// Generate a short random end-marker token for capture/compress truncation defense.
 /// Format: `###END_{6-hex}###`, e.g. `###END_f22332###`
-pub fn generate_end_marker() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let hash = RandomState::new().build_hasher().finish();
-    format!("###END_{:06x}###", hash & 0xFFFFFF)
-}
-
 pub struct RollTask {
     pub memory: crate::persist::memory::Memory,
     pub oldest_block: String,
     pub request: crate::inference::compress::CompressRequest,
     pub instance_id: String,
     pub llm_client: Arc<LlmClient>,
-    pub end_marker: String,
 }
 
 pub struct CaptureTask {
@@ -1048,14 +1013,9 @@ pub struct CaptureTask {
     pub request: crate::inference::capture::CaptureRequest,
     pub instance_id: String,
     pub llm_client: Arc<LlmClient>,
-    pub log_path: PathBuf,
-    pub end_marker: String,
 }
 
 pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
-    let llm_client = &task.llm_client;
-    let messages = task.request.render();
-
     info!(
         "[CAPTURE-{}] Background: calling LLM for knowledge capture",
         task.instance_id
@@ -1065,26 +1025,15 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         .map(|m| m.len() / 1024)
         .unwrap_or(0);
 
-    let (new_knowledge, usage) =
-        llm_client.infer_sync_streaming(messages, &task.instance_id, Some(&task.log_path))?;
+    let channel = task.llm_client.create_channel();
+    let results = mad_hatter::llm::infer::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let output = results.into_iter().next()
+        .ok_or_else(|| anyhow::anyhow!("LLM returned no capture output"))?;
 
-    let trimmed = new_knowledge.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("LLM returned empty knowledge");
-    }
-
-    // End-marker defense: reject truncated output (line-based, random token per call)
-    let lines: Vec<&str> = trimmed.lines().collect();
-    if lines.last().map(|l| l.trim()) != Some(task.end_marker.as_str()) {
-        anyhow::bail!(
-            "Knowledge output missing end marker (likely truncated, {} bytes received)",
-            trimmed.len()
-        );
-    }
-    let clean_knowledge = lines[..lines.len() - 1].join("\n");
-    let clean_knowledge = clean_knowledge.trim();
+    let clean_knowledge = output.knowledge.trim();
     if clean_knowledge.is_empty() {
-        anyhow::bail!("Knowledge content empty after stripping end marker");
+        anyhow::bail!("LLM returned empty knowledge");
     }
 
     task.memory.knowledge.write(clean_knowledge)?;
@@ -1094,15 +1043,7 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         .unwrap_or(0);
 
     let result = crate::policy::messages::capture_result(old_kb, new_kb);
-    info!(
-        "[CAPTURE-{}] Background: {}{}",
-        task.instance_id,
-        result,
-        usage
-            .as_ref()
-            .map(|u| format!(" (tokens: {}+{})", u.input_tokens, u.output_tokens))
-            .unwrap_or_default()
-    );
+    info!("[CAPTURE-{}] Background: {}", task.instance_id, result);
     Ok(result)
 }
 
@@ -1112,32 +1053,20 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
 /// Execute history rolling task (designed for background thread).
 /// Does LLM call + commit history via Memory (atomic write + delete block).
 pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
-    // Create a temporary LLM client for this task
-    let llm_client = &task.llm_client;
-
     info!(
         "[ROLL-{}] Background: calling LLM for history compression",
         task.instance_id
     );
-    let (new_history, _usage) = llm_client.infer_compress(task.request, &task.instance_id)?;
 
-    let trimmed = new_history.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("LLM returned empty history");
-    }
+    let channel = task.llm_client.create_channel();
+    let results = mad_hatter::llm::infer::<_, crate::inference::compress::CompressOutput>(&channel, &task.request)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let output = results.into_iter().next()
+        .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
 
-    // End-marker defense: reject truncated output (line-based, random token per call)
-    let lines: Vec<&str> = trimmed.lines().collect();
-    if lines.last().map(|l| l.trim()) != Some(task.end_marker.as_str()) {
-        anyhow::bail!(
-            "History output missing end marker (likely truncated, {} bytes received)",
-            trimmed.len()
-        );
-    }
-    let clean_history = lines[..lines.len() - 1].join("\n");
-    let clean_history = clean_history.trim();
+    let clean_history = output.summary.trim();
     if clean_history.is_empty() {
-        anyhow::bail!("History content empty after stripping end marker");
+        anyhow::bail!("LLM returned empty history");
     }
 
     // Commit via Memory (marker → write history → delete block → clear marker)
@@ -1156,19 +1085,13 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     Ok(result)
 }
 
-pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::path::Path) {
+pub fn spawn_capture_task(alice: &Alice, summary_content: &str, _log_dir: &std::path::Path) {
     let request = crate::prompt::build_capture_request(alice, summary_content);
-    let log_path = crate::logging::create_infer_log_path(log_dir, &alice.instance.id)
-        .0
-        .with_extension("capture.log");
-    let end_marker = request.end_marker.clone();
     let task = CaptureTask {
         memory: alice.instance.memory.clone(),
         request,
         instance_id: alice.instance.id.clone(),
         llm_client: alice.llm_client.clone(),
-        log_path,
-        end_marker,
     };
 
     let chat = alice.instance.chat.clone();

@@ -137,26 +137,14 @@ pub fn format_preview(lines: &[&str]) -> String {
 /// Format replace match error (matched 0 or >1 times).
 pub fn replace_match_error(search_preview: &str, count: usize) -> String {
     format!(
-        "  ERROR: '{}...' matched {} times (expected 1)",
+        "ERROR: '{}...' matched {} times (expected 1)",
         search_preview, count
     )
 }
 
-/// Format single replace block success.
-pub fn replace_block_success(search_preview: &str) -> String {
-    format!("  replaced '{}...'", search_preview)
-}
-
-/// Format replace operation summary with details.
-/// Counts successful blocks internally from detail_lines.
-pub fn replace_result(detail_lines: &[String]) -> String {
-    let total_replaced = detail_lines
-        .iter()
-        .filter(|l| !l.starts_with("  ERROR"))
-        .count();
-    let summary = format!("replaced {} block(s) successfully", total_replaced);
-    let detail = detail_lines.join("\n");
-    format!("{}\n{}\n", summary, detail)
+/// Format replace success.
+pub fn replace_success(search_preview: &str) -> String {
+    format!("replaced '{}...'", search_preview)
 }
 
 // ─── Message read/send ───────────────────────────────────────────

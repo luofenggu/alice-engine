@@ -1,42 +1,25 @@
 //! # LLM Inference Module
 //!
-//! Handles communication with LLM providers (OpenRouter) via SSE streaming.
-//! Implements the streaming action execution pipeline:
-//! SSE chunks → text accumulation → action detection → channel dispatch
+//! Handles communication with LLM providers via streaming inference.
+//! Uses `mad_hatter::llm::OpenAiChannel` + `stream_infer()` for beat inference,
+//! and internal HTTP client for sync tasks (capture/compress/vision).
 //!
-//! @TRACE: INFER, STREAM
-//!
-//! ## Architecture
-//!
-//! ```text
-//! [Inference Thread]              [Consumer Thread (React)]
-//!   HTTP POST → SSE stream
-//!   accumulate text
-//!   detect action separator  ──→  channel.recv() → StreamItem
-//!   parse action             ──→  execute action
-//!   append to out.log
-//!   ...until stream ends     ──→  StreamItem::Done
-//! ```
+//! @TRACE: INFER
 //!
 //! ## Key Types
 //!
-//! - [`LlmClient`] — HTTP client for OpenRouter API
-//! - [`InferenceStream`] — Consumer handle for streaming actions
-//! - [`StreamItem`] — Items flowing through the channel (Action/Done/Error)
-
-pub mod stream;
+//! - [`LlmClient`] — Channel management + sync inference methods
+//! - [`OpenAiChannel`] — Streaming SSE client (from mad-hatter)
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
-use std::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
-use crate::inference::beat::BeatRequest;
-use crate::inference::compress::CompressRequest;
-use crate::inference::parse_single_action_chunk;
+
+use mad_hatter::llm::OpenAiChannel;
 /// Token usage info from LLM response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageInfo {
@@ -45,8 +28,7 @@ pub struct UsageInfo {
     pub total_cost: Option<f64>,
 }
 
-// Re-export key types
-pub use stream::{InferenceStream, RecvResult, StreamItem};
+
 
 // ---------------------------------------------------------------------------
 // LLM Client Configuration
@@ -321,143 +303,19 @@ impl LlmClient {
         })
     }
 
-    /// High-level beat inference: renders request, writes input log, starts streaming.
+    /// Create an OpenAiChannel from the current channel config.
     ///
-    /// Token is generated internally (self-contained). External code fills
-    /// BeatRequest struct fields; this method handles token generation →
-    /// render → log → API call → stream parse → action vector internally.
-    ///
-    /// @TRACE: INFER, STREAM
-    pub fn infer_beat(
-        &self,
-        mut request: BeatRequest,
-        log_path: PathBuf,
-        log_dir: &Path,
-        log_timestamp: &str,
-        instance_id: String,
-        infer_log_enabled: bool,
-    ) -> InferenceStream {
-        // Generate token internally (self-contained)
-        let token: String = (0..6)
-            .map(|_| format!("{:x}", rand::random::<u8>() % 16))
-            .collect();
-        request.action_token = token;
-
-        let (system_prompt, user_prompt) = request.render();
-
-        // Write input log if enabled
-        if infer_log_enabled {
-            let llm_policy = &crate::policy::EngineConfig::get().llm;
-            let current = self.current_config();
-            let (resolved_url, _) = llm_policy.resolve_model(&current.model);
-            crate::logging::write_infer_input_log(
-                log_dir,
-                &instance_id,
-                log_timestamp,
-                &current.model,
-                &resolved_url,
-                &system_prompt,
-                &user_prompt,
-            );
-        }
-
-        let messages = vec![
-            ChatMessage::system(&system_prompt),
-            ChatMessage::user(&user_prompt),
-        ];
-
-        let separator_token = request.action_token.clone();
-        self.infer_async(messages, &separator_token, log_path, instance_id)
-    }
-
-    /// High-level compress inference: renders request, calls sync API.
-    ///
-    /// External code fills CompressRequest struct fields; this method handles
-    /// render → API call internally.
-    ///
-    /// @TRACE: INFER
-    pub fn infer_compress(
-        &self,
-        request: CompressRequest,
-        instance_id: &str,
-    ) -> Result<(String, Option<UsageInfo>)> {
-        let (system_msg, user_msg) = request.render();
-        let messages = vec![
-            ChatMessage::system(&system_msg),
-            ChatMessage::user(&user_msg),
-        ];
-        self.infer_sync_streaming(messages, instance_id, None)
-    }
-
-    /// Start an async inference, returning a stream for consuming actions.
-    ///
-    /// Low-level method: accepts pre-built messages. Prefer `infer_beat()` which
-    /// handles request rendering internally.
-    ///
-    /// @TRACE: INFER, STREAM
-    fn infer_async(
-        &self,
-        messages: Vec<ChatMessage>,
-        separator_token: &str,
-        log_path: PathBuf,
-        instance_id: String,
-    ) -> InferenceStream {
-        let (tx, rx) = mpsc::channel();
-
+    /// Used by beat() to create a channel for stream_infer().
+    pub fn create_channel(&self) -> OpenAiChannel {
         let config = self.current_config();
-        let http_client = self.http_client.clone();
-        let separator = format!("Action-{}\n", separator_token);
-        let end_marker = format!("Action-end-{}", separator_token);
-        let separator_token_owned = separator_token.to_string();
-        let log_path_clone = log_path.clone();
-
-        // Spawn inference thread
-        std::thread::spawn(move || {
-            // Create a tokio runtime for this thread (HTTP + SSE are async)
-            let _rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create tokio runtime");
-
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    error!(
-                        "[INFER-{}] Failed to create tokio runtime: {}",
-                        instance_id, e
-                    );
-                    let _ = tx.send(StreamItem::Error(format!(
-                        "Failed to create tokio runtime: {}",
-                        e
-                    )));
-                    return;
-                }
-            };
-
-            rt.block_on(async {
-                if let Err(e) = run_inference(
-                    &config,
-                    &http_client,
-                    messages,
-                    &separator,
-                    &end_marker,
-                    &separator_token_owned,
-                    &log_path_clone,
-                    &instance_id,
-                    &tx,
-                )
-                .await
-                {
-                    error!("[INFER-{}] Inference error: {}", instance_id, e);
-                    let _ = tx.send(StreamItem::Error(format!("{}", e)));
-                }
-            });
-        });
-
-        InferenceStream::new(rx, log_path)
+        let llm_policy = &crate::policy::EngineConfig::get().llm;
+        let (api_url, model_id) = llm_policy.resolve_model(&config.model);
+        let mut channel = OpenAiChannel::new(&api_url, &model_id, &config.api_key);
+        let max_tokens = config.max_tokens.unwrap_or(llm_policy.max_tokens);
+        channel = channel.with_max_tokens(max_tokens);
+        // TODO: OpenAiChannel doesn't support temperature yet, need to add with_temperature() to mad-hatter
+        let _ = config.temperature;
+        channel
     }
 }
 
@@ -831,220 +689,6 @@ async fn run_streaming_collect(
     );
 
     Ok((full_text, collected_usage))
-}
-
-// ---------------------------------------------------------------------------
-// Inference execution (runs in background thread)
-// ---------------------------------------------------------------------------
-
-#[allow(clippy::too_many_arguments)]
-async fn run_inference(
-    config: &LlmConfig,
-    http_client: &reqwest::Client,
-    messages: Vec<ChatMessage>,
-    separator: &str,
-    end_marker: &str,
-    separator_token: &str,
-    log_path: &Path,
-    instance_id: &str,
-    tx: &mpsc::Sender<StreamItem>,
-) -> Result<()> {
-    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
-    use std::io::Write;
-
-    let llm_policy = &crate::policy::EngineConfig::get().llm;
-    let (api_url, model_id) = llm_policy.resolve_model(&config.model);
-
-    info!(
-        "[INFER-{}] Starting inference, model={}",
-        instance_id, model_id
-    );
-
-    // Build request body
-    let body = serde_json::json!({
-        "model": model_id,
-        "messages": messages,
-        "max_tokens": config.max_tokens.unwrap_or(llm_policy.max_tokens),
-        "temperature": config.temperature.unwrap_or(llm_policy.temperature),
-        "stream": true,
-    });
-
-    // Send request
-    let response = http_client
-        .post(&api_url)
-        .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
-        .header(CONTENT_TYPE, "application/json")
-        .json(&body)
-        .send()
-        .await
-        .context("Failed to send inference request")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("LLM API error {}: {}", status, body);
-    }
-
-    // Open log file for append
-    let mut log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .context("Failed to open inference log file")?;
-
-    // Read SSE stream
-    let mut full_text = String::new();
-    let mut last_parsed_pos = 0;
-    let mut sse_buffer = String::new();
-    let mut collected_usage: Option<UsageInfo> = None;
-
-    use futures_util::StreamExt;
-    let mut byte_stream = response.bytes_stream();
-
-    while let Some(chunk_result) = {
-        // Per-chunk timeout: 60 seconds without any data = stale connection
-        match tokio::time::timeout(tokio::time::Duration::from_secs(60), byte_stream.next()).await {
-            Ok(item) => item,
-            Err(_) => {
-                warn!("[INFER-{}] SSE stream timeout (60s no data)", instance_id);
-                anyhow::bail!("SSE stream timeout: no data received for 60 seconds");
-            }
-        }
-    } {
-        let chunk = chunk_result.context("SSE stream read error")?;
-        let chunk_str = String::from_utf8_lossy(&chunk);
-
-        sse_buffer.push_str(&chunk_str);
-
-        // Process complete SSE lines
-        while let Some(line_end) = sse_buffer.find('\n') {
-            let line = sse_buffer[..line_end].trim().to_string(); // safe: line_end from find newline
-            sse_buffer = sse_buffer[line_end + 1..].to_string();
-
-            if line.is_empty() || line == "data: [DONE]" || line == "data:[DONE]" {
-                if line == "data: [DONE]" || line == "data:[DONE]" {
-                    info!("[INFER-{}] SSE stream complete", instance_id);
-                }
-                continue;
-            }
-
-            if let Some(data) = line
-                .strip_prefix("data: ")
-                .or_else(|| line.strip_prefix("data:"))
-            {
-                match serde_json::from_str::<SseResponse>(data) {
-                    Ok(sse) => {
-                        for choice in &sse.choices {
-                            if let Some(content) = &choice.delta.content {
-                                // Append to full text
-                                full_text.push_str(content);
-
-                                // Append to log file (streaming)
-                                let _ = log_file.write_all(content.as_bytes());
-                                let _ = log_file.flush();
-                            }
-                        }
-                        // Collect usage info (typically in last SSE chunk)
-                        if let Some(usage) = &sse.usage {
-                            collected_usage = Some(UsageInfo {
-                                input_tokens: usage.prompt_tokens.unwrap_or(0),
-                                output_tokens: usage.completion_tokens.unwrap_or(0),
-                                total_cost: None, // OpenRouter doesn't report cost in SSE
-                            });
-                            info!(
-                                "[INFER-{}] Usage: input={} output={}",
-                                instance_id,
-                                usage.prompt_tokens.unwrap_or(0),
-                                usage.completion_tokens.unwrap_or(0)
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[INFER-{}] SSE parse warning: {} for data: {}",
-                            instance_id, e, data
-                        );
-                    }
-                }
-            }
-
-            // Check for complete actions in accumulated text
-            // Look for separator + end_marker pairs from last_parsed_pos
-            while let Some(action_start) = full_text[last_parsed_pos..].find(separator) {
-                let abs_start = last_parsed_pos + action_start;
-                let after_sep = abs_start + separator.len();
-
-                // Find end_marker after separator
-                if let Some(end_offset) = full_text[after_sep..].find(end_marker) {
-                    // Complete action found between separator and end_marker
-                    let action_body = full_text[after_sep..after_sep + end_offset].trim();
-                    info!(
-                        "[INFER-{}] Stream action detected: {:?}",
-                        instance_id,
-                        crate::util::safe_truncate(action_body, 80)
-                    );
-                    let actions =
-                        parse_single_action_chunk(action_body, separator_token);
-                    info!(
-                        "[INFER-{}] Parsed {} actions from stream chunk",
-                        instance_id,
-                        actions.len()
-                    );
-                    for action in actions {
-                        let _ = tx.send(StreamItem::Action(action));
-                    }
-                    last_parsed_pos = after_sep + end_offset + end_marker.len();
-                } else {
-                    // No end_marker yet — wait for more data
-                    break;
-                }
-            }
-        }
-    }
-
-    // Parse any remaining actions after stream ends
-    if last_parsed_pos < full_text.len() {
-        let remaining = &full_text[last_parsed_pos..];
-        info!(
-            "[INFER-{}] Remaining text ({} chars): {:?}",
-            instance_id,
-            remaining.len(),
-            crate::util::safe_truncate(remaining, 100)
-        );
-        // Try to parse any remaining separator+end_marker pairs
-        let mut rem_pos = 0;
-        while let Some(action_start) = remaining[rem_pos..].find(separator) {
-            let abs_start = rem_pos + action_start;
-            let after_sep = abs_start + separator.len();
-            if let Some(end_offset) = remaining[after_sep..].find(end_marker) {
-                let action_body = remaining[after_sep..after_sep + end_offset].trim();
-                info!("[INFER-{}] Parsing remaining action", instance_id);
-                let actions =
-                    parse_single_action_chunk(action_body, separator_token);
-                for action in actions {
-                    let _ = tx.send(StreamItem::Action(action));
-                }
-                rem_pos = after_sep + end_offset + end_marker.len();
-            } else {
-                break;
-            }
-        }
-        if rem_pos == 0 {
-            info!("[INFER-{}] No complete action in remaining text", instance_id);
-        }
-    } else {
-        info!(
-            "[INFER-{}] No remaining text (last_parsed_pos={}, full_text.len={})",
-            instance_id,
-            last_parsed_pos,
-            full_text.len()
-        );
-    }
-
-    // Signal completion — all actions already sent via streaming
-    let _ = tx.send(StreamItem::Done(Vec::new(), collected_usage));
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

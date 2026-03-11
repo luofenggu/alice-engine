@@ -1,18 +1,14 @@
 //! # Beat Inference Protocol
 //!
 //! Defines the request/response protocol for one React cognitive beat.
-//! BeatRequest is a pure data struct; render() is a pure function.
-//! Callers (prompt module) are responsible for extracting raw data from Alice.
+//! BeatRequest is a pure data struct with ToMarkdown derive.
+//! stream_infer() uses to_markdown() + schema_markdown() to build the prompt.
 
-use crate::inference::safe_render;
-use crate::inference::Action;
+
 use crate::policy::messages;
-use mad_hatter::llm::FromMarkdown as _;
-use mad_hatter::llm::ToMarkdown as _;
+
 use mad_hatter::ToMarkdown;
 
-// Compile-time embedded templates
-const TEMPLATE_SYSTEM: &str = include_str!("../../templates/react_system.txt");
 const RESERVED_SKILL_TEMPLATE: &str = include_str!("../../templates/reserved_skill.txt");
 
 pub const INITIAL_HISTORY: &str = include_str!("../../templates/initial_history.txt");
@@ -50,12 +46,12 @@ pub struct SessionBlockData {
 // BeatRequest — pure data struct for one beat's prompt rendering
 // ---------------------------------------------------------------------------
 
-/// All data needed to render one beat's prompts.
-/// Callers fill this struct; render() produces system + user prompts.
+/// 你醒了，你发现自己身处一个密闭房间，桌子上摆放着几样东西。
+/// 收件箱：你可以在此收到来信
+/// 寄件箱：你可以在此寄出信件
+/// 工作目录：你可以在此读写文件、执行脚本以完成任务
 #[derive(ToMarkdown)]
 pub struct BeatRequest {
-    #[markdown(skip)]
-    pub action_token: String,
     /// skill
     pub skill: String,
     /// 知识
@@ -70,24 +66,6 @@ pub struct BeatRequest {
     pub current: String,
     /// 当前状态
     pub status: String,
-}
-
-impl BeatRequest {
-    /// Render system and user prompts from this request's data.
-    /// Returns `(system_prompt, user_prompt)`.
-    pub fn render(&self) -> (String, String) {
-        // System prompt: template + auto-generated action schema
-        let action_schema = Action::schema_markdown(&self.action_token);
-        let system_prompt = safe_render(TEMPLATE_SYSTEM, &[
-            ("{{TOKEN}}", &self.action_token),
-            ("{{ACTION_SCHEMA}}", &action_schema),
-        ]);
-
-        // User prompt: ToMarkdown auto-generates sections from field doc comments
-        let user_prompt = format!("{}\n请输出你的下一个行为：\n", self.to_markdown());
-
-        (system_prompt, user_prompt)
-    }
 }
 
 impl From<&crate::persist::SessionBlockEntry> for SessionEntryData {
@@ -579,9 +557,9 @@ mod tests {
     }
 
     #[test]
-    fn test_render_returns_two_strings() {
+    fn test_to_markdown_output() {
+        use mad_hatter::llm::ToMarkdown;
         let request = BeatRequest {
-            action_token: "abc".to_string(),
             skill: String::new(),
             knowledge: String::new(),
             history: "(空)".to_string(),
@@ -590,18 +568,17 @@ mod tests {
             current: "(空)".to_string(),
             status: "现在时刻：[20260311120000]".to_string(),
         };
-        let (system, user) = request.render();
-        assert!(system.contains("Action-abc"));
-        assert!(user.contains("(空)"));
-        assert!(user.contains("请输出你的下一个行为："));
+        let output = request.to_markdown();
         // Empty skill and knowledge should be skipped by ToMarkdown
-        assert!(!user.contains("### skill ###"));
-        assert!(!user.contains("### 知识 ###"));
+        assert!(!output.contains("### skill ###"));
+        assert!(!output.contains("### 知识 ###"));
         // Non-empty fields should have headers
-        assert!(user.contains("### 经历 ###"));
-        assert!(user.contains("### 环境信息 ###"));
-        assert!(user.contains("### current ###"));
-        assert!(user.contains("### 当前状态 ###"));
+        assert!(output.contains("### 经历 ###"));
+        assert!(output.contains("### 环境信息 ###"));
+        assert!(output.contains("### current ###"));
+        assert!(output.contains("### 当前状态 ###"));
+        // Scene description (struct-level doc comment) should appear at the top
+        assert!(output.contains("你醒了"));
     }
 }
 

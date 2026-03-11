@@ -127,7 +127,6 @@ pub fn build_beat_request(
     );
 
     BeatRequest {
-        action_token: String::new(), // filled by infer_beat internally
         skill,
         knowledge,
         history,
@@ -186,7 +185,6 @@ pub fn build_capture_request(alice: &Alice, summary_content: &str) -> CaptureReq
         recent_content,
         current_content,
         summary_content: summary_content.to_string(),
-        end_marker: crate::core::generate_end_marker(),
     }
 }
 
@@ -223,7 +221,7 @@ fn extract_all_session_blocks(alice: &Alice) -> Vec<SessionBlockData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use mad_hatter::llm::ToMarkdown;
     use tempfile::TempDir;
 
     fn setup_alice() -> (Alice, TempDir) {
@@ -300,11 +298,9 @@ mod tests {
     #[test]
     fn test_build_beat_request_empty_memory() {
         let (alice, _tmp) = setup_alice();
-        let mut request = build_beat_request(&alice, None, String::new(), String::new());
-        request.action_token = "abc".to_string();
-        let (system, user) = request.render();
-        assert!(system.contains("Action-abc"));
-        assert!(user.contains("(空)"));
+        let request = build_beat_request(&alice, None, String::new(), String::new());
+        let output = request.to_markdown();
+        assert!(output.contains("(空)"));
     }
 
     #[test]
@@ -326,9 +322,9 @@ mod tests {
             .unwrap();
 
         let request = build_beat_request(&alice, None, String::new(), String::new());
-        let (_, user) = request.render();
-        assert!(user.contains("user [20260223120000]: hi there"));
-        assert!(user.contains("[总结] User said hi"));
+        let output = request.to_markdown();
+        assert!(output.contains("user [20260223120000]: hi there"));
+        assert!(output.contains("[总结] User said hi"));
     }
 
     #[test]
@@ -354,9 +350,9 @@ mod tests {
             .write("# 泛准则\n- 谨慎加信任")
             .unwrap();
         let request = build_beat_request(&alice, None, String::new(), String::new());
-        let (_, user) = request.render();
-        assert!(user.contains("### 要点与知识 ###"));
-        assert!(user.contains("谨慎加信任"));
+        let output = request.to_markdown();
+        assert!(output.contains("### 知识 ###"));
+        assert!(output.contains("谨慎加信任"));
     }
 }
 

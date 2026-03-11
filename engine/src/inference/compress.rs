@@ -1,44 +1,27 @@
 //! # Compress Inference Protocol
 //!
 //! Defines the request/response protocol for history compression.
-//! CompressRequest renders the compression prompt; response is plain text.
+//! CompressRequest uses ToMarkdown for prompt generation;
+//! CompressOutput uses FromMarkdown for structured response parsing.
+//! End-marker protection is handled automatically by the mad-hatter framework.
 
-use crate::inference::safe_render;
+use mad_hatter::llm::{FromMarkdown as _, ToMarkdown as _};
 
-const HISTORY_COMPRESS_PROMPT: &str = include_str!("../../templates/history_compress.txt");
-
-/// Request for history compression inference.
+/// 你是一位小说作家。请将下列内容浓缩为一篇短篇随笔，纪念一个agent和它的用户之间的故事，供agent回忆与用户之间的经历。用第二人称（你）叙述。重要的准则和术语用 > 引用标记。
+#[derive(mad_hatter::ToMarkdown)]
 pub struct CompressRequest {
-    /// Target size in KB for the compressed history.
-    pub history_kb: usize,
-    /// The rendered session block content to compress.
-    pub session_content: String,
-    /// The current history content to append to.
-    pub current_history: String,
-    /// Random end marker for truncation defense.
-    pub end_marker: String,
+    /// 压缩要求
+    pub requirement: String,
+    /// 待压缩内容
+    pub content: String,
 }
 
-impl CompressRequest {
-    /// Render the compression prompt.
-    /// Returns `(system_prompt, user_content)` for the LLM call.
-    pub fn render(&self) -> (String, String) {
-        let system_msg = safe_render(
-            HISTORY_COMPRESS_PROMPT,
-            &[
-                ("{{HISTORY_KB}}", &self.history_kb.to_string()),
-                ("{{END_MARKER}}", &self.end_marker),
-            ],
-        );
-
-        let user_content = if self.current_history.is_empty() {
-            self.session_content.clone()
-        } else {
-            format!("{}\n\n{}", self.current_history, self.session_content)
-        };
-
-        (system_msg, user_content)
-    }
+/// 压缩结果
+#[derive(mad_hatter::FromMarkdown)]
+pub struct CompressOutput {
+    /// 随笔
+    #[markdown(required)]
+    pub summary: String,
 }
 
 #[cfg(test)]
@@ -46,28 +29,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_compress_request_render() {
+    fn test_compress_request_to_markdown() {
         let req = CompressRequest {
-            history_kb: 10,
-            session_content: "session data".to_string(),
-            current_history: String::new(),
-            end_marker: "###END_test123###".to_string(),
+            requirement: "浓缩为不超过10KB".to_string(),
+            content: "session data".to_string(),
         };
-        let (system, user) = req.render();
-        assert!(system.contains("10"));
-        assert_eq!(user, "session data");
+        let md = req.to_markdown();
+        assert!(md.contains("小说作家"));
+        assert!(md.contains("### 压缩要求 ###"));
+        assert!(md.contains("浓缩为不超过10KB"));
+        assert!(md.contains("### 待压缩内容 ###"));
+        assert!(md.contains("session data"));
     }
 
     #[test]
-    fn test_compress_request_with_existing_history() {
+    fn test_compress_request_with_combined_content() {
         let req = CompressRequest {
-            history_kb: 10,
-            session_content: "new session".to_string(),
-            current_history: "existing history".to_string(),
-            end_marker: "###END_test456###".to_string(),
+            requirement: "浓缩为不超过10KB".to_string(),
+            content: "existing history\n\nnew session".to_string(),
         };
-        let (_, user) = req.render();
-        assert!(user.contains("existing history"));
-        assert!(user.contains("new session"));
+        let md = req.to_markdown();
+        assert!(md.contains("existing history"));
+        assert!(md.contains("new session"));
     }
 }

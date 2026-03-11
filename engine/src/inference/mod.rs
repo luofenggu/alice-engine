@@ -60,6 +60,7 @@ use std::fmt;
 #[derive(Debug, Clone, FromMarkdown)]
 pub enum Action {
     /// 什么都不做（继续等待）
+    /// idle是终结动作，输出idle后本轮推理结束，不能再输出任何action
     /// 礼貌规则: 用户只能看到信件，看不到你的其它行为，因此，进入idle之前需检查已读信件，如有未回复消息，优先回复（寄出信件）
     /// ⚠️ sleep vs idle：shell脚本里的sleep是同步阻塞——等待期间你无法响应任何消息；idle是异步等待——来信会立刻唤醒你。需要等待时永远用idle，不要用sleep
     /// ⚠️ 默认不加参数：等用户消息时直接idle不带秒数，来信自动唤醒。只有"启动了后台任务、需要过一会儿检查结果"这种场景才加秒数
@@ -71,6 +72,7 @@ pub enum Action {
     },
     /// 阅读收件箱（未读来信=0时无效）
     /// 来信中sender为"user"代表已鉴权的你的专属用户
+    /// ⚠️ 幻觉防御：执行后需要等待系统返回结果，本轮推理立即结束。下一轮推理会带着执行结果继续。你不需要猜测结果——系统会自动把结果呈现在current
     ReadMsg,
     /// 寄出信件
     /// 收件人填"user"代表发给你的专属用户
@@ -92,6 +94,7 @@ pub enum Action {
     },
     /// 执行本地脚本
     /// 系统将会自动cd到工作目录下执行你的脚本
+    /// ⚠️ 幻觉防御：执行后需要等待系统返回结果，本轮推理立即结束。下一轮推理会带着执行结果继续。你不需要猜测结果——系统会自动把结果呈现在current。例外：send_msg不受此限制——你可以在任何时候发信
     Script {
         /// 脚本内容
         content: String,
@@ -114,8 +117,10 @@ pub enum Action {
     ReplaceInFile {
         /// file_path
         path: String,
-        /// 替换块
-        blocks: Vec<ReplaceBlock>,
+        /// 要搜索的精确文本（多行）
+        search: String,
+        /// 要替换成的文本（多行）
+        replace: String,
     },
     /// 小结（回顾对话）
     /// 当current变得很长时，用这个action释放空间
@@ -171,8 +176,8 @@ impl fmt::Display for Action {
             Action::Thinking { .. } => write!(f, "thinking"),
             Action::Script { .. } => write!(f, "script"),
             Action::WriteFile { path, .. } => write!(f, "write_file → {}", path),
-            Action::ReplaceInFile { path, blocks } => {
-                write!(f, "replace_in_file → {} ({} blocks)", path, blocks.len())
+            Action::ReplaceInFile { path, .. } => {
+                write!(f, "replace_in_file → {}", path)
             }
             Action::Summary { .. } => write!(f, "summary"),
             Action::SetProfile { .. } => write!(f, "set_profile"),
@@ -182,14 +187,6 @@ impl fmt::Display for Action {
             } => write!(f, "distill → {}", target_action_id),
         }
     }
-}
-
-#[derive(Debug, Clone, FromMarkdown)]
-pub struct ReplaceBlock {
-    /// 要搜索的精确文本（多行）
-    pub search: String,
-    /// 要替换成的文本（多行）
-    pub replace: String,
 }
 
 #[derive(Debug, Clone)]
@@ -501,36 +498,20 @@ mod tests {
     #[test]
     fn test_parse_replace_in_file() {
         let raw = format!(
-            "{}\nreplace_in_file\npath-{}\nconfig.toml\nblocks-{}\nReplaceBlock-{}\nsearch-{}\nold text\nreplace-{}\nnew text\nReplaceBlock-end-{}\n{}",
-            sep(), TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, end()
+            "{}\nreplace_in_file\npath-{}\nconfig.toml\nsearch-{}\nold text\nreplace-{}\nnew text\n{}",
+            sep(), TOKEN, TOKEN, TOKEN, end()
         );
         let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
-            Action::ReplaceInFile { path, blocks } => {
+            Action::ReplaceInFile {
+                path,
+                search,
+                replace,
+            } => {
                 assert_eq!(path, "config.toml");
-                assert_eq!(blocks.len(), 1);
-                assert_eq!(blocks[0].search, "old text");
-                assert_eq!(blocks[0].replace, "new text");
-            }
-            _ => panic!("Expected ReplaceInFile"),
-        }
-    }
-
-    #[test]
-    fn test_parse_replace_multiple_blocks() {
-        let raw = format!(
-            "{}\nreplace_in_file\npath-{}\nfile.rs\nblocks-{}\nReplaceBlock-{}\nsearch-{}\nfoo\nreplace-{}\nbar\nReplaceBlock-{}\nsearch-{}\nbaz\nreplace-{}\nqux\nReplaceBlock-end-{}\n{}",
-            sep(), TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, end()
-        );
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        match &actions[0] {
-            Action::ReplaceInFile { blocks, .. } => {
-                assert_eq!(blocks.len(), 2);
-                assert_eq!(blocks[0].search, "foo");
-                assert_eq!(blocks[0].replace, "bar");
-                assert_eq!(blocks[1].search, "baz");
-                assert_eq!(blocks[1].replace, "qux");
+                assert_eq!(search, "old text");
+                assert_eq!(replace, "new text");
             }
             _ => panic!("Expected ReplaceInFile"),
         }
@@ -624,19 +605,11 @@ mod tests {
                 "{}",
                 Action::ReplaceInFile {
                     path: "f.rs".to_string(),
-                    blocks: vec![
-                        ReplaceBlock {
-                            search: "a".to_string(),
-                            replace: "b".to_string()
-                        },
-                        ReplaceBlock {
-                            search: "c".to_string(),
-                            replace: "d".to_string()
-                        },
-                    ],
+                    search: "a".to_string(),
+                    replace: "b".to_string(),
                 }
             ),
-            "replace_in_file → f.rs (2 blocks)"
+            "replace_in_file → f.rs"
         );
         assert_eq!(
             format!(
@@ -672,17 +645,20 @@ mod tests {
         let rust_code_search = "    connections: RwLock<HashMap<String, Arc<Mutex<Chat>>>>,\n}";
         let rust_code_replace = "    connections: RwLock<HashMap<String, Arc<Mutex<Chat>>>>,\n    extra_field: bool,\n}";
         let raw = format!(
-            "{}\nreplace_in_file\npath-{}\nmod.rs\nblocks-{}\nReplaceBlock-{}\nsearch-{}\n{}\nreplace-{}\n{}\nReplaceBlock-end-{}\n{}",
-            sep(), TOKEN, TOKEN, TOKEN, TOKEN, rust_code_search, TOKEN, rust_code_replace, TOKEN, end()
+            "{}\nreplace_in_file\npath-{}\nmod.rs\nsearch-{}\n{}\nreplace-{}\n{}\n{}",
+            sep(), TOKEN, TOKEN, rust_code_search, TOKEN, rust_code_replace, end()
         );
         let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
-            Action::ReplaceInFile { path, blocks } => {
+            Action::ReplaceInFile {
+                path,
+                search,
+                replace,
+            } => {
                 assert_eq!(path, "mod.rs");
-                assert_eq!(blocks.len(), 1);
-                assert_eq!(blocks[0].search, rust_code_search);
-                assert_eq!(blocks[0].replace, rust_code_replace);
+                assert_eq!(search, rust_code_search);
+                assert_eq!(replace, rust_code_replace);
             }
             _ => panic!("Expected ReplaceInFile"),
         }
