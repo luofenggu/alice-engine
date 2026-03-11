@@ -32,3 +32,76 @@ pub trait FromMarkdown: Sized {
     /// 解析LLM输出为多个action实例
     fn from_markdown(text: &str, token: &str) -> Result<Vec<Self>, String>;
 }
+
+// ---------------------------------------------------------------------------
+// LLM Channel — engine实现此trait提供流式文本
+// ---------------------------------------------------------------------------
+
+/// LLM推理通道。
+///
+/// Engine实现此trait，内部调用LLM API（OpenAI兼容SSE流式协议），
+/// 将SSE chunk中的delta.content提取为纯文本chunk返回。
+///
+/// 框架不关心HTTP/SSE细节，只消费文本流。
+pub trait LlmChannel {
+    /// 流式调用LLM，返回逐chunk文本迭代器。
+    ///
+    /// `prompt` 是框架拼接好的完整prompt（包含输入+格式说明）。
+    /// 返回的迭代器每次yield一个文本chunk（对应SSE中的delta.content）。
+    fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String>;
+}
+
+// ---------------------------------------------------------------------------
+// infer — 框架提供的高层推理函数
+// ---------------------------------------------------------------------------
+
+/// 执行LLM推理：拼接prompt → 调用channel → 解析响应。
+///
+/// 开发者只需定义 `Req: ToMarkdown`（输入）和 `Resp: FromMarkdown`（输出），
+/// 框架自动完成：
+/// 1. 将request序列化为markdown prompt
+/// 2. 生成Resp的格式说明（含随机token）
+/// 3. 拼接完整prompt并调用LLM
+/// 4. 累积流式响应文本
+/// 5. 用FromMarkdown解析为结构化结果
+///
+/// # Example
+/// ```ignore
+/// let actions = mad_hatter::infer::<BeatRequest, Action>(&channel, &request)?;
+/// ```
+pub fn infer<Req: ToMarkdown, Resp: FromMarkdown>(
+    channel: &dyn LlmChannel,
+    request: &Req,
+) -> Result<Vec<Resp>, String> {
+    let token = generate_token();
+
+    // 1. 拼接prompt
+    let input = request.to_markdown();
+    let schema = Resp::schema_markdown(&token);
+    let prompt = format!(
+        "{}\n\n### 输出规范 ###\n{}\n你必须严格按照以上格式输出。\n",
+        input, schema
+    );
+
+    // 2. 调用channel获取流式响应
+    let stream = channel.infer_stream(prompt)?;
+
+    // 3. 累积所有chunk
+    let mut full_text = String::new();
+    for chunk in stream {
+        full_text.push_str(&chunk);
+    }
+
+    // 4. 解析
+    Resp::from_markdown(&full_text, &token)
+}
+
+/// 生成随机token（用于分隔符，不需要密码学安全）
+fn generate_token() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:x}", nanos)
+}

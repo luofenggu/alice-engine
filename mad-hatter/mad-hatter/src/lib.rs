@@ -42,6 +42,7 @@ pub use mad_hatter_macros::ToMarkdown;
 pub use mad_hatter_macros::FromMarkdown;
 
 pub mod llm;
+pub use llm::{LlmChannel, infer};
 
 // Re-export axum types that generated code needs
 pub use axum;
