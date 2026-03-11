@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 
 mod parse;
 mod gen;
+mod llm;
 
 /// Define an HTTP service with typed endpoints.
 ///
@@ -50,4 +51,28 @@ pub fn http_service(input: TokenStream) -> TokenStream {
 pub fn bind_http(input: TokenStream) -> TokenStream {
     let definition = syn::parse_macro_input!(input as parse::BindDef);
     gen::generate_bind(definition).into()
+}
+
+/// Derive `ToMarkdown` for a struct.
+///
+/// Renders struct fields as markdown sections.
+///
+/// ```ignore
+/// #[derive(ToMarkdown)]
+/// /// You are a knowledge expert.
+/// struct CaptureInput {
+///     #[markdown(skip)]
+///     end_marker: String,
+///     /// Current knowledge
+///     knowledge: String,
+/// }
+///
+/// let input = CaptureInput { end_marker: "X".into(), knowledge: "...".into() };
+/// let md = input.to_markdown();
+/// // "You are a knowledge expert.\n\n### Current knowledge ###\n...\n"
+/// ```
+#[proc_macro_derive(ToMarkdown, attributes(markdown))]
+pub fn derive_to_markdown(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    llm::derive_to_markdown(input).into()
 }
