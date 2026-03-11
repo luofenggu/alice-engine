@@ -1349,7 +1349,8 @@ async function switchInstance(name) {
     updatePrivilegedBtn();
     // Clear chat immediately for instant visual feedback, then load history
     const chatEl = document.getElementById('chatMessages');
-    if (chatEl) chatEl.innerHTML = '';
+    if (chatEl) { chatEl.onscroll = null; chatEl.innerHTML = ''; }
+    loadingMore = false;
     startInferencePolling();
     await loadHistory(name);
     autoScrollEnabled = true;
@@ -1438,9 +1439,12 @@ async function loadMoreHistory() {
     el.prepend(loader);
 
     const prevHeight = el.scrollHeight;
-    const res = await api('GET', 'api/instances/' + encodeURIComponent(currentInstance) + '/messages?limit=50&before_id=' + data.earliestId);
+    const loadingInstance = currentInstance;
+    const res = await api('GET', 'api/instances/' + encodeURIComponent(loadingInstance) + '/messages?limit=50&before_id=' + data.earliestId);
     const loaderEl = document.getElementById('historyLoader');
     if (loaderEl) loaderEl.remove();
+    // If instance switched during await, discard stale results
+    if (currentInstance !== loadingInstance) { loadingMore = false; return; }
 
     if (res && Array.isArray(res.messages) && res.messages.length > 0) {
         const older = res.messages.map(m => ({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp, sender: m.sender, recipient: m.recipient }));
