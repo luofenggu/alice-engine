@@ -338,7 +338,7 @@ fn test_real_inference() {
 
     // Configure LLM channel (using test environment settings)
     let channel = OpenAiChannel::new(
-        "http://localhost:9876/v1/chat/completions",
+        "http://localhost:9876",
         "claude-opus-4-6",
         "sk-114e7ac8a751468c94dbd3b61390e384",
     ).with_max_tokens(16384);
