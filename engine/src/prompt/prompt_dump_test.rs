@@ -6,7 +6,7 @@
 //! For real LLM inference (requires network):
 //!   cargo test prompt_dump_test::test_real_inference -- --ignored --nocapture
 
-use crate::inference::beat::BeatRequest;
+use crate::inference::beat::{BeatRequest, EnvironmentInfo, StatusInfo};
 use crate::inference::Action;
 use mad_hatter::llm::{FromMarkdown, ToMarkdown};
 
@@ -196,10 +196,12 @@ you[ebc381] [20260311212000]: 全部子任务完成！224测试全绿。commit d
 agent[ac56b3] [20260311212500]: 二号，全面集成全部完成，漂亮 🎉 等章邯review prompt后决定下一步。
 [总结] 推理帽子全面集成全部子任务完成。子任务4跳过（不拆struct）。子任务6：reserved_skill内联+删4个废弃模板。224测试全通过。等章邯review。"#.to_string();
 
-    let environment = r#"你是进化二号（引擎）（ebc381）
-可联系的其他实例：进化熔炼(7f3e74), 进化之王(ac56b3), 进化三号（产品）(48f5fd), 进化四号（防御）(1e268b)
-脚本环境：Linux系统（Alibaba Cloud Linux 3），请生成bash脚本
-公网地址：8.149.243.230:8081"#.to_string();
+    let environment = EnvironmentInfo {
+        identity: "进化二号（引擎）（ebc381）".to_string(),
+        contacts: Some("进化熔炼(7f3e74), 进化之王(ac56b3), 进化三号（产品）(48f5fd), 进化四号（防御）(1e268b)".to_string()),
+        shell_env: "Linux系统（Alibaba Cloud Linux 3），请生成bash脚本".to_string(),
+        host: Some("8.149.243.230:8081".to_string()),
+    };
 
     let current = r#"---------行为编号[20260311220000_a1b2c3]开始---------
 记录思考: 进化之王要求写一个集成测试，构造丰富的mock BeatRequest，调用build_prompt拿到完整input prompt string，dump到文件。如果能配LLM通道就真正调一次推理。
@@ -247,11 +249,13 @@ system [MSG:20260311220150]发来一条消息：
 
 ---------行为编号[20260311220300_def012]结束---------"#.to_string();
 
-    let status = r#"现在时刻：[20260311222500]
-系统启动时刻：[20260311195424]
-收件箱未读来信：[1] 条
-实例名：进化二号（引擎）（ebc381）
-current: 42000字符 | 经历: 3048字符 | 近况: 9776字符 | 知识: 36000/51200字符 🟢 | 合计: 90824字符"#.to_string();
+    let status = StatusInfo {
+        current_time: "[20260311222500]".to_string(),
+        start_time: "[20260311195424]".to_string(),
+        unread: "[1] 条".to_string(),
+        instance_name: "进化二号（引擎）（ebc381）".to_string(),
+        memory_usage: "current: 42000字符 | 经历: 3048字符 | 近况: 9776字符 | 知识: 36000/51200字符 🟢 | 合计: 90824字符".to_string(),
+    };
 
     BeatRequest {
         skill,

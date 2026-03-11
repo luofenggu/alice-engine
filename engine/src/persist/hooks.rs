@@ -369,7 +369,7 @@ pub fn format_contacts_list(contacts: &[ContactInfo]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::{NamedTempFile, TempDir};
+    use tempfile::TempDir;
 
     #[test]
     fn test_hooks_config_default_is_empty() {

@@ -221,7 +221,7 @@ fn extract_all_session_blocks(alice: &Alice) -> Vec<SessionBlockData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mad_hatter::llm::{ToMarkdown, FromMarkdown};
+    use mad_hatter::llm::ToMarkdown;
     use tempfile::TempDir;
 
     fn setup_alice() -> (Alice, TempDir) {
@@ -357,4 +357,7 @@ mod tests {
 
 
 }
+
+#[cfg(test)]
+mod prompt_dump_test;
 

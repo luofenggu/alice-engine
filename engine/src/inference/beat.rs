@@ -139,6 +139,32 @@ pub struct SessionBlockData {
 // BeatRequest — pure data struct for one beat's prompt rendering
 // ---------------------------------------------------------------------------
 
+#[derive(ToMarkdown)]
+pub struct EnvironmentInfo {
+    /// 你是
+    pub identity: String,
+    /// 可联系的其他实例
+    pub contacts: Option<String>,
+    /// 脚本环境
+    pub shell_env: String,
+    /// 公网地址
+    pub host: Option<String>,
+}
+
+#[derive(ToMarkdown)]
+pub struct StatusInfo {
+    /// 现在时刻
+    pub current_time: String,
+    /// 系统启动时刻
+    pub start_time: String,
+    /// 收件箱未读来信
+    pub unread: String,
+    /// 实例名
+    pub instance_name: String,
+    /// 记忆用量
+    pub memory_usage: String,
+}
+
 /// 你醒了，你发现自己身处一个密闭房间，桌子上摆放着几样东西。
 /// 收件箱：你可以在此收到来信
 /// 寄件箱：你可以在此寄出信件
@@ -154,11 +180,11 @@ pub struct BeatRequest {
     /// 近况
     pub sessions: String,
     /// 环境信息
-    pub environment: String,
+    pub environment: EnvironmentInfo,
     /// current
     pub current: String,
     /// 当前状态
-    pub status: String,
+    pub status: StatusInfo,
 }
 
 impl From<&crate::persist::SessionBlockEntry> for SessionEntryData {
@@ -358,24 +384,29 @@ pub fn build_environment(
     contacts_info: &str,
     shell_env: &str,
     host: Option<&str>,
-) -> String {
-    let name_part = match instance_name {
+) -> EnvironmentInfo {
+    let identity = match instance_name {
         Some(name) if !name.is_empty() => format!("{}（{}）", name, instance_id),
         _ => instance_id.to_string(),
     };
-    let mut lines = vec![format!("你是{}", name_part)];
-    if !contacts_info.is_empty() {
-        lines.push(contacts_info.to_string());
+    let contacts = if contacts_info.is_empty() {
+        None
+    } else {
+        Some(contacts_info.to_string())
+    };
+    let host_val = match host {
+        Some(h) if !h.is_empty() => Some(h.to_string()),
+        _ => None,
+    };
+    EnvironmentInfo {
+        identity,
+        contacts,
+        shell_env: shell_env.to_string(),
+        host: host_val,
     }
-    lines.push(format!("脚本环境：{}", shell_env));
-    let host_line = make_host_line(host);
-    if !host_line.is_empty() {
-        lines.push(host_line);
-    }
-    lines.join("\n")
 }
 
-/// Build status string for the "当前状态" section.
+/// Build status info struct for the "当前状态" section.
 pub fn build_status(
     instance_id: &str,
     instance_name: Option<&str>,
@@ -386,29 +417,34 @@ pub fn build_status(
     current_size: usize,
     knowledge_size: usize,
     skill_size: usize,
-) -> String {
+) -> StatusInfo {
     let current_time = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
     let start_time = system_start_time.format("%Y%m%d%H%M%S").to_string();
 
-    let memory_status = make_memory_status(
-        instance_id,
-        instance_name,
+    let name_part = match instance_name {
+        Some(name) if !name.is_empty() => format!("{}（{}）", name, instance_id),
+        _ => instance_id.to_string(),
+    };
+
+    let total_knowledge = knowledge_size + skill_size;
+    let memory_usage = make_memory_usage(
         history_size,
         sessions_size,
         current_size,
-        knowledge_size + skill_size,
+        total_knowledge,
     );
 
-    format!(
-        "现在时刻：[{}]\n系统启动时刻：[{}]\n收件箱未读来信：[{}] 条\n{}",
-        current_time, start_time, unread_count, memory_status
-    )
+    StatusInfo {
+        current_time: format!("[{}]", current_time),
+        start_time: format!("[{}]", start_time),
+        unread: format!("[{}] 条", unread_count),
+        instance_name: name_part,
+        memory_usage,
+    }
 }
 
-/// Build memory status report with character counts and optional warning.
-fn make_memory_status(
-    instance_id: &str,
-    instance_name: Option<&str>,
+/// Build memory usage line with character counts and optional warning.
+fn make_memory_usage(
     history_size: usize,
     daily_size: usize,
     current_size: usize,
@@ -423,31 +459,20 @@ fn make_memory_status(
         messages::knowledge_capacity_critical(knowledge_size)
     };
 
-    let instance_line = match instance_name {
-        Some(name) if !name.is_empty() => format!("实例名：{}（{}）", name, instance_id),
-        _ => format!("实例名：{}", instance_id),
-    };
-
-    let mut status = format!(
-        "{}\ncurrent: {}字符 | 经历: {}字符 | 近况: {}字符 | {} | 合计: {}字符",
-        instance_line, current_size, history_size, daily_size, knowledge_indicator, total
+    let mut usage = format!(
+        "current: {}字符 | 经历: {}字符 | 近况: {}字符 | {} | 合计: {}字符",
+        current_size, history_size, daily_size, knowledge_indicator, total
     );
 
     if total > SOFT_LIMIT {
         let kb = total / 1000;
-        status.push_str(&messages::memory_over_limit(kb));
+        usage.push_str(&format!(" {}", messages::memory_over_limit(kb)));
     }
 
-    status
+    usage
 }
 
-/// Build host info line (just the public address, if available).
-fn make_host_line(host: Option<&str>) -> String {
-    match host {
-        Some(h) if !h.is_empty() => messages::host_info(h),
-        _ => String::new(),
-    }
-}
+
 
 /// Build reserved skill section (app guide + vision API + uploads).
 /// Returns empty string if no host is configured.
@@ -533,27 +558,17 @@ mod tests {
     }
 
     #[test]
-    fn test_make_memory_status_basic() {
-        let status = make_memory_status("test-id", Some("TestBot"), 1000, 2000, 3000, 4000);
-        assert!(status.contains("TestBot"));
-        assert!(status.contains("test-id"));
-        assert!(status.contains("3000"));
+    fn test_make_memory_usage_basic() {
+        let usage = make_memory_usage(1000, 2000, 3000, 4000);
+        assert!(usage.contains("3000"));
+        assert!(usage.contains("1000"));
+        assert!(usage.contains("2000"));
     }
 
     #[test]
-    fn test_make_memory_status_over_limit() {
-        let status = make_memory_status("id", None, 50000, 50000, 50000, 50000);
-        assert!(status.contains("⚠️"));
-    }
-
-    #[test]
-    fn test_make_host_line() {
-        assert_eq!(
-            make_host_line(Some("1.2.3.4:8080")),
-            messages::host_info("1.2.3.4:8080")
-        );
-        assert_eq!(make_host_line(None), "");
-        assert_eq!(make_host_line(Some("")), "");
+    fn test_make_memory_usage_over_limit() {
+        let usage = make_memory_usage(50000, 50000, 50000, 50000);
+        assert!(usage.contains("⚠️"));
     }
 
     #[test]
@@ -636,17 +651,18 @@ mod tests {
     #[test]
     fn test_build_environment() {
         let env = build_environment("abc123", Some("TestBot"), "联系人列表", "Linux x86_64", Some("1.2.3.4:8080"));
-        assert!(env.contains("TestBot（abc123）"));
-        assert!(env.contains("联系人列表"));
-        assert!(env.contains("脚本环境：Linux x86_64"));
-        assert!(env.contains("1.2.3.4:8080"));
+        assert_eq!(env.identity, "TestBot（abc123）");
+        assert_eq!(env.contacts, Some("联系人列表".to_string()));
+        assert_eq!(env.shell_env, "Linux x86_64");
+        assert_eq!(env.host, Some("1.2.3.4:8080".to_string()));
     }
 
     #[test]
     fn test_build_environment_no_contacts() {
         let env = build_environment("abc123", None, "", "Linux x86_64", None);
-        assert!(env.contains("你是abc123"));
-        assert!(!env.contains("联系人"));
+        assert_eq!(env.identity, "abc123");
+        assert_eq!(env.contacts, None);
+        assert_eq!(env.host, None);
     }
 
     #[test]
@@ -657,19 +673,37 @@ mod tests {
             knowledge: String::new(),
             history: "(空)".to_string(),
             sessions: String::new(),
-            environment: "你是test".to_string(),
+            environment: EnvironmentInfo {
+                identity: "test".to_string(),
+                contacts: None,
+                shell_env: "Linux".to_string(),
+                host: None,
+            },
             current: "(空)".to_string(),
-            status: "现在时刻：[20260311120000]".to_string(),
+            status: StatusInfo {
+                current_time: "[20260311120000]".to_string(),
+                start_time: "[20260311100000]".to_string(),
+                unread: "[0] 条".to_string(),
+                instance_name: "test".to_string(),
+                memory_usage: "current: 100字符 | 合计: 100字符".to_string(),
+            },
         };
         let output = request.to_markdown();
         // Empty skill and knowledge should be skipped by ToMarkdown
         assert!(!output.contains("### skill ###"));
         assert!(!output.contains("### 知识 ###"));
-        // Non-empty fields should have headers
-        assert!(output.contains("### 经历 ###"));
+        // Single-line fields should use inline format (smart rendering)
+        assert!(output.contains("经历: (空)"));
+        assert!(output.contains("current: (空)"));
+        // Nested structs should render with section titles
         assert!(output.contains("### 环境信息 ###"));
-        assert!(output.contains("### current ###"));
         assert!(output.contains("### 当前状态 ###"));
+        // EnvironmentInfo fields should be inline
+        assert!(output.contains("你是: test"));
+        assert!(output.contains("脚本环境: Linux"));
+        // StatusInfo fields should be inline
+        assert!(output.contains("现在时刻: [20260311120000]"));
+        assert!(output.contains("收件箱未读来信: [0] 条"));
         // Scene description (struct-level doc comment) should appear at the top
         assert!(output.contains("你醒了"));
     }
