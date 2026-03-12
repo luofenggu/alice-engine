@@ -79,6 +79,16 @@ pub fn infer_out_filename(timestamp: &str) -> String {
     format!("{}.out.log", timestamp)
 }
 
+/// Build the capture output log filename.
+pub fn infer_capture_out_filename(timestamp: &str) -> String {
+    format!("{}.out.capture.log", timestamp)
+}
+
+/// Build the compress output log filename.
+pub fn infer_compress_out_filename(timestamp: &str) -> String {
+    format!("{}.out.compress.log", timestamp)
+}
+
 /// Build the inference input log filename.
 pub fn infer_in_filename(timestamp: &str) -> String {
     format!("{}.in.log", timestamp)

@@ -1,0 +1,6 @@
+=== Real LLM Inference Output ===
+Token: 189c02d63837bc19
+Actions parsed: 1
+
+--- Action 1 ---
+read_msg

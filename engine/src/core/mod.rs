@@ -46,7 +46,7 @@ use tracing::{error, info, warn};
 
 use crate::action::execute::execute_action;
 use crate::external::llm::LlmClient;
-use mad_hatter::llm::{stream_infer, ToMarkdown};
+use mad_hatter::llm::{stream_infer_with_on_text, infer_with_on_text, ToMarkdown};
 use crate::inference::Action;
 use crate::persist::instance;
 use crate::persist::hooks::HooksCaller;
@@ -502,6 +502,7 @@ impl Alice {
             request,
             instance_id: self.instance.id.clone(),
             llm_client: self.llm_client.clone(),
+            log_dir: self.log_dir.clone(),
         }))
     }
 
@@ -586,13 +587,28 @@ impl Alice {
             content,
         };
 
-        // 4. Call LLM via infer() (synchronous, blocking)
+        // 4. Call LLM via infer() (synchronous, blocking) with on_text for compress log
         info!(
             "[ROLL-{}] Calling LLM for history compression",
             self.instance.id
         );
         let channel = self.llm_client.create_channel();
-        let results = mad_hatter::llm::infer::<_, crate::inference::compress::CompressOutput>(&channel, &request)
+        let compress_log_path = {
+            let infer_log_dir = self.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&self.instance.id);
+            std::fs::create_dir_all(&infer_log_dir).ok();
+            let ts = crate::policy::log_formats::format_infer_timestamp(&chrono::Local::now());
+            infer_log_dir.join(crate::policy::log_formats::infer_compress_out_filename(&ts))
+        };
+        let mut compress_log_file = std::fs::OpenOptions::new()
+            .create(true).append(true).open(&compress_log_path).ok();
+        let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
+            if let Some(ref mut f) = compress_log_file {
+                use std::io::Write;
+                let _ = f.write_all(chunk.as_bytes());
+                let _ = f.flush();
+            }
+        }));
+        let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &request, on_text)
             .map_err(|e| anyhow::anyhow!(e))?;
         let output = results.into_iter().next()
             .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
@@ -814,11 +830,19 @@ impl Alice {
             });
         }
 
-        // 6. LLM inference (via stream_infer)
+        // 6. LLM inference (via stream_infer with on_text callback for out.log)
         info!("[INFER-{}] Starting inference", self.instance.id);
-        // TODO: inference logging — OpenAiChannel doesn't support log capture yet
         let channel = self.llm_client.create_channel();
-        let stream_iter = stream_infer::<_, Action>(&channel, &request)
+        let mut log_file = std::fs::OpenOptions::new()
+            .create(true).append(true).open(&log_path).ok();
+        let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
+            if let Some(ref mut f) = log_file {
+                use std::io::Write;
+                let _ = f.write_all(chunk.as_bytes());
+                let _ = f.flush();
+            }
+        }));
+        let stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text)
             .map_err(|e| {
                 let (backoff, rotation) = self.set_inference_backoff();
                 anyhow::anyhow!(
@@ -1021,6 +1045,7 @@ pub struct RollTask {
     pub request: crate::inference::compress::CompressRequest,
     pub instance_id: String,
     pub llm_client: Arc<LlmClient>,
+    pub log_dir: PathBuf,
 }
 
 pub struct CaptureTask {
@@ -1028,6 +1053,7 @@ pub struct CaptureTask {
     pub request: crate::inference::capture::CaptureRequest,
     pub instance_id: String,
     pub llm_client: Arc<LlmClient>,
+    pub log_dir: PathBuf,
 }
 
 pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
@@ -1041,7 +1067,22 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         .unwrap_or(0);
 
     let channel = task.llm_client.create_channel();
-    let results = mad_hatter::llm::infer::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request)
+    let capture_log_path = {
+        let infer_log_dir = task.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&task.instance_id);
+        std::fs::create_dir_all(&infer_log_dir).ok();
+        let ts = crate::policy::log_formats::format_infer_timestamp(&chrono::Local::now());
+        infer_log_dir.join(crate::policy::log_formats::infer_capture_out_filename(&ts))
+    };
+    let mut capture_log_file = std::fs::OpenOptions::new()
+        .create(true).append(true).open(&capture_log_path).ok();
+    let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
+        if let Some(ref mut f) = capture_log_file {
+            use std::io::Write;
+            let _ = f.write_all(chunk.as_bytes());
+            let _ = f.flush();
+        }
+    }));
+    let results = infer_with_on_text::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request, on_text)
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no capture output"))?;
@@ -1074,7 +1115,22 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     );
 
     let channel = task.llm_client.create_channel();
-    let results = mad_hatter::llm::infer::<_, crate::inference::compress::CompressOutput>(&channel, &task.request)
+    let compress_log_path = {
+        let infer_log_dir = task.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&task.instance_id);
+        std::fs::create_dir_all(&infer_log_dir).ok();
+        let ts = crate::policy::log_formats::format_infer_timestamp(&chrono::Local::now());
+        infer_log_dir.join(crate::policy::log_formats::infer_compress_out_filename(&ts))
+    };
+    let mut compress_log_file = std::fs::OpenOptions::new()
+        .create(true).append(true).open(&compress_log_path).ok();
+    let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
+        if let Some(ref mut f) = compress_log_file {
+            use std::io::Write;
+            let _ = f.write_all(chunk.as_bytes());
+            let _ = f.flush();
+        }
+    }));
+    let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &task.request, on_text)
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
@@ -1100,13 +1156,14 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     Ok(result)
 }
 
-pub fn spawn_capture_task(alice: &Alice, summary_content: &str, _log_dir: &std::path::Path) {
+pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::path::Path) {
     let request = crate::prompt::build_capture_request(alice, summary_content);
     let task = CaptureTask {
         memory: alice.instance.memory.clone(),
         request,
         instance_id: alice.instance.id.clone(),
         llm_client: alice.llm_client.clone(),
+        log_dir: log_dir.to_path_buf(),
     };
 
     let chat = alice.instance.chat.clone();
