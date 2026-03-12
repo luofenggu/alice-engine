@@ -6,10 +6,12 @@
 
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, RwLock,
 };
 use std::time::Instant;
+
+use crate::external::llm::LlmConfig;
 
 /// Runtime status of an engine instance, updated by engine thread, read by RPC.
 pub struct EngineStatus {
@@ -43,6 +45,8 @@ pub struct SignalHub {
     interrupts: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
     /// Engine status per instance, updated by engine thread, read by RPC.
     statuses: Arc<RwLock<HashMap<String, Arc<RwLock<EngineStatus>>>>>,
+    /// Per-instance channel states, shared with API layer.
+    channels: Arc<RwLock<HashMap<String, ChannelState>>>,
 }
 
 impl SignalHub {
@@ -50,14 +54,21 @@ impl SignalHub {
         Self {
             interrupts: Arc::new(RwLock::new(HashMap::new())),
             statuses: Arc::new(RwLock::new(HashMap::new())),
+            channels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Register an instance and return its signal handles.
     /// Called by engine when creating an Alice instance.
-    pub fn register(&self, instance_id: &str) -> InstanceSignals {
+    pub fn register(&self, instance_id: &str, channel_configs: Vec<LlmConfig>) -> InstanceSignals {
         let interrupt = Arc::new(AtomicBool::new(false));
         let status = Arc::new(RwLock::new(EngineStatus::default()));
+        let configs = Arc::new(RwLock::new(channel_configs));
+        let index = Arc::new(AtomicU64::new(0));
+        let channel_state = ChannelState {
+            configs: configs.clone(),
+            index: index.clone(),
+        };
 
         {
             let mut map = self.interrupts.write().unwrap();
@@ -67,14 +78,23 @@ impl SignalHub {
             let mut map = self.statuses.write().unwrap();
             map.insert(instance_id.to_string(), status.clone());
         }
+        {
+            let mut map = self.channels.write().unwrap();
+            map.insert(instance_id.to_string(), channel_state);
+        }
 
-        InstanceSignals { interrupt, status }
+        InstanceSignals {
+            interrupt,
+            status,
+            channels: ChannelState { configs, index },
+        }
     }
 
     /// Unregister an instance (cleanup on deletion).
     pub fn unregister(&self, instance_id: &str) {
         self.interrupts.write().unwrap().remove(instance_id);
         self.statuses.write().unwrap().remove(instance_id);
+        self.channels.write().unwrap().remove(instance_id);
     }
 
     /// Set interrupt signal for an instance (called by RPC handler).
@@ -86,6 +106,16 @@ impl SignalHub {
         } else {
             false
         }
+    }
+
+    /// Get per-instance channel state (called by API channels handler).
+    /// Returns cloned Arc references to configs and index.
+    pub fn get_channel_state(&self, instance_id: &str) -> Option<ChannelState> {
+        let map = self.channels.read().unwrap();
+        map.get(instance_id).map(|cs| ChannelState {
+            configs: cs.configs.clone(),
+            index: cs.index.clone(),
+        })
     }
 
     /// Read engine status for an instance (called by RPC observe).
@@ -106,12 +136,29 @@ impl SignalHub {
     }
 }
 
+/// Per-instance channel state, shared between Alice and API layer.
+pub struct ChannelState {
+    pub configs: Arc<RwLock<Vec<LlmConfig>>>,
+    pub index: Arc<AtomicU64>,
+}
+
 /// Signal handles for a single instance, held by Alice struct.
 pub struct InstanceSignals {
     /// Interrupt flag: true = interrupt requested.
     pub interrupt: Arc<AtomicBool>,
     /// Engine status, updated by engine thread.
     pub status: Arc<RwLock<EngineStatus>>,
+    /// Channel state for per-instance LLM channel management.
+    pub channels: ChannelState,
+}
+
+/// Human-readable name for a channel index (e.g. "primary", "extra1").
+pub fn channel_display_name(idx: usize) -> String {
+    if idx == 0 {
+        "primary".to_string()
+    } else {
+        format!("extra{}", idx)
+    }
 }
 
 impl InstanceSignals {

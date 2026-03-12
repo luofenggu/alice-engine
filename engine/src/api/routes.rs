@@ -187,15 +187,24 @@ impl ControlService for EngineState {
     }
 
     async fn get_channels(&self, id: String) -> Response {
-        let _ = id; // instance id unused — channels are global
-        let (channels, counter, current_idx) = self.llm_client.channels_status();
-        let channels_json: Vec<serde_json::Value> = channels
+        use std::sync::atomic::Ordering;
+        use crate::core::signal::channel_display_name;
+
+        let Some(cs) = self.signal_hub.get_channel_state(&id) else {
+            return json_error(StatusCode::NOT_FOUND, &format!("instance {} not found", id));
+        };
+        let configs = cs.configs.read().unwrap();
+        let counter = cs.index.load(Ordering::Relaxed);
+        let len = configs.len();
+        let current_idx = counter as usize % len;
+        let channels_json: Vec<serde_json::Value> = configs
             .iter()
-            .map(|(idx, name, model)| {
+            .enumerate()
+            .map(|(i, c)| {
                 serde_json::json!({
-                    "index": idx,
-                    "name": name,
-                    "model": model,
+                    "index": i,
+                    "name": channel_display_name(i),
+                    "model": c.model,
                 })
             })
             .collect();
@@ -203,19 +212,37 @@ impl ControlService for EngineState {
             "channels": channels_json,
             "counter": counter,
             "current_index": current_idx,
-            "current_name": crate::external::llm::LlmClient::channel_display_name(current_idx),
+            "current_name": channel_display_name(current_idx),
         }))
     }
 
     async fn select_channel(&self, id: String, body: ChannelSelectBody) -> Response {
-        let _ = id;
-        match self.llm_client.select_channel(body.index) {
-            Ok(()) => json_ok(serde_json::json!({
-                "success": true,
-                "message": format!("switched to {}", crate::external::llm::LlmClient::channel_display_name(body.index)),
-            })),
-            Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
+        use std::sync::atomic::Ordering;
+        use crate::core::signal::channel_display_name;
+
+        let Some(cs) = self.signal_hub.get_channel_state(&id) else {
+            return json_error(StatusCode::NOT_FOUND, &format!("instance {} not found", id));
+        };
+        let configs = cs.configs.read().unwrap();
+        let len = configs.len();
+        let target_idx = body.index;
+        if target_idx >= len {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                &format!("channel index {} out of range (0..{})", target_idx, len - 1),
+            );
         }
+        cs.index.store(target_idx as u64, Ordering::Relaxed);
+        tracing::info!(
+            "[CHANNEL] Manually selected {} (model={}) for instance {}",
+            channel_display_name(target_idx),
+            configs[target_idx].model,
+            id,
+        );
+        json_ok(serde_json::json!({
+            "success": true,
+            "message": format!("switched to {}", channel_display_name(target_idx)),
+        }))
     }
 }
 

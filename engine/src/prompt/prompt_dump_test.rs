@@ -137,7 +137,7 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
     src/action/execute.rs — execute_action分发、各action执行器
     src/policy/action_output.rs — action块格式化、消息格式化
     src/policy/messages.rs — 通知文案、humanize_llm_error
-    src/external/llm/mod.rs — LlmClient、create_channel()
+    src/external/llm/mod.rs — LlmConfig、run_vision_inference()
     src/persist/chat.rs — ChatHistory、Message、write_message统一
     src/persist/hooks.rs — HooksConfig、HooksCaller
     src/prompt/mod.rs — build_beat_request()

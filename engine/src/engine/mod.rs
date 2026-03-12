@@ -64,8 +64,6 @@ pub struct AliceEngine {
     env_config: Arc<crate::policy::EnvConfig>,
     /// Global settings store — reads latest from disk on each use.
     global_settings_store: crate::persist::GlobalSettingsStore,
-    /// Shared LLM client — all instances share the same channel rotation pool.
-    llm_client: Arc<crate::external::llm::LlmClient>,
     /// Shared hooks caller for all instances.
     hooks_caller: Arc<HooksCaller>,
     /// Temporary buffer for instances during restore (drained to threads in run()).
@@ -80,7 +78,6 @@ impl AliceEngine {
         signal_hub: SignalHub,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: crate::persist::GlobalSettingsStore,
-        llm_client: Arc<crate::external::llm::LlmClient>,
         hooks_caller: Arc<HooksCaller>,
     ) -> Self {
         let instance_store = InstanceStore::new(instances_base.clone());
@@ -92,7 +89,6 @@ impl AliceEngine {
             signal_hub,
             env_config,
             global_settings_store,
-            llm_client,
             hooks_caller,
             instances: Vec::new(),
         }
@@ -136,15 +132,39 @@ impl AliceEngine {
         settings.merge_fallback(&global_settings);
         settings.validate()?;
 
+        // Build per-instance channel configs from merged settings
+        let primary_config = crate::external::llm::LlmConfig {
+            model: settings.model_or_default(),
+            api_key: settings.api_key_or_default(),
+            temperature: settings.temperature,
+            max_tokens: settings.max_tokens,
+        };
+        let mut configs = vec![primary_config];
+        if let Some(ref extra) = settings.extra_channels {
+            for ch in extra {
+                configs.push(crate::external::llm::LlmConfig {
+                    model: ch.model.clone(),
+                    api_key: ch.api_key.clone(),
+                    temperature: settings.temperature,
+                    max_tokens: settings.max_tokens,
+                });
+            }
+        }
+
+        // Register signals with channel configs (creates shared Arc for channels)
+        let signals = self.signal_hub.register(name, configs);
+
         let mut alice = Alice::new(
             instance,
             self.logs_dir.clone(),
-            self.llm_client.clone(),
+            signals.channels.configs.clone(),
+            signals.channels.index.clone(),
             self.env_config.clone(),
             Some(self.global_settings_store.clone()),
             Some(self.hooks_caller.clone()),
         )?;
 
+        alice.signals = Some(signals);
         alice.instance_name = settings.name.clone();
 
         alice.privileged = settings.privileged_or_default();
@@ -206,9 +226,6 @@ impl AliceEngine {
                 .ok();
             info!("[INSTANCE] Initial history written for {}", name);
         }
-
-        // Register signals for inter-thread communication
-        alice.signals = Some(self.signal_hub.register(name));
 
         self.instances.push((name.to_string(), alice));
         Ok(())
@@ -383,7 +400,7 @@ impl AliceEngine {
                         alice.privileged = s.privileged_or_default();
                     }
 
-                    // Hot-reload all channels from global settings (shared LlmClient)
+                    // Hot-reload channel configs (per-instance)
                     if let Some(ref store) = alice.global_settings_store {
                         if let Ok(global_s) = store.load() {
                             // Merge: instance settings take priority, global as fallback
@@ -407,7 +424,7 @@ impl AliceEngine {
                                     });
                                 }
                             }
-                            alice.llm_client.update_configs(configs);
+                            alice.update_channel_configs(configs);
                         }
                     }
                 }
@@ -692,7 +709,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
-        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
         let engine = AliceEngine::new(
             tmp.path().to_path_buf(),
@@ -700,7 +716,6 @@ mod tests {
             SignalHub::new(),
             env,
             gs_store,
-            llm_client,
             hooks_caller,
         );
         assert!(engine.instances.is_empty());
@@ -723,7 +738,6 @@ mod tests {
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
-        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
@@ -731,7 +745,6 @@ mod tests {
             SignalHub::new(),
             env,
             gs_store,
-            llm_client,
             hooks_caller,
         );
         engine.restore_instances().unwrap();
@@ -760,7 +773,6 @@ mod tests {
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
-        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
@@ -768,7 +780,6 @@ mod tests {
             SignalHub::new(),
             env,
             gs_store,
-            llm_client,
             hooks_caller,
         );
         engine.restore_instances().unwrap();
@@ -825,7 +836,6 @@ mod tests {
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
-        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
         let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
@@ -833,7 +843,6 @@ mod tests {
             SignalHub::new(),
             env,
             gs_store,
-            llm_client,
             hooks_caller,
         );
         engine.restore_instances().unwrap();

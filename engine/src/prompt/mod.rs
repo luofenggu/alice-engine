@@ -71,7 +71,7 @@ pub fn extract_session_blocks_from_entries(
 /// Build a BeatRequest from Alice's current state.
 ///
 /// Reads memory, chat, config from Alice and assembles a BeatRequest struct
-/// with pre-rendered field values. The caller passes this to LlmClient which
+/// with pre-rendered field values. The caller passes this to the LLM channel which
 /// handles system prompt rendering and inference internally.
 pub fn build_beat_request(
     alice: &Alice,
@@ -224,11 +224,13 @@ mod tests {
         std::fs::write(&settings_path, r#"{"user_id":"user1"}"#).unwrap();
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
+        let channel_configs = std::sync::Arc::new(std::sync::RwLock::new(vec![crate::external::llm::LlmConfig::default()]));
+        let channel_index = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let alice = Alice::new(
             instance,
             tmp.path().join("logs"),
-            llm_client,
+            channel_configs,
+            channel_index,
             env_config,
             None,
             None,

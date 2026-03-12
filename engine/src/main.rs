@@ -129,8 +129,7 @@ async fn main() -> anyhow::Result<()> {
             });
         }
     }
-    let llm_client = Arc::new(alice_engine::external::llm::LlmClient::new(llm_configs));
-    tracing::info!("Shared LLM client created with {} channel(s)", llm_client.all_configs().len());
+    tracing::info!("LLM channels configured: {} channel(s) from global settings", llm_configs.len());
 
     // Create engine config
     let engine_config = alice_engine::policy::EngineConfig::load();
@@ -147,7 +146,6 @@ async fn main() -> anyhow::Result<()> {
         engine_config,
         env_config.clone(),
         global_settings_store.clone(),
-        llm_client.clone(),
         hub_state.clone(),
     ));
 
@@ -175,7 +173,6 @@ async fn main() -> anyhow::Result<()> {
     let engine_logs_dir = logs_dir.clone();
     let engine_env_config = env_config.clone();
     let engine_gs_store = global_settings_store.clone();
-    let engine_llm_client = llm_client.clone();
     let engine_hooks_caller = engine_state.hooks_caller.clone();
     let engine_handle = std::thread::spawn(move || {
         let mut engine = AliceEngine::new(
@@ -184,7 +181,6 @@ async fn main() -> anyhow::Result<()> {
             signal_hub,
             engine_env_config,
             engine_gs_store,
-            engine_llm_client,
             engine_hooks_caller,
         );
         if let Err(e) = engine.run() {

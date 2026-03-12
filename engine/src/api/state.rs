@@ -40,8 +40,6 @@ pub struct EngineState {
     pub setup_completed: AtomicBool,
     /// Shared HTTP client for outbound requests (vision API, etc.)
     pub http_client: reqwest::Client,
-    /// Shared LLM client for channel rotation (used by vision, etc.)
-    pub llm_client: Arc<crate::external::llm::LlmClient>,
     /// Hooks store for persistent hook configuration.
     pub hooks_store: HooksStore,
     /// Shared hooks caller for all instances (contains config + cache).
@@ -59,7 +57,6 @@ impl EngineState {
         engine_config: crate::policy::EngineConfig,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: GlobalSettingsStore,
-        llm_client: Arc<crate::external::llm::LlmClient>,
         hub: Arc<crate::hub::HubState>,
     ) -> Self {
         let session_token = if env_config.auth_secret.is_empty() {
@@ -97,7 +94,6 @@ impl EngineState {
             global_settings_store,
             setup_completed: AtomicBool::new(setup_done),
             http_client: reqwest::Client::new(),
-            llm_client,
             hooks_store,
             hooks_caller,
             hub,
@@ -715,15 +711,22 @@ impl EngineState {
     }
 
     /// Run vision inference: send an image to the LLM for understanding.
-    /// Uses the shared LLM client's current channel (participates in rotation).
+    /// Uses the instance's current channel config (per-instance rotation).
     pub async fn vision(
         &self,
         instance_id: String,
         prompt: String,
         image_url: String,
     ) -> Result<String, String> {
-        // Use shared LlmClient's current config (participates in channel rotation)
-        let config = self.llm_client.current_config();
+        // Get per-instance channel config via SignalHub
+        let config = match self.signal_hub.get_channel_state(&instance_id) {
+            Some(state) => {
+                let configs = state.configs.read().unwrap();
+                let idx = state.index.load(std::sync::atomic::Ordering::Relaxed) as usize % configs.len();
+                configs[idx].clone()
+            }
+            None => return Err(format!("instance {} not found", instance_id)),
+        };
 
         let http_client = self.http_client.clone();
         match crate::external::llm::run_vision_inference(

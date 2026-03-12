@@ -568,11 +568,13 @@ mod tests {
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let env_config = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
-        let llm_client = std::sync::Arc::new(crate::external::llm::LlmClient::new(vec![Default::default()]));
+        let channel_configs = std::sync::Arc::new(std::sync::RwLock::new(vec![crate::external::llm::LlmConfig::default()]));
+        let channel_index = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut alice = Alice::new(
             instance,
             tmp.path().join("logs"),
-            llm_client,
+            channel_configs,
+            channel_index,
             env_config,
             None,
             None,

@@ -1,25 +1,14 @@
 //! # LLM Inference Module
 //!
-//! Handles communication with LLM providers via streaming inference.
-//! Uses `mad_hatter::llm::OpenAiChannel` + `stream_infer()` for beat inference,
-//! and internal HTTP client for sync tasks (capture/compress/vision).
+//! Provides HTTP client and async inference functions for vision API.
+//! Channel management has moved to per-instance (`Alice` struct in `core/mod.rs`).
 //!
 //! @TRACE: INFER
-//!
-//! ## Key Types
-//!
-//! - [`LlmClient`] — Channel management + sync inference methods
-//! - [`OpenAiChannel`] — Streaming SSE client (from mad-hatter)
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
 use tracing::{info, warn};
-
-
-use mad_hatter::llm::OpenAiChannel;
 /// Token usage info from LLM response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageInfo {
@@ -126,198 +115,7 @@ impl ChatMessage {
 // ---------------------------------------------------------------------------
 
 /// HTTP client for LLM inference via OpenRouter.
-///
-/// Supports multiple channels (provider+key combos) with round-robin rotation.
-/// On inference error, `advance_channel()` moves to the next channel so the
-/// next retry uses a different provider.
-///
-/// @TRACE: INFER — `[INFER-{id}] Starting inference`
-pub struct LlmClient {
-    configs: RwLock<Vec<LlmConfig>>,
-    channel_index: AtomicU64,
-    http_client: reqwest::Client,
-}
 
-impl LlmClient {
-    pub fn new(configs: Vec<LlmConfig>) -> Self {
-        assert!(
-            !configs.is_empty(),
-            "LlmClient requires at least one config"
-        );
-        let http_client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()
-            .expect("Failed to build HTTP client");
-        Self {
-            configs: RwLock::new(configs),
-            channel_index: AtomicU64::new(0),
-            http_client,
-        }
-    }
-
-    /// Get the current channel's config (round-robin by channel_index).
-    pub fn current_config(&self) -> LlmConfig {
-        let configs = self.configs.read().unwrap();
-        let idx = self.channel_index.load(Ordering::Relaxed) as usize % configs.len();
-        configs[idx].clone()
-    }
-
-    /// Access primary channel's model (for hot-reload comparison).
-    /// Replace all configs (hot-reload channels). Keeps channel_index unchanged.
-    pub fn update_configs(&self, new_configs: Vec<LlmConfig>) {
-        assert!(
-            !new_configs.is_empty(),
-            "LlmClient requires at least one config"
-        );
-        let mut configs = self.configs.write().unwrap();
-        *configs = new_configs;
-    }
-
-    /// Clone all configs (for passing to background tasks like RollTask).
-    pub fn all_configs(&self) -> Vec<LlmConfig> {
-        self.configs.read().unwrap().clone()
-    }
-
-    /// Get display name for a channel index: 0 → "primary", N → "extraN".
-    pub fn channel_display_name(idx: usize) -> String {
-        if idx == 0 {
-            "primary".to_string()
-        } else {
-            format!("extra{}", idx)
-        }
-    }
-
-    /// Get channels status: list of (index, display_name, model), raw counter value, current effective index.
-    pub fn channels_status(&self) -> (Vec<(usize, String, String)>, u64, usize) {
-        let configs = self.configs.read().unwrap();
-        let counter = self.channel_index.load(Ordering::Relaxed);
-        let len = configs.len();
-        let current_idx = counter as usize % len;
-        let channels: Vec<(usize, String, String)> = configs
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (i, Self::channel_display_name(i), c.model.clone()))
-            .collect();
-        (channels, counter, current_idx)
-    }
-
-    /// Select a specific channel by resetting the counter so that counter % len == target_idx.
-    pub fn select_channel(&self, target_idx: usize) -> Result<(), String> {
-        let configs = self.configs.read().unwrap();
-        let len = configs.len();
-        if target_idx >= len {
-            return Err(format!(
-                "channel index {} out of range (0..{})",
-                target_idx,
-                len - 1
-            ));
-        }
-        self.channel_index
-            .store(target_idx as u64, Ordering::Relaxed);
-        info!(
-            "[CHANNEL] Manually selected {} (model={})",
-            Self::channel_display_name(target_idx),
-            configs[target_idx].model
-        );
-        Ok(())
-    }
-
-    /// Advance to the next channel (called on inference error).
-    /// Returns (old_name, new_name) if rotation happened (multi-channel), None if single channel.
-    pub fn advance_channel(&self) -> Option<(String, String)> {
-        let old = self.channel_index.fetch_add(1, Ordering::Relaxed);
-        let configs = self.configs.read().unwrap();
-        let len = configs.len();
-        if len > 1 {
-            let old_idx = old as usize % len;
-            let new_idx = (old + 1) as usize % len;
-            let old_name = Self::channel_display_name(old_idx);
-            let new_name = Self::channel_display_name(new_idx);
-            info!(
-                "[CHANNEL] Rotated from {} to {} (model={})",
-                old_name, new_name, configs[new_idx].model
-            );
-            Some((old_name, new_name))
-        } else {
-            None
-        }
-    }
-
-    /// Synchronous (non-streaming) LLM inference. Returns plain text response.
-    ///
-    /// Used for background tasks like history rolling where streaming/action
-    /// parsing is not needed. Blocks the calling thread.
-    ///
-    /// @TRACE: INFER
-    pub fn infer_sync(
-        &self,
-        messages: Vec<ChatMessage>,
-        instance_id: &str,
-    ) -> Result<(String, Option<UsageInfo>)> {
-        let config = self.current_config();
-        let http_client = self.http_client.clone();
-        let instance_id = instance_id.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?;
-
-        rt.block_on(async {
-            run_sync_inference(&config, &http_client, messages, &instance_id).await
-        })
-    }
-
-    /// Streaming LLM inference that collects full output synchronously.
-    ///
-    /// Like infer_sync but uses SSE streaming internally — real-time log writing,
-    /// chunk-level timeout (60s), no total timeout limit. Ideal for long-running
-    /// tasks like knowledge capture where output is large.
-    ///
-    /// @TRACE: INFER
-    pub fn infer_sync_streaming(
-        &self,
-        messages: Vec<ChatMessage>,
-        instance_id: &str,
-        log_path: Option<&Path>,
-    ) -> Result<(String, Option<UsageInfo>)> {
-        let config = self.current_config();
-        let http_client = self.http_client.clone();
-        let instance_id = instance_id.to_string();
-        let log_path = log_path.map(|p| p.to_path_buf());
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?;
-
-        rt.block_on(async {
-            run_streaming_collect(
-                &config,
-                &http_client,
-                messages,
-                &instance_id,
-                log_path.as_deref(),
-            )
-            .await
-        })
-    }
-
-    /// Create an OpenAiChannel from the current channel config.
-    ///
-    /// Used by beat() to create a channel for stream_infer().
-    pub fn create_channel(&self) -> OpenAiChannel {
-        let config = self.current_config();
-        let llm_policy = &crate::policy::EngineConfig::get().llm;
-        let (api_url, model_id) = llm_policy.resolve_model(&config.model);
-        let mut channel = OpenAiChannel::new(&api_url, &model_id, &config.api_key);
-        let max_tokens = config.max_tokens.unwrap_or(llm_policy.max_tokens);
-        channel = channel.with_max_tokens(max_tokens);
-        // TODO: OpenAiChannel doesn't support temperature yet, need to add with_temperature() to mad-hatter
-        let _ = config.temperature;
-        channel
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Sync inference (non-streaming, for background tasks)

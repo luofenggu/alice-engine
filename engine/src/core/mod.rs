@@ -45,8 +45,10 @@ use std::time::Instant;
 use tracing::{error, info, warn};
 
 use crate::action::execute::execute_action;
-use crate::external::llm::LlmClient;
-use mad_hatter::llm::{stream_infer_with_on_text, infer_with_on_text, ToMarkdown};
+use mad_hatter::llm::{stream_infer_with_on_text, infer_with_on_text, OpenAiChannel, ToMarkdown};
+use crate::external::llm::LlmConfig;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 use crate::inference::Action;
 use crate::persist::instance;
 use crate::persist::hooks::HooksCaller;
@@ -309,8 +311,10 @@ pub struct Alice {
     /// Current inference log path (Some = inferring, None = idle)
     /// @TRACE: INFER
     pub current_infer_log_path: Option<PathBuf>,
-    /// LLM client
-    pub(crate) llm_client: Arc<LlmClient>,
+    /// Per-instance LLM channel configurations (shared with SignalHub for API access).
+    pub(crate) channel_configs: Arc<RwLock<Vec<LlmConfig>>>,
+    /// Per-instance channel rotation counter (shared with SignalHub for API access).
+    pub(crate) channel_index: Arc<AtomicU64>,
     /// Whether last beat resulted in idle
     pub last_was_idle: bool,
     /// Idle timeout in seconds (Some = timed idle, None = wait indefinitely)
@@ -367,7 +371,8 @@ impl Alice {
     pub fn new(
         instance: instance::Instance,
         log_dir: PathBuf,
-        llm_client: Arc<LlmClient>,
+        channel_configs: Arc<RwLock<Vec<LlmConfig>>>,
+        channel_index: Arc<AtomicU64>,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: Option<GlobalSettingsStore>,
         hooks_caller: Option<Arc<HooksCaller>>,
@@ -405,7 +410,8 @@ impl Alice {
             instance,
             log_dir,
             current_infer_log_path: None,
-            llm_client,
+            channel_configs,
+            channel_index,
             last_was_idle: true,
             idle_timeout_secs: None,
             idle_since: None,
@@ -430,6 +436,80 @@ impl Alice {
             global_settings_store,
             hooks_caller,
         })
+    }
+
+    // ─── Channel Management (per-instance) ──────────────────────
+
+    /// Build an OpenAiChannel from the current channel config.
+    pub fn create_channel(&self) -> OpenAiChannel {
+        let configs = self.channel_configs.read().unwrap();
+        let idx = self.channel_index.load(std::sync::atomic::Ordering::Relaxed) as usize % configs.len();
+        let config = &configs[idx];
+        let llm_policy = &crate::policy::EngineConfig::get().llm;
+        let (api_url, model_id) = llm_policy.resolve_model(&config.model);
+        let mut channel = OpenAiChannel::new(&api_url, &model_id, &config.api_key);
+        let max_tokens = config.max_tokens.unwrap_or(llm_policy.max_tokens);
+        channel = channel.with_max_tokens(max_tokens);
+        // TODO: temperature from config
+        channel
+    }
+
+    /// Advance to the next channel (round-robin failover). Returns rotation info if multiple channels.
+    pub fn advance_channel(&self) -> Option<(String, String)> {
+        let configs = self.channel_configs.read().unwrap();
+        let len = configs.len();
+        if len <= 1 {
+            return None;
+        }
+        drop(configs);
+        let old_counter = self.channel_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let configs = self.channel_configs.read().unwrap();
+        let len = configs.len();
+        let old_idx = old_counter as usize % len;
+        let new_idx = (old_counter as usize + 1) % len;
+        let old_name = Self::channel_display_name(old_idx);
+        let new_name = Self::channel_display_name(new_idx);
+        info!(
+            "[CHANNEL-{}] Rotated from {} to {}",
+            self.instance.id, old_name, new_name
+        );
+        Some((old_name, new_name))
+    }
+
+    /// Return current channels status: (list of display names, counter, current index).
+    pub fn channels_status(&self) -> (Vec<String>, u64, usize) {
+        let configs = self.channel_configs.read().unwrap();
+        let len = configs.len();
+        let counter = self.channel_index.load(std::sync::atomic::Ordering::Relaxed);
+        let current_idx = counter as usize % len;
+        let names: Vec<String> = (0..len).map(Self::channel_display_name).collect();
+        (names, counter, current_idx)
+    }
+
+    /// Select a specific channel by index.
+    pub fn select_channel(&self, idx: usize) {
+        let configs = self.channel_configs.read().unwrap();
+        let len = configs.len();
+        let clamped = if idx >= len { 0 } else { idx };
+        drop(configs);
+        self.channel_index.store(clamped as u64, std::sync::atomic::Ordering::Relaxed);
+        info!(
+            "[CHANNEL-{}] Selected channel {} ({})",
+            self.instance.id,
+            clamped,
+            Self::channel_display_name(clamped)
+        );
+    }
+
+    /// Hot-update channel configurations.
+    pub fn update_channel_configs(&self, configs: Vec<LlmConfig>) {
+        let mut guard = self.channel_configs.write().unwrap();
+        *guard = configs;
+    }
+
+    /// Display name for a channel index: "primary" for 0, "extra{N}" for others.
+    pub fn channel_display_name(idx: usize) -> String {
+        signal::channel_display_name(idx)
     }
 
     // ─── Sessions access ────────────────────────────────────────
@@ -495,13 +575,14 @@ impl Alice {
             content,
         };
 
-        // Clone LLM configs for background thread
+        // Clone channel Arc refs for background thread
         Ok(Some(RollTask {
             memory: self.instance.memory.clone(),
             oldest_block: oldest_block.clone(),
             request,
             instance_id: self.instance.id.clone(),
-            llm_client: self.llm_client.clone(),
+            channel_configs: self.channel_configs.clone(),
+            channel_index: self.channel_index.clone(),
             log_dir: self.log_dir.clone(),
         }))
     }
@@ -592,7 +673,7 @@ impl Alice {
             "[ROLL-{}] Calling LLM for history compression",
             self.instance.id
         );
-        let channel = self.llm_client.create_channel();
+        let channel = self.create_channel();
         let compress_log_path = {
             let infer_log_dir = self.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&self.instance.id);
             std::fs::create_dir_all(&infer_log_dir).ok();
@@ -687,7 +768,7 @@ impl Alice {
         );
         self.inference_backoff_until =
             Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
-        let rotation = self.llm_client.advance_channel();
+        let rotation = self.advance_channel();
         warn!(
             "[BACKOFF-{}] Inference failed ({} consecutive), backing off {}s",
             self.instance.id,
@@ -832,7 +913,7 @@ impl Alice {
 
         // 6. LLM inference (via stream_infer with on_text callback for out.log)
         info!("[INFER-{}] Starting inference", self.instance.id);
-        let channel = self.llm_client.create_channel();
+        let channel = self.create_channel();
         let mut log_file = std::fs::OpenOptions::new()
             .create(true).append(true).open(&log_path).ok();
         let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
@@ -1044,7 +1125,8 @@ pub struct RollTask {
     pub oldest_block: String,
     pub request: crate::inference::compress::CompressRequest,
     pub instance_id: String,
-    pub llm_client: Arc<LlmClient>,
+    pub channel_configs: Arc<RwLock<Vec<LlmConfig>>>,
+    pub channel_index: Arc<std::sync::atomic::AtomicU64>,
     pub log_dir: PathBuf,
 }
 
@@ -1052,8 +1134,26 @@ pub struct CaptureTask {
     pub memory: crate::persist::memory::Memory,
     pub request: crate::inference::capture::CaptureRequest,
     pub instance_id: String,
-    pub llm_client: Arc<LlmClient>,
+    pub channel_configs: Arc<RwLock<Vec<LlmConfig>>>,
+    pub channel_index: Arc<std::sync::atomic::AtomicU64>,
     pub log_dir: PathBuf,
+}
+
+/// Build an OpenAiChannel from configs and atomic index (shared logic for Alice and background tasks).
+pub(crate) fn build_channel(
+    configs: &RwLock<Vec<LlmConfig>>,
+    index: &std::sync::atomic::AtomicU64,
+) -> mad_hatter::llm::OpenAiChannel {
+    let guard = configs.read().unwrap();
+    let idx = index.load(std::sync::atomic::Ordering::Relaxed) as usize % guard.len().max(1);
+    let config = &guard[idx];
+    let llm_policy = &crate::policy::EngineConfig::get().llm;
+    let (api_url, model_id) = llm_policy.resolve_model(&config.model);
+    let mut channel = mad_hatter::llm::OpenAiChannel::new(&api_url, &model_id, &config.api_key);
+    let max_tokens = config.max_tokens.unwrap_or(llm_policy.max_tokens);
+    channel = channel.with_max_tokens(max_tokens);
+    // TODO: temperature from config
+    channel
 }
 
 pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
@@ -1066,7 +1166,7 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         .map(|m| m.len() / 1024)
         .unwrap_or(0);
 
-    let channel = task.llm_client.create_channel();
+    let channel = build_channel(&task.channel_configs, &task.channel_index);
     let capture_log_path = {
         let infer_log_dir = task.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&task.instance_id);
         std::fs::create_dir_all(&infer_log_dir).ok();
@@ -1114,7 +1214,7 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
         task.instance_id
     );
 
-    let channel = task.llm_client.create_channel();
+    let channel = build_channel(&task.channel_configs, &task.channel_index);
     let compress_log_path = {
         let infer_log_dir = task.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&task.instance_id);
         std::fs::create_dir_all(&infer_log_dir).ok();
@@ -1162,7 +1262,8 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
         memory: alice.instance.memory.clone(),
         request,
         instance_id: alice.instance.id.clone(),
-        llm_client: alice.llm_client.clone(),
+        channel_configs: alice.channel_configs.clone(),
+        channel_index: alice.channel_index.clone(),
         log_dir: log_dir.to_path_buf(),
     };
 
@@ -1204,9 +1305,10 @@ mod tests {
         let instance = crate::persist::instance::Instance::open(tmp.path()).unwrap();
 
         let log_dir = tmp.path().join("logs");
-        let llm_client = Arc::new(LlmClient::new(vec![Default::default()]));
+        let channel_configs = Arc::new(std::sync::RwLock::new(vec![Default::default()]));
+        let channel_index = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let env_config = Arc::new(crate::policy::EnvConfig::from_env());
-        let alice = Alice::new(instance, log_dir, llm_client, env_config, None, None).unwrap();
+        let alice = Alice::new(instance, log_dir, channel_configs, channel_index, env_config, None, None).unwrap();
         (alice, tmp)
     }
 
