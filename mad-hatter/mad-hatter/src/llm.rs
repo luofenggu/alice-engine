@@ -73,7 +73,12 @@ struct SseDelta {
 
 impl LlmChannel for OpenAiChannel {
     fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
-        let url = format!("{}/v1/chat/completions", self.endpoint.trim_end_matches('/'));
+        let endpoint = self.endpoint.trim_end_matches('/');
+        let url = if endpoint.ends_with("/v1/chat/completions") {
+            endpoint.to_string()
+        } else {
+            format!("{}/v1/chat/completions", endpoint)
+        };
 
         let mut body = serde_json::json!({
             "model": &self.model,
