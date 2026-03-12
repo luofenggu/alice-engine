@@ -202,11 +202,9 @@ fn build_prompt<Req: ToMarkdown, Resp: FromMarkdown>(request: &Req, token: &str)
     let request_text = request.to_markdown();
     let schema = Resp::schema_markdown(token);
     format!(
-        "{}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{}\n\n最后输出: {}-end-{}\n",
+        "{}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{}",
         request_text,
-        schema,
-        Resp::type_name(),
-        token
+        schema
     )
 }
 
