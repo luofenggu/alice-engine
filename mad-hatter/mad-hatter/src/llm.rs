@@ -225,6 +225,27 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
+    stream_infer_with_on_text(channel, request, None)
+}
+
+/// Stream inference with optional text callback
+///
+/// Like `stream_infer()`, but accepts an optional callback that receives
+/// each raw text chunk as it arrives from the LLM stream. This enables
+/// real-time logging or forwarding of the raw LLM output.
+///
+/// # Arguments
+/// * `on_text` - Optional callback invoked with each raw chunk before parsing.
+///   Pass `None` for no callback (equivalent to `stream_infer()`).
+pub fn stream_infer_with_on_text<'a, Req, Resp>(
+    channel: &'a dyn LlmChannel,
+    request: &Req,
+    on_text: Option<Box<dyn FnMut(&str) + 'a>>,
+) -> Result<StreamInfer<'a, Resp>, String>
+where
+    Req: ToMarkdown + StructInput,
+    Resp: FromMarkdown + StructOutput,
+{
     let token = generate_token();
     let prompt = build_prompt::<Req, Resp>(request, &token);
     let stream = channel.infer_stream(prompt)?;
@@ -236,6 +257,7 @@ where
         type_name: Resp::type_name().to_string(),
         done: false,
         parsed_count: 0,
+        on_text,
         _phantom: std::marker::PhantomData,
     })
 }
@@ -248,6 +270,7 @@ pub struct StreamInfer<'a, T: FromMarkdown> {
     type_name: String,
     done: bool,
     parsed_count: usize,
+    on_text: Option<Box<dyn FnMut(&str) + 'a>>,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -357,6 +380,9 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
             // Need more data - read from stream
             match self.stream.next() {
                 Some(chunk) => {
+                    if let Some(ref mut callback) = self.on_text {
+                        callback(&chunk);
+                    }
                     self.buffer.push_str(&chunk);
                 }
                 None => {
@@ -393,7 +419,23 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    let stream = stream_infer::<Req, Resp>(channel, request)?;
+    infer_with_on_text(channel, request, None)
+}
+
+/// Full inference with optional text callback
+///
+/// Like `infer()`, but accepts an optional callback that receives each raw
+/// text chunk as it arrives from the LLM stream.
+pub fn infer_with_on_text<Req, Resp>(
+    channel: &dyn LlmChannel,
+    request: &Req,
+    on_text: Option<Box<dyn FnMut(&str) + '_>>,
+) -> Result<Vec<Resp>, String>
+where
+    Req: ToMarkdown + StructInput,
+    Resp: FromMarkdown + StructOutput,
+{
+    let stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text)?;
     let mut results = Vec::new();
     for item in stream {
         results.push(item?);

@@ -1,4 +1,6 @@
-use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, stream_infer};
+use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, stream_infer, stream_infer_with_on_text};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 // --- Test types ---
 
@@ -243,4 +245,78 @@ fn test_stream_infer_with_code_block_wrapper() {
     assert_eq!(results.len(), 1);
     assert!(results[0].is_ok());
     assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "代码块内的回复".to_string() });
+}
+#[test]
+fn test_stream_infer_on_text_receives_all_chunks() {
+    // Channel that returns response in multiple chunks
+    struct ChunkedCallbackChannel;
+
+    impl LlmChannel for ChunkedCallbackChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            let chunks = vec![
+                format!("StreamAction-{}\n", token),
+                "reply\n".to_string(),
+                "回调测试内容\n".to_string(),
+                format!("StreamAction-end-{}\n", token),
+            ];
+            Ok(Box::new(chunks.into_iter()))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let collected = Rc::new(RefCell::new(Vec::<String>::new()));
+    let collected_clone = collected.clone();
+
+    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &ChunkedCallbackChannel,
+        &request,
+        Some(Box::new(move |chunk: &str| {
+            collected_clone.borrow_mut().push(chunk.to_string());
+        })),
+    ).unwrap();
+
+    let results: Vec<Result<StreamAction, String>> = stream.collect();
+
+    // Verify parsing works
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_ok());
+    assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "回调测试内容".to_string() });
+
+    // Verify callback received all 4 chunks
+    let chunks = collected.borrow();
+    assert_eq!(chunks.len(), 4);
+    assert!(chunks[0].starts_with("StreamAction-"));
+    assert_eq!(chunks[1], "reply\n");
+    assert_eq!(chunks[2], "回调测试内容\n");
+    assert!(chunks[3].starts_with("StreamAction-end-"));
+}
+
+#[test]
+fn test_stream_infer_on_text_none_equivalent() {
+    // Same as regular stream_infer
+    struct SimpleCallbackChannel;
+
+    impl LlmChannel for SimpleCallbackChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            let response = format!(
+                "StreamAction-{t}\nreply\n无回调\nStreamAction-end-{t}\n",
+                t = token
+            );
+            Ok(Box::new(std::iter::once(response)))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &SimpleCallbackChannel,
+        &request,
+        None,
+    ).unwrap();
+
+    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_ok());
+    assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "无回调".to_string() });
 }

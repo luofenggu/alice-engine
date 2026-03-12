@@ -1,4 +1,6 @@
-use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, infer};
+use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, infer, infer_with_on_text};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 
 // ============================================================
@@ -387,3 +389,77 @@ fn extract_token_from_prompt(prompt: &str, type_name: &str) -> String {
     panic!("Could not extract token from prompt for type '{}'", type_name);
 }
 
+
+#[test]
+fn test_infer_with_on_text_receives_chunks() {
+    struct OnTextChannel;
+
+    impl LlmChannel for OnTextChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token_from_prompt(&prompt, "SimpleAction");
+            let chunks = vec![
+                format!("SimpleAction-{}\n", token),
+                "reply\n".to_string(),
+                "on_text测试\n".to_string(),
+                format!("SimpleAction-end-{}\n", token),
+            ];
+            Ok(Box::new(chunks.into_iter()))
+        }
+    }
+
+    let request = SimpleRequest { message: "test".to_string(), context: "ctx".to_string() };
+    let collected = Rc::new(RefCell::new(Vec::<String>::new()));
+    let collected_clone = collected.clone();
+
+    let results = infer_with_on_text::<SimpleRequest, SimpleAction>(
+        &OnTextChannel,
+        &request,
+        Some(Box::new(move |chunk: &str| {
+            collected_clone.borrow_mut().push(chunk.to_string());
+        })),
+    ).unwrap();
+
+    // Verify parsing works
+    assert_eq!(results.len(), 1);
+    match &results[0] {
+        SimpleAction::Reply { content } => assert_eq!(content, "on_text测试"),
+        other => panic!("Expected Reply, got {:?}", other),
+    }
+
+    // Verify callback received all 4 chunks
+    let chunks = collected.borrow();
+    assert_eq!(chunks.len(), 4);
+    assert!(chunks[0].starts_with("SimpleAction-"));
+    assert_eq!(chunks[1], "reply\n");
+    assert_eq!(chunks[2], "on_text测试\n");
+    assert!(chunks[3].starts_with("SimpleAction-end-"));
+}
+
+#[test]
+fn test_infer_with_on_text_none_equivalent() {
+    struct NoneCallbackChannel;
+
+    impl LlmChannel for NoneCallbackChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token_from_prompt(&prompt, "SimpleAction");
+            let response = format!(
+                "SimpleAction-{t}\nreply\n无回调infer\nSimpleAction-end-{t}\n",
+                t = token
+            );
+            Ok(Box::new(std::iter::once(response)))
+        }
+    }
+
+    let request = SimpleRequest { message: "test".to_string(), context: "ctx".to_string() };
+    let results = infer_with_on_text::<SimpleRequest, SimpleAction>(
+        &NoneCallbackChannel,
+        &request,
+        None,
+    ).unwrap();
+
+    assert_eq!(results.len(), 1);
+    match &results[0] {
+        SimpleAction::Reply { content } => assert_eq!(content, "无回调infer"),
+        other => panic!("Expected Reply, got {:?}", other),
+    }
+}

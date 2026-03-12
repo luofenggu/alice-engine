@@ -42,7 +42,7 @@ pub use mad_hatter_macros::ToMarkdown;
 pub use mad_hatter_macros::FromMarkdown;
 
 pub mod llm;
-pub use llm::{LlmChannel, OpenAiChannel, StructInput, StructOutput, infer, stream_infer, StreamInfer};
+pub use llm::{LlmChannel, OpenAiChannel, StructInput, StructOutput, infer, infer_with_on_text, stream_infer, stream_infer_with_on_text, StreamInfer};
 
 // Re-export axum types that generated code needs
 pub use axum;
