@@ -92,8 +92,7 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
 - 文本文件直接用 `cat uploads/YYYYMMDD/filename` 读取
 - 图片文件用上面的多模态API理解内容（先用 `ls uploads/` 查看有哪些文件）"#.to_string();
 
-    let knowledge = r#"### 要点与知识 ###
-用户知识洞察——
+    let knowledge = r#"用户知识洞察——
   用户（24007）是人类用户，进化之王（ac56b3）是运行在同一台机器生产环境上的 Alice 引擎实例
   我的使命是帮助进化 Alice 引擎代码
   用户通过逐步引导的方式让我熟悉代码库，先从核心模块开始
@@ -333,8 +332,8 @@ fn build_prompt_for_dump(request: &BeatRequest, token: &str) -> String {
     let request_text = request.to_markdown();
     let schema = Action::schema_markdown(token);
     format!(
-        "{}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{}\n\n最后输出: Action-end-{}\n",
-        request_text, schema, token
+        "{}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{}",
+        request_text, schema
     )
 }
 

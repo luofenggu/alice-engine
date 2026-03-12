@@ -5,3 +5,5 @@ __pycache__/
 /target/
 target
 test-results/
+beat_prompt_input.txt
+beat_prompt_output.txt

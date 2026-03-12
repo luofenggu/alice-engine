@@ -59,7 +59,7 @@ use std::fmt;
 
 #[derive(Debug, Clone, FromMarkdown)]
 pub enum Action {
-    /// 什么都不做（继续等待）
+    /// Action：什么都不做（继续等待）
     /// idle是终结动作，输出idle后本轮推理结束，不能再输出任何action
     /// 礼貌规则: 用户只能看到信件，看不到你的其它行为，因此，进入idle之前需检查已读信件，如有未回复消息，优先回复（寄出信件）
     /// ⚠️ sleep vs idle：shell脚本里的sleep是同步阻塞——等待期间你无法响应任何消息；idle是异步等待——来信会立刻唤醒你。需要等待时永远用idle，不要用sleep
@@ -70,10 +70,10 @@ pub enum Action {
         /// 秒数（如120，表示等待120秒后自动醒来）
         timeout_secs: Option<u64>,
     },
-    /// 阅读收件箱（未读来信=0时无效）
+    /// Action：阅读收件箱（未读来信=0时无效）
     /// 来信中sender为"user"代表已鉴权的你的专属用户
     ReadMsg,
-    /// 寄出信件
+    /// Action：寄出信件
     /// 收件人填"user"代表发给你的专属用户
     /// 信件中引用文件路径时使用 [[file:相对路径]] 格式，前端会渲染为可点击的文件链接
     /// 信件中的URL会自动识别为可点击链接，无需特殊格式
@@ -84,21 +84,21 @@ pub enum Action {
         /// 信件内容
         content: String,
     },
-    /// 记录思考
+    /// Action：记录思考
     /// 可以在实施action之前先记录planning-thinking（思考计划）
     /// 也可以在关键action之后记录reflection-thinking（观察结果）
     Thinking {
         /// thinking内容
         content: String,
     },
-    /// 执行本地脚本
+    /// Action：执行本地脚本
     /// 脚本执行时cwd已经是工作目录(workspace)，脚本中的相对路径基于workspace
     /// 使用绝对路径可以访问工作目录之外的文件（需要开启privilege权限，可以跟用户商量）
     Script {
         /// 脚本内容
         content: String,
     },
-    /// 写入文件
+    /// Action：写入文件
     /// 路径是工作目录中的相对路径。如果需要操作工作目录之外的文件，可以使用绝对路径（需要开启privileged权限，可以跟用户商量）
     /// 写入后系统自动提取文件骨架（接口+注释）记入 `current`，不记全文
     /// 如果需要记住写入的关键细节，在thinking中提前记录
@@ -108,7 +108,7 @@ pub enum Action {
         /// 文件完整内容
         content: String,
     },
-    /// 搜索替换文件内容（增量修改）
+    /// Action：搜索替换文件内容（增量修改）
     /// 搜索文本必须在文件中唯一匹配，匹配0次或多次都会报错
     /// 比write_file省token：只需输出变更区域，不用全量输出文件
     /// 比script中的sed更可靠：引擎内置实现，不依赖系统命令
@@ -121,7 +121,7 @@ pub enum Action {
         /// 要替换成的文本（多行）
         replace: String,
     },
-    /// 小结（回顾对话）
+    /// Action：小结（回顾对话）
     /// 当current变得很长时，用这个action释放空间
     /// 执行后current清空、小结合入近况
     /// 对话小结按过程顺序记录：关键思考、决策和结论；重要操作及其结果；进行中尚未完成的工作的上下文和指引；新出现的知识术语；读到用户信件时的感受和温度
@@ -129,13 +129,13 @@ pub enum Action {
         /// 对话小结
         content: String,
     },
-    /// 设置个人资料
+    /// Action：设置个人资料
     /// 已知key: name（显示名称）, color（主题色，如#FF6B6B）, avatar（头像emoji）
     SetProfile {
         /// 设置项（每行一个 key:value）
         content: String,
     },
-    /// 创建新实例（裂变）
+    /// Action：创建新实例（裂变）
     /// 创建一个新的agent实例，引擎会自动发现并启动
     /// 用于裂变场景：将部分职责和知识委托给新实例
     /// 新实例会继承当前用户，获得随机ID和颜色
@@ -147,7 +147,7 @@ pub enum Action {
         /// knowledge内容（新实例的初始知识）
         knowledge: String,
     },
-    /// 提炼（压缩action块）
+    /// Action：提炼（压缩action块）
     /// 将current中指定action的内容替换为你的提炼总结，释放空间
     /// 总结直接写入原action位置，前面会自动加[已提炼]标记
     /// 💡 时机：脚本执行结果确认后立刻提炼——编译输出、文件列表、curl响应等一次性验证内容，确认结论后就不需要保留原文
