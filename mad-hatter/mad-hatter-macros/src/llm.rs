@@ -525,7 +525,7 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
         if total == 0 {
             variant_schemas.push(quote! {
                 __out.push_str(&::std::format!(
-                    "action {doc}\n{ename}-{token}\n{snake}\n",
+                    "{doc}\n{ename}-{token}\n{snake}\n",
                     doc = #doc, ename = #enum_name_str, token = token, snake = #snake
                 ));
             });
@@ -533,7 +533,7 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
             let fdoc = &option_fields[0].doc;
             variant_schemas.push(quote! {
                 __out.push_str(&::std::format!(
-                    "action {doc}\n{ename}-{token}\n{snake}\n{fdoc}（可选）\n",
+                    "{doc}\n{ename}-{token}\n{snake}\n{fdoc}（可选）\n",
                     doc = #doc, ename = #enum_name_str, token = token, snake = #snake, fdoc = #fdoc
                 ));
             });
@@ -544,14 +544,14 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
                 let vec_type = &f.vec_inner_type;
                 variant_schemas.push(quote! {
                     __out.push_str(&::std::format!(
-                        "action {doc}\n{ename}-{token}\n{snake}\n{fdoc}（包含嵌套{vtype}元素）\n",
+                        "{doc}\n{ename}-{token}\n{snake}\n{fdoc}（包含嵌套{vtype}元素）\n",
                         doc = #doc, ename = #enum_name_str, token = token, snake = #snake, fdoc = #fdoc, vtype = #vec_type
                     ));
                 });
             } else {
                 variant_schemas.push(quote! {
                     __out.push_str(&::std::format!(
-                        "action {doc}\n{ename}-{token}\n{snake}\n{fdoc}（多行）\n",
+                        "{doc}\n{ename}-{token}\n{snake}\n{fdoc}（多行）\n",
                         doc = #doc, ename = #enum_name_str, token = token, snake = #snake, fdoc = #fdoc
                     ));
                 });
@@ -587,7 +587,7 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
             }
             variant_schemas.push(quote! {
                 __out.push_str(&::std::format!(
-                    "action {doc}\n{ename}-{token}\n{snake}\n",
+                    "{doc}\n{ename}-{token}\n{snake}\n",
                     doc = #doc, ename = #enum_name_str, token = token, snake = #snake
                 ));
                 #(#field_lines)*
