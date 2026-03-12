@@ -318,6 +318,7 @@ system [MSG:20260311220150]发来一条消息：
 
     BeatRequest {
         skill,
+        extra_skill: String::new(),
         knowledge,
         history,
         sessions,

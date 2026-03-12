@@ -282,7 +282,7 @@ pub fn chat_message(role: &str, sender: &str, self_id: &str, timestamp: &str, co
 }
 
 pub fn knowledge_section(content: &str) -> String {
-    format!("### 要点与知识 ###\n{}\n", content)
+    format!("{}\n", content)
 }
 
 pub fn truncated_content(content: &str) -> String {

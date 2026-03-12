@@ -177,6 +177,8 @@ pub struct StatusInfo {
 pub struct BeatRequest {
     /// skill
     pub skill: String,
+    /// extra_skill
+    pub extra_skill: String,
     /// 知识
     pub knowledge: String,
     /// 经历
@@ -310,31 +312,8 @@ pub fn extract_msg_ids(text: &str) -> Vec<String> {
 
 /// Build skill content: default skill (app guide) + instance custom skill + extra skills.
 /// Returns combined content WITHOUT section header (caller/ToMarkdown adds it).
-pub fn build_skill_content(
-    host: Option<&str>,
-    instance_id: &str,
-    http_port: u16,
-    skill_content: &str,
-    extra_skills: &str,
-) -> String {
-    let default_skill = make_reserved_skill(host, instance_id, http_port);
-
-    let mut parts: Vec<&str> = Vec::new();
-    if !default_skill.is_empty() {
-        parts.push(&default_skill);
-    }
-    if !skill_content.trim().is_empty() {
-        parts.push(skill_content);
-    }
-    if !extra_skills.trim().is_empty() {
-        parts.push(extra_skills);
-    }
-
-    parts.join("\n\n")
-}
-
 /// Build knowledge content with sub-section header.
-/// Returns content WITH "### 要点与知识 ###" sub-header, or empty string.
+/// Returns knowledge content directly, or empty string if blank.
 pub fn build_knowledge_content(knowledge_content: &str) -> String {
     if knowledge_content.trim().is_empty() {
         String::new()
@@ -442,7 +421,7 @@ fn make_memory_usage(
 
 /// Build reserved skill section (app guide + vision API + uploads).
 /// Returns empty string if no host is configured.
-fn make_reserved_skill(host: Option<&str>, instance_id: &str, port: u16) -> String {
+pub fn make_reserved_skill(host: Option<&str>, instance_id: &str, port: u16) -> String {
     let h = match host {
         Some(h) if !h.is_empty() => h.to_string(),
         _ => format!("localhost:{}", port),
@@ -585,23 +564,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_skill_content() {
-        let result = build_skill_content(Some("1.2.3.4:8080"), "test", 8081, "custom skill", "extra");
-        assert!(result.contains("custom skill"));
-        assert!(result.contains("extra"));
-    }
-
-    #[test]
-    fn test_build_skill_content_empty() {
-        let result = build_skill_content(None, "test", 8081, "", "");
-        // Should still have reserved skill (app guide)
-        assert!(result.contains("localhost:8081"));
-    }
-
-    #[test]
     fn test_build_knowledge_content() {
         let result = build_knowledge_content("# 泛准则\n- 谨慎加信任");
-        assert!(result.contains("### 要点与知识 ###"));
+        assert!(!result.contains("### 要点与知识 ###"));
         assert!(result.contains("谨慎加信任"));
     }
 
@@ -633,6 +598,7 @@ mod tests {
         use mad_hatter::llm::ToMarkdown;
         let request = BeatRequest {
             skill: String::new(),
+            extra_skill: String::new(),
             knowledge: String::new(),
             history: "(空)".to_string(),
             sessions: vec![],

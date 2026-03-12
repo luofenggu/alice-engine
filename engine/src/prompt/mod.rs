@@ -87,13 +87,22 @@ pub fn build_beat_request(
     let unread_count: usize = alice.count_unread_messages().try_into().unwrap_or(0);
 
     // Build pre-rendered field values
-    let skill = beat::build_skill_content(
+    let skill = beat::make_reserved_skill(
         host,
         &alice.instance.id,
         alice.env_config.http_port,
-        &skill_content,
-        &extra_skills,
     );
+
+    let extra_skill = {
+        let mut parts: Vec<&str> = Vec::new();
+        if !skill_content.trim().is_empty() {
+            parts.push(&skill_content);
+        }
+        if !extra_skills.trim().is_empty() {
+            parts.push(&extra_skills);
+        }
+        parts.join("\n\n")
+    };
 
     let knowledge = beat::build_knowledge_content(&knowledge_content);
 
@@ -128,11 +137,12 @@ pub fn build_beat_request(
         sessions_size,
         current.len(),
         knowledge.len(),
-        skill.len(),
+        skill.len() + extra_skill.len(),
     );
 
     BeatRequest {
         skill,
+        extra_skill,
         knowledge,
         history,
         sessions: session_blocks,
