@@ -199,7 +199,7 @@ pub fn generate_token() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("{:x}", nanos)
+    format!("{:06x}", nanos % 0x1000000)
 }
 
 /// Build the full prompt for LLM inference
