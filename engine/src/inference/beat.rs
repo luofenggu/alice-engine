@@ -115,24 +115,28 @@ use crate::policy::EngineConfig;
 // Data structs — raw data extracted from Alice's state
 // ---------------------------------------------------------------------------
 
-/// A single chat message (raw data, not yet formatted).
-pub struct PromptMessage {
-    pub role: String,
-    pub sender: String,
+#[derive(ToMarkdown)]
+pub struct SessionMessage {
+    /// sender_role
+    pub sender_role: String,
+    /// sender_id
+    pub sender_id: Option<String>,
+    /// timestamp
     pub timestamp: String,
+    /// content
     pub content: String,
 }
 
-/// One session entry: chat messages + summary (raw data).
-pub struct SessionEntryData {
-    pub messages: Vec<PromptMessage>,
+#[derive(ToMarkdown)]
+pub struct SessionBlock {
+    /// start_time
+    pub start_time: String,
+    /// end_time
+    pub end_time: String,
+    /// messages
+    pub messages: Vec<SessionMessage>,
+    /// summary
     pub summary: String,
-}
-
-/// One session block: block name + entries (raw data).
-pub struct SessionBlockData {
-    pub block_name: String,
-    pub entries: Vec<SessionEntryData>,
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +182,7 @@ pub struct BeatRequest {
     /// 经历
     pub history: String,
     /// 近况
-    pub sessions: String,
+    pub sessions: Vec<SessionBlock>,
     /// 环境信息
     pub environment: EnvironmentInfo,
     /// current
@@ -187,69 +191,31 @@ pub struct BeatRequest {
     pub status: StatusInfo,
 }
 
-impl From<&crate::persist::SessionBlockEntry> for SessionEntryData {
-    fn from(entry: &crate::persist::SessionBlockEntry) -> Self {
-        SessionEntryData {
-            messages: vec![],
-            summary: entry.summary.clone(),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Public formatting — used by both prompt building and compress
+// Public helpers — session size estimation and rendering for compress
 // ---------------------------------------------------------------------------
 
-/// Format session entries into display text.
-/// Used by prompt builder for beat prompts and by compress for history rolling.
-pub fn format_session_entries(entries: &[SessionEntryData], self_id: &str) -> String {
-    let truncate_len = EngineConfig::get().memory.message_truncate_length;
-
-    let mut sections = Vec::new();
-    for entry in entries {
-        let mut parts = Vec::new();
-
-        for msg in &entry.messages {
-            let content_display = if msg.content.len() > truncate_len {
-                messages::truncated_content(&crate::util::safe_truncate(&msg.content, truncate_len))
-            } else {
-                msg.content.clone()
-            };
-            parts.push(messages::chat_message(
-                &msg.role,
-                &msg.sender,
-                self_id,
-                &msg.timestamp,
-                &content_display,
-            ));
-        }
-
-        if !entry.summary.is_empty() {
-            parts.push(messages::session_summary(&entry.summary));
-        }
-
-        if !parts.is_empty() {
-            sections.push(parts.join("\n"));
-        }
-    }
-    sections.join("\n\n")
-}
-
-/// Render session blocks into display text.
-pub fn render_session_blocks(blocks: &[SessionBlockData], self_id: &str) -> String {
-    if blocks.is_empty() {
-        return String::new();
-    }
-
-    let mut sections = Vec::new();
+/// Estimate the rendered size of session blocks (character count).
+/// Used for memory usage reporting without full rendering.
+pub fn estimate_sessions_size(blocks: &[SessionBlock]) -> usize {
+    let mut size = 0;
     for block in blocks {
-        let rendered = format_session_entries(&block.entries, self_id);
-        if !rendered.is_empty() {
-            sections.push(format!("[{}]\n{}", block.block_name, rendered));
+        size += block.start_time.len() + block.end_time.len() + block.summary.len();
+        for msg in &block.messages {
+            size += msg.sender_role.len()
+                + msg.sender_id.as_ref().map_or(0, |s| s.len())
+                + msg.timestamp.len()
+                + msg.content.len()
+                + 20; // overhead for field names and separators
         }
+        size += 40; // overhead for block-level field names
     }
-    sections.join("\n\n")
+    size
 }
+
+/// Render a single session block as text for history compress.
+/// Uses ToMarkdown derive rendering for consistency with prompt format.
+
 
 // ---------------------------------------------------------------------------
 // Response parsing — second-layer parsing of specific action content
@@ -583,42 +549,39 @@ mod tests {
     }
 
     #[test]
-    fn test_format_session_entries_basic() {
-        let entries = vec![SessionEntryData {
-            messages: vec![PromptMessage {
-                role: "user".into(),
-                sender: "user".into(),
+    fn test_estimate_sessions_size() {
+        let blocks = vec![SessionBlock {
+            start_time: "20260303120000".into(),
+            end_time: "20260303120100".into(),
+            messages: vec![SessionMessage {
+                sender_role: "user".into(),
+                sender_id: Some("user".into()),
                 timestamp: "20260303120000".into(),
                 content: "hello".into(),
             }],
             summary: "User said hello".into(),
         }];
-        let rendered = format_session_entries(&entries, "test_self");
-        assert!(rendered.contains("user"));
-        assert!(rendered.contains("hello"));
-        assert!(rendered.contains("User said hello"));
+        let size = estimate_sessions_size(&blocks);
+        assert!(size > 0);
     }
 
     #[test]
-    fn test_format_session_entries_truncates() {
-        let long_content = "x".repeat(300);
-        let entries = vec![SessionEntryData {
-            messages: vec![PromptMessage {
-                role: "agent".into(),
-                sender: "test_self".into(),
-                timestamp: "20260303120000".into(),
-                content: long_content,
-            }],
-            summary: String::new(),
-        }];
-        let rendered = format_session_entries(&entries, "test_self");
-        assert!(!rendered.contains(&"x".repeat(300)));
+    fn test_estimate_sessions_size_empty() {
+        assert_eq!(estimate_sessions_size(&[]), 0);
     }
 
     #[test]
-    fn test_format_session_entries_empty() {
-        let entries: Vec<SessionEntryData> = vec![];
-        assert_eq!(format_session_entries(&entries, "test_self"), "");
+    fn test_session_block_to_markdown() {
+        use mad_hatter::llm::ToMarkdown;
+        let block = SessionBlock {
+            start_time: "20260303120000".into(),
+            end_time: "20260303120100".into(),
+            messages: vec![],
+            summary: "Some work happened".into(),
+        };
+        let rendered = block.to_markdown();
+        assert!(rendered.contains("20260303120000"));
+        assert!(rendered.contains("Some work happened"));
     }
 
     #[test]
@@ -672,7 +635,7 @@ mod tests {
             skill: String::new(),
             knowledge: String::new(),
             history: "(空)".to_string(),
-            sessions: String::new(),
+            sessions: vec![],
             environment: EnvironmentInfo {
                 identity: "test".to_string(),
                 contacts: None,

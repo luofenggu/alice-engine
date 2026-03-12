@@ -6,28 +6,27 @@
 //! Protocol definitions (templates, rendering, parsing) live in `inference/`.
 
 use crate::core::Alice;
-use crate::inference::beat::{
-    self, BeatRequest, PromptMessage, SessionBlockData, SessionEntryData,
-};
+use crate::inference::beat::{self, BeatRequest, SessionBlock, SessionMessage};
 use crate::inference::capture::CaptureRequest;
 use crate::policy::messages;
+use mad_hatter::llm::ToMarkdown;
 
 // ---------------------------------------------------------------------------
 // Session block data extraction (depends on Alice for chat DB access)
 // ---------------------------------------------------------------------------
 
-/// Extract session entry data from a session block JSONL.
+/// Extract session blocks from a session block JSONL.
 ///
 /// Input JSONL lines like:
 ///   {"first_msg":"20260223155500","last_msg":"20260223160100","summary":"Alice read and replied"}
 ///
 /// For each line, fetches actual chat messages from chat.db in the
-/// [first_msg, last_msg] range, returning raw data structs.
-pub fn extract_session_block_data(
+/// [first_msg, last_msg] range, returning SessionBlock structs.
+pub fn extract_session_blocks_from_entries(
     block_entries: &[crate::persist::SessionBlockEntry],
     alice: &Alice,
-) -> Vec<SessionEntryData> {
-    let mut entries = Vec::new();
+) -> Vec<SessionBlock> {
+    let mut blocks = Vec::new();
     for entry in block_entries {
         let mut messages = Vec::new();
 
@@ -41,9 +40,13 @@ pub fn extract_session_block_data(
                 .read_messages_in_range(&entry.first_msg, &entry.last_msg)
             {
                 for msg in &db_messages {
-                    messages.push(PromptMessage {
-                        role: msg.role.clone(),
-                        sender: msg.sender.clone(),
+                    messages.push(SessionMessage {
+                        sender_role: msg.role.clone(),
+                        sender_id: if msg.sender.is_empty() {
+                            None
+                        } else {
+                            Some(msg.sender.clone())
+                        },
                         timestamp: msg.timestamp.clone(),
                         content: msg.content.clone(),
                     });
@@ -51,12 +54,14 @@ pub fn extract_session_block_data(
             }
         }
 
-        entries.push(SessionEntryData {
+        blocks.push(SessionBlock {
+            start_time: entry.first_msg.clone(),
+            end_time: entry.last_msg.clone(),
             messages,
             summary: entry.summary.clone(),
         });
     }
-    entries
+    blocks
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +103,7 @@ pub fn build_beat_request(
         history_content.clone()
     };
 
-    let sessions = beat::render_session_blocks(&session_blocks, &alice.instance.id);
+    let sessions_size = beat::estimate_sessions_size(&session_blocks);
 
     let environment = beat::build_environment(
         &alice.instance.id,
@@ -120,7 +125,7 @@ pub fn build_beat_request(
         alice.system_start_time,
         unread_count,
         history.len(),
-        sessions.len(),
+        sessions_size,
         current.len(),
         knowledge.len(),
         skill.len(),
@@ -130,7 +135,7 @@ pub fn build_beat_request(
         skill,
         knowledge,
         history,
-        sessions,
+        sessions: session_blocks,
         environment,
         current,
         status,
@@ -153,28 +158,11 @@ pub fn build_capture_request(alice: &Alice, summary_content: &str) -> CaptureReq
         if session_blocks.is_empty() {
             String::new()
         } else {
-            let mut parts = Vec::new();
-            for block in session_blocks {
-                let mut entry_texts = Vec::new();
-                for entry in block.entries {
-                    let messages = entry
-                        .messages
-                        .iter()
-                        .map(|m| format!("{} [{}]: {}", m.sender, m.timestamp, m.content))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    entry_texts.push(format!(
-                        "messages:\n{}\nsummary:\n{}",
-                        messages, entry.summary
-                    ));
-                }
-                parts.push(format!(
-                    "[{}]\n{}",
-                    block.block_name,
-                    entry_texts.join("\n\n")
-                ));
-            }
-            parts.join("\n\n")
+            session_blocks
+                .iter()
+                .map(|b| b.to_markdown())
+                .collect::<Vec<_>>()
+                .join("\n\n")
         }
     };
 
@@ -189,26 +177,22 @@ pub fn build_capture_request(alice: &Alice, summary_content: &str) -> CaptureReq
 }
 
 /// Extract all session blocks as structured data in chronological order.
-fn extract_all_session_blocks(alice: &Alice) -> Vec<SessionBlockData> {
-    let blocks = alice
+/// Each SessionBlockEntry becomes a SessionBlock.
+fn extract_all_session_blocks(alice: &Alice) -> Vec<SessionBlock> {
+    let block_files = alice
         .instance
         .memory
         .list_session_blocks()
         .unwrap_or_default();
-    if blocks.is_empty() {
+    if block_files.is_empty() {
         return Vec::new();
     }
 
     let mut result = Vec::new();
-    for block_name in &blocks {
+    for block_name in &block_files {
         if let Ok(block_entries) = alice.instance.memory.read_session_entries(block_name) {
-            let entries = extract_session_block_data(&block_entries, alice);
-            if !entries.is_empty() {
-                result.push(SessionBlockData {
-                    block_name: block_name.clone(),
-                    entries,
-                });
-            }
+            let blocks = extract_session_blocks_from_entries(&block_entries, alice);
+            result.extend(blocks);
         }
     }
     result
@@ -244,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_session_block_data() {
+    fn test_extract_session_blocks_from_entries() {
         let (mut alice, _tmp) = setup_alice();
         alice
             .instance
@@ -266,33 +250,35 @@ mod tests {
             last_msg: "20260223155600".to_string(),
             summary: "Alice read and replied".to_string(),
         }];
-        let entries = extract_session_block_data(&block_entries, &alice);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].messages.len(), 2);
-        assert_eq!(entries[0].messages[0].sender, "user");
-        assert_eq!(entries[0].messages[0].content, "hello world");
-        assert_eq!(entries[0].messages[1].sender, "alice");
-        assert_eq!(entries[0].summary, "Alice read and replied");
+        let blocks = extract_session_blocks_from_entries(&block_entries, &alice);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].messages.len(), 2);
+        assert_eq!(blocks[0].messages[0].sender_id, Some("user".to_string()));
+        assert_eq!(blocks[0].messages[0].content, "hello world");
+        assert_eq!(blocks[0].messages[1].sender_id, Some("alice".to_string()));
+        assert_eq!(blocks[0].summary, "Alice read and replied");
+        assert_eq!(blocks[0].start_time, "20260223155500");
+        assert_eq!(blocks[0].end_time, "20260223155600");
     }
 
     #[test]
-    fn test_extract_session_block_data_empty() {
+    fn test_extract_session_blocks_from_entries_empty() {
         let (alice, _tmp) = setup_alice();
-        assert!(extract_session_block_data(&[], &alice).is_empty());
+        assert!(extract_session_blocks_from_entries(&[], &alice).is_empty());
     }
 
     #[test]
-    fn test_extract_session_block_data_no_chat() {
+    fn test_extract_session_blocks_from_entries_no_chat() {
         let (alice, _tmp) = setup_alice();
         let block_entries = vec![crate::persist::SessionBlockEntry {
             first_msg: "20260223155500".to_string(),
             last_msg: "20260223155600".to_string(),
             summary: "Some work happened".to_string(),
         }];
-        let entries = extract_session_block_data(&block_entries, &alice);
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].messages.is_empty());
-        assert_eq!(entries[0].summary, "Some work happened");
+        let blocks = extract_session_blocks_from_entries(&block_entries, &alice);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].messages.is_empty());
+        assert_eq!(blocks[0].summary, "Some work happened");
     }
 
     #[test]
@@ -323,8 +309,9 @@ mod tests {
 
         let request = build_beat_request(&alice, None, String::new(), String::new());
         let output = request.to_markdown();
-        assert!(output.contains("user [20260223120000]: hi there"));
-        assert!(output.contains("[总结] User said hi"));
+        assert!(output.contains("sender_role: user"), "should contain sender_role");
+        assert!(output.contains("hi there"), "should contain message content");
+        assert!(output.contains("summary: User said hi"), "should contain summary");
     }
 
     #[test]

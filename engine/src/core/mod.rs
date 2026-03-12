@@ -46,7 +46,7 @@ use tracing::{error, info, warn};
 
 use crate::action::execute::execute_action;
 use crate::external::llm::LlmClient;
-use mad_hatter::llm::stream_infer;
+use mad_hatter::llm::{stream_infer, ToMarkdown};
 use crate::inference::Action;
 use crate::persist::instance;
 use crate::persist::hooks::HooksCaller;
@@ -474,8 +474,12 @@ impl Alice {
             return Ok(None);
         }
 
-        let entries = crate::prompt::extract_session_block_data(&block_entries, self);
-        let rendered_block = crate::inference::beat::format_session_entries(&entries, &self.instance.id);
+        let session_blocks = crate::prompt::extract_session_blocks_from_entries(&block_entries, self);
+        let rendered_block = session_blocks
+            .iter()
+            .map(|b| b.to_markdown())
+            .collect::<Vec<_>>()
+            .join("\n\n");
 
         // Read current history
         let current_history = self.instance.memory.history.read()?;
@@ -553,9 +557,20 @@ impl Alice {
             )));
         }
 
-        let session_entries: Vec<crate::inference::beat::SessionEntryData> =
-            entries.iter().map(Into::into).collect();
-        let rendered_block = crate::inference::beat::format_session_entries(&session_entries, &self.instance.id);
+        let session_blocks: Vec<crate::inference::beat::SessionBlock> = entries
+            .iter()
+            .map(|e| crate::inference::beat::SessionBlock {
+                start_time: e.first_msg.clone(),
+                end_time: e.last_msg.clone(),
+                messages: vec![],
+                summary: e.summary.clone(),
+            })
+            .collect();
+        let rendered_block = session_blocks
+            .iter()
+            .map(|b| b.to_markdown())
+            .collect::<Vec<_>>()
+            .join("\n\n");
 
         // 2. Read current history (from memory handle)
         let current_history = self.instance.memory.history.read()?;

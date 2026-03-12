@@ -6,7 +6,7 @@
 //! For real LLM inference (requires network):
 //!   cargo test prompt_dump_test::test_real_inference -- --ignored --nocapture
 
-use crate::inference::beat::{BeatRequest, EnvironmentInfo, StatusInfo};
+use crate::inference::beat::{BeatRequest, EnvironmentInfo, SessionBlock, SessionMessage, StatusInfo};
 use crate::inference::Action;
 use mad_hatter::llm::{FromMarkdown, ToMarkdown};
 
@@ -166,35 +166,94 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
 
 心跳继续。Standby。"#.to_string();
 
-    let sessions = r#"[20260311200000]
-agent[ac56b3] [20260311195500]: 二号，新任务来了，章邯直接下达的：
-
-## 1. 先rebase到最新main
-
-main上四号已经合入了一个重要commit（e540264），修复了expect错误。你需要先rebase。
-
-## 2. 写格式异常测试
-
-测试场景：LLM输出格式异常时，错误提示应该进current让agent感知。
-
-## 3. 提供完整beat推理prompt样本
-
-构造一个内容丰富的BeatRequest，dump完整prompt到文件给章邯review。
-you[ebc381] [20260311195600]: 收到，优先执行新任务。开始操作。
-you[ebc381] [20260311201000]: rebase完成，无冲突。开始写测试。
-system [20260311201500]: 知识更新完成（32 KB → 35 KB）
-you[ebc381] [20260311203000]: 6个格式异常测试 + prompt样本测试写完，编译中。
-you[ebc381] [20260311204500]: 编译通过！224测试全绿。commit a5a85f2。
-[总结] rebase到e540264完成。格式异常测试6个场景全覆盖（garbage/misspelled/partial等）。prompt样本测试写入/tmp/beat_prompt_sample.txt。224测试全通过。
-
-[20260311210000]
-agent[ac56b3] [20260311205000]: 二号，224测试全绿，漂亮 👍 继续推进子任务4+5。
-you[ebc381] [20260311210500]: 子任务4分析结论：Environment/Status不适合拆struct。紧凑key-value行拆开会加section标题膨胀prompt。B类format!()辅助函数合理。
-you[ebc381] [20260311211000]: 子任务6完成：reserved_skill.txt内联为const字符串，删除4个废弃模板文件。
-system [20260311211500]: 记忆整理完成：旧记录已压缩归档（2 KB → 2 KB）
-you[ebc381] [20260311212000]: 全部子任务完成！224测试全绿。commit d0e6834。
-agent[ac56b3] [20260311212500]: 二号，全面集成全部完成，漂亮 🎉 等章邯review prompt后决定下一步。
-[总结] 推理帽子全面集成全部子任务完成。子任务4跳过（不拆struct）。子任务6：reserved_skill内联+删4个废弃模板。224测试全通过。等章邯review。"#.to_string();
+    let sessions = vec![
+        SessionBlock {
+            start_time: "20260311200000".to_string(),
+            end_time: "20260311204500".to_string(),
+            messages: vec![
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ac56b3".to_string()),
+                    timestamp: "20260311195500".to_string(),
+                    content: "二号，新任务来了，章邯直接下达的：\n\n## 1. 先rebase到最新main\n\nmain上四号已经合入了一个重要commit（e540264），修复了expect错误。你需要先rebase。\n\n## 2. 写格式异常测试\n\n测试场景：LLM输出格式异常时，错误提示应该进current让agent感知。\n\n## 3. 提供完整beat推理prompt样本\n\n构造一个内容丰富的BeatRequest，dump完整prompt到文件给章邯review。".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ebc381".to_string()),
+                    timestamp: "20260311195600".to_string(),
+                    content: "收到，优先执行新任务。开始操作。".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ebc381".to_string()),
+                    timestamp: "20260311201000".to_string(),
+                    content: "rebase完成，无冲突。开始写测试。".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "system".to_string(),
+                    sender_id: None,
+                    timestamp: "20260311201500".to_string(),
+                    content: "知识更新完成（32 KB → 35 KB）".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ebc381".to_string()),
+                    timestamp: "20260311203000".to_string(),
+                    content: "6个格式异常测试 + prompt样本测试写完，编译中。".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ebc381".to_string()),
+                    timestamp: "20260311204500".to_string(),
+                    content: "编译通过！224测试全绿。commit a5a85f2。".to_string(),
+                },
+            ],
+            summary: "rebase到e540264完成。格式异常测试6个场景全覆盖（garbage/misspelled/partial等）。prompt样本测试写入/tmp/beat_prompt_sample.txt。224测试全通过。".to_string(),
+        },
+        SessionBlock {
+            start_time: "20260311210000".to_string(),
+            end_time: "20260311212500".to_string(),
+            messages: vec![
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ac56b3".to_string()),
+                    timestamp: "20260311205000".to_string(),
+                    content: "二号，224测试全绿，漂亮 👍 继续推进子任务4+5。".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ebc381".to_string()),
+                    timestamp: "20260311210500".to_string(),
+                    content: "子任务4分析结论：Environment/Status不适合拆struct。紧凑key-value行拆开会加section标题膨胀prompt。B类format!()辅助函数合理。".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ebc381".to_string()),
+                    timestamp: "20260311211000".to_string(),
+                    content: "子任务6完成：reserved_skill.txt内联为const字符串，删除4个废弃模板文件。".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "system".to_string(),
+                    sender_id: None,
+                    timestamp: "20260311211500".to_string(),
+                    content: "记忆整理完成：旧记录已压缩归档（2 KB → 2 KB）".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ebc381".to_string()),
+                    timestamp: "20260311212000".to_string(),
+                    content: "全部子任务完成！224测试全绿。commit d0e6834。".to_string(),
+                },
+                SessionMessage {
+                    sender_role: "agent".to_string(),
+                    sender_id: Some("ac56b3".to_string()),
+                    timestamp: "20260311212500".to_string(),
+                    content: "二号，全面集成全部完成，漂亮 🎉 等章邯review prompt后决定下一步。".to_string(),
+                },
+            ],
+            summary: "推理帽子全面集成全部子任务完成。子任务4跳过（不拆struct）。子任务6：reserved_skill内联+删4个废弃模板。224测试全通过。等章邯review。".to_string(),
+        },
+    ];
 
     let environment = EnvironmentInfo {
         identity: "进化二号（引擎）（ebc381）".to_string(),
@@ -305,8 +364,8 @@ fn test_full_beat_prompt_sample() {
     assert!(full_prompt.contains("beat"), "knowledge should contain terminology");
     assert!(full_prompt.contains("SequenceGuard"), "knowledge should contain architecture");
     assert!(full_prompt.contains("镜与柴油"), "history should contain narrative");
-    assert!(full_prompt.contains("agent[ac56b3]"), "sessions should contain agent messages");
-    assert!(full_prompt.contains("[总结]"), "sessions should contain summaries");
+    assert!(full_prompt.contains("ac56b3"), "sessions should contain agent sender ids");
+    assert!(full_prompt.contains("summary"), "sessions should contain summary fields");
     assert!(full_prompt.contains("进化二号（引擎）"), "environment should contain instance name");
     assert!(full_prompt.contains("行为编号"), "current should contain action blocks");
     assert!(full_prompt.contains("exec result"), "current should contain script results");
