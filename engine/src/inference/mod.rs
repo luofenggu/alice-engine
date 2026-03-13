@@ -209,14 +209,6 @@ impl fmt::Display for Action {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ActionRecord {
-    pub action_id: String,
-    pub action: Action,
-    pub doing_text: String,
-    pub done_text: Option<String>,
-}
-
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------

@@ -106,7 +106,7 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
     "capture" → 异步知识捕获，独立线程LLM生成→覆盖写入knowledge
     "history rolling" → session blocks超限时压缩最老block到history.txt
     "骨架提取" → write_file后提取接口+注释，节省current空间
-    "extract_msg_ids" → 从current提取MSG ID，只信任两种上下文
+
     "system消息" → 第三类消息发送者（user/agent/system三元）
     "skill" → 外部决定的固化prompt，每次推理固定携带
     "钩子/Hook" → 外部扩展回调机制，Product注册URL
@@ -135,7 +135,7 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
     src/inference/capture.rs — CaptureRequest/CaptureOutput
     src/inference/compress.rs — CompressRequest/CompressOutput
     src/action/execute.rs — execute_action分发、各action执行器
-    src/policy/action_output.rs — action块格式化、消息格式化
+    src/policy/action_output.rs — ID生成、错误/中断文本格式化
     src/policy/messages.rs — 通知文案、humanize_llm_error
     src/external/llm/mod.rs — LlmConfig、run_vision_inference()
     src/persist/chat.rs — ChatHistory、Message、write_message统一

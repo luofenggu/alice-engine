@@ -175,10 +175,6 @@ pub struct ActionRecord {
     pub action_id: String,
     /// The action that was executed
     pub action: Action,
-    /// "doing" text written before execution
-    pub doing_text: String,
-    /// "done" text appended after execution (None if not yet executed)
-    pub done_text: Option<String>,
     /// Execution start time
     pub started_at: Instant,
     /// Execution duration (None if not yet completed)
@@ -226,7 +222,7 @@ impl Transaction {
     /// Record an action's "doing" phase (before execution).
     ///
     /// @TRACE: ACTION
-    pub fn record_doing(&mut self, action: Action, doing_text: String) -> String {
+    pub fn record_doing(&mut self, action: Action) -> String {
         let action_id = action_output::generate_action_id();
         info!(
             "[ACTION-{}] START {} ({})",
@@ -235,8 +231,6 @@ impl Transaction {
         self.action_records.push(ActionRecord {
             action_id: action_id.clone(),
             action,
-            doing_text,
-            done_text: None,
             started_at: Instant::now(),
             duration: None,
         });
@@ -246,13 +240,12 @@ impl Transaction {
     /// Record an action's "done" phase (after execution).
     ///
     /// @TRACE: ACTION
-    pub fn record_done(&mut self, action_id: &str, done_text: String) {
+    pub fn record_done(&mut self, action_id: &str) {
         if let Some(record) = self
             .action_records
             .iter_mut()
             .find(|r| r.action_id == action_id)
         {
-            record.done_text = Some(done_text);
             record.duration = Some(record.started_at.elapsed());
             info!(
                 "[ACTION-{}] END {} ({:.1}s)",
@@ -268,19 +261,6 @@ impl Transaction {
         }
     }
 
-    /// Build the full session text from all action records.
-    /// This is appended to current.txt after each beat.
-    pub fn build_session_text(&self) -> String {
-        let mut text = String::new();
-        for record in &self.action_records {
-            text.push_str(&action_output::action_block_full(
-                &record.action_id,
-                &record.doing_text,
-                record.done_text.as_deref(),
-            ));
-        }
-        text
-    }
 }
 
 // ─── Alice ───────────────────────────────────────────────────────
@@ -827,8 +807,7 @@ impl Alice {
 
             let mut tx = Transaction::new(&self.instance.id);
 
-            let doing_text = action_output::build_doing_text(&Action::ReadMsg);
-            let action_id = tx.record_doing(Action::ReadMsg, doing_text);
+            let action_id = tx.record_doing(Action::ReadMsg);
 
             // DB: insert action_log (executing)
             let action_data_json = serde_json::to_string(&Action::ReadMsg).unwrap_or_default();
@@ -839,13 +818,11 @@ impl Alice {
             let result = execute_action(&Action::ReadMsg, self, &mut tx);
             match result {
                 Ok(ref output) => {
-                    let done_text = output.render();
-                    tx.record_done(&action_id, done_text);
+                    tx.record_done(&action_id);
                     self.instance.memory.complete_action_log(&action_id, output).ok();
                 }
                 Err(ref e) => {
-                    let done_text = action_output::action_error(e);
-                    tx.record_done(&action_id, done_text);
+                    tx.record_done(&action_id);
                     let error_output = ActionOutput::Note { text: action_output::action_error(e) };
                     self.instance.memory.complete_action_log(&action_id, &error_output).ok();
                 }
@@ -966,10 +943,7 @@ impl Alice {
                         }
                     }
 
-                    // Build doing text
-                    let doing_text = action_output::build_doing_text(&action);
-
-                    let action_id = tx.record_doing(action.clone(), doing_text);
+                    let action_id = tx.record_doing(action.clone());
 
                     // DB: insert action_log (executing)
                     let action_data_json = serde_json::to_string(&action).unwrap_or_default();
@@ -986,7 +960,7 @@ impl Alice {
 
                         // Record done
                         let cancelled_output = ActionOutput::Note { text: "idle cancelled: send_msg failed earlier in this beat".into() };
-                        tx.record_done(&action_id, cancelled_output.render());
+                        tx.record_done(&action_id);
 
                         // DB: complete action_log (done) for cancelled idle
                         self.instance.memory.complete_action_log(&action_id, &cancelled_output).ok();
@@ -1016,13 +990,11 @@ impl Alice {
                     // Record done + DB complete
                     match result {
                         Ok(ref output) => {
-                            let done_text = output.render();
-                            tx.record_done(&action_id, done_text);
+                            tx.record_done(&action_id);
                             self.instance.memory.complete_action_log(&action_id, output).ok();
                         }
                         Err(ref e) => {
-                            let done_text = action_output::action_error(e);
-                            tx.record_done(&action_id, done_text);
+                            tx.record_done(&action_id);
                             let error_output = ActionOutput::Note { text: action_output::action_error(e) };
                             self.instance.memory.complete_action_log(&action_id, &error_output).ok();
                         }
@@ -1325,29 +1297,11 @@ mod tests {
         let mut tx = Transaction::new("test");
         let action_id = tx.record_doing(
             Action::Idle { timeout_secs: None },
-            "idle action doing\n".to_string(),
         );
         assert_eq!(tx.action_records.len(), 1);
-        assert!(tx.action_records[0].done_text.is_none());
 
-        tx.record_done(&action_id, "idle done\n".to_string());
-        assert!(tx.action_records[0].done_text.is_some());
+        tx.record_done(&action_id);
         assert!(tx.action_records[0].duration.is_some());
-    }
-
-    #[test]
-    fn test_build_session_text() {
-        let mut tx = Transaction::new("test");
-        let id = tx.record_doing(
-            Action::Idle { timeout_secs: None },
-            "doing idle\n".to_string(),
-        );
-        tx.record_done(&id, "done idle\n".to_string());
-
-        let text = tx.build_session_text();
-        assert!(text.contains("行为编号"));
-        assert!(text.contains("doing idle"));
-        assert!(text.contains("done idle"));
     }
 
     #[test]
@@ -1358,29 +1312,7 @@ mod tests {
         assert!(id.contains('_'));
     }
 
-    #[test]
-    fn test_build_doing_description() {
-        use crate::policy::action_output;
-        assert_eq!(
-            action_output::build_doing_description(&Action::Idle { timeout_secs: None }),
-            "idle"
-        );
-        assert_eq!(
-            action_output::build_doing_description(&Action::Idle {
-                timeout_secs: Some(30)
-            }),
-            "idle (30s)"
-        );
-        assert!(action_output::build_doing_description(&Action::ReadMsg).contains("收件箱"));
 
-        let send = Action::SendMsg {
-            recipient: "user1".to_string(),
-            content: "hello".to_string(),
-        };
-        let desc = action_output::build_doing_description(&send);
-        assert!(desc.contains("user1"));
-        assert!(desc.contains("hello"));
-    }
 
     #[test]
     fn test_count_unread_messages() {

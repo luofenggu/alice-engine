@@ -488,7 +488,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
         warn!("[ACTION-{}] summary: empty summary text", tx.instance_id);
     }
 
-    // Query MSG IDs from DB (replaces extract_msg_ids text search)
+    // Query MSG IDs from DB
     let (first_msg_opt, last_msg_opt) = alice.instance.memory.query_msg_range()
         .unwrap_or((None, None));
 

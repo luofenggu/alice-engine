@@ -108,7 +108,7 @@ pub const INITIAL_HISTORY: &str = include_str!("../../templates/initial_history.
 
 const SOFT_LIMIT: usize = 180_000;
 
-use crate::policy::action_output as out;
+
 
 
 // ---------------------------------------------------------------------------
@@ -266,44 +266,6 @@ pub fn parse_summary_dual_output(
     };
 
     (summary_part, knowledge_part)
-}
-
-/// Extract MSG IDs from current.txt content.
-/// Only matches trusted markers (send success / read_msg format).
-/// Returns IDs in **appearance order** (not sorted), to avoid
-/// stale timestamps in exec results from expanding the range.
-pub fn extract_msg_ids(text: &str) -> Vec<String> {
-    let mut ids = Vec::new();
-    let marker = "[MSG:";
-    let send_context = out::MSG_SEND_CONTEXT;
-    let read_context = out::MSG_READ_CONTEXT;
-    let mut search_from = 0;
-
-    while let Some(start) = text[search_from..].find(marker) {
-        let bracket_pos = search_from + start;
-        let abs_start = bracket_pos + marker.len();
-        if let Some(end) = text[abs_start..].find(']') {
-            let candidate = &text[abs_start..abs_start + end];
-            if candidate.len() == 14 && candidate.chars().all(|c| c.is_ascii_digit()) {
-                let after_bracket = abs_start + end + 1;
-                let is_send = bracket_pos >= send_context.len()
-                    && text
-                        .get(bracket_pos - send_context.len()..bracket_pos)
-                        .map_or(false, |s| s == send_context);
-                let is_read = text
-                    .get(after_bracket..)
-                    .map_or(false, |s| s.starts_with(read_context));
-                if (is_send || is_read) && !ids.contains(&candidate.to_string()) {
-                    ids.push(candidate.to_string());
-                }
-            }
-            search_from = abs_start + end + 1;
-        } else {
-            break;
-        }
-    }
-
-    ids
 }
 
 // ---------------------------------------------------------------------------
@@ -467,40 +429,6 @@ mod tests {
         assert_eq!(knowledge, "knowledge");
     }
 
-    #[test]
-    fn test_extract_msg_ids_send() {
-        let text = "send success [MSG:20260303120000]\nsome other text";
-        let ids = extract_msg_ids(text);
-        assert_eq!(ids, vec!["20260303120000"]);
-    }
-
-    #[test]
-    fn test_extract_msg_ids_read() {
-        let text = "[MSG:20260303130000]发来一条消息：\nhello";
-        let ids = extract_msg_ids(text);
-        assert_eq!(ids, vec!["20260303130000"]);
-    }
-
-    #[test]
-    fn test_extract_msg_ids_mixed() {
-        let text = "send success [MSG:20260303120000]\n[MSG:20260303130000]发来一条消息：\nhello\nsend success [MSG:20260303120000]";
-        let ids = extract_msg_ids(text);
-        assert_eq!(ids, vec!["20260303120000", "20260303130000"]);
-    }
-
-    #[test]
-    fn test_extract_msg_ids_ignores_untrusted() {
-        let text = "random [MSG:20260303120000] text without context";
-        let ids = extract_msg_ids(text);
-        assert!(ids.is_empty());
-    }
-
-    #[test]
-    fn test_extract_msg_ids_system_message() {
-        let text = "[系统通知] [MSG:20260307103449]发来一条消息：\n\n[验证] system消息测试\n";
-        let ids = extract_msg_ids(text);
-        assert_eq!(ids, vec!["20260307103449"]);
-    }
 
     #[test]
     fn test_make_memory_usage_basic() {
