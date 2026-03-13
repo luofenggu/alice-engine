@@ -7,6 +7,10 @@ use tracing::{info, warn, error, debug};
 use base64::Engine as _;
 
 use crate::hub::tunnel::*;
+use crate::bindings::http::{
+    HUB_WS_PATH, HUB_HOOKS_PATH, HUB_CONTACTS_PATH_PREFIX, HUB_RELAY_PATH,
+    HUB_TUNNEL_PROXY_CONTACTS_PATH_PREFIX, HUB_TUNNEL_PROXY_RELAY_PATH,
+};
 
 type WsSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -119,7 +123,7 @@ impl SlaveState {
         let ws_url = self.host_url
             .replace("http://", "ws://")
             .replace("https://", "wss://");
-        let ws_url = format!("{}/api/hub/ws?token={}", ws_url, self.join_token);
+        let ws_url = format!("{}{}?token={}", ws_url, HUB_WS_PATH, self.join_token);
 
         info!("[HUB-SLAVE] Connecting to host: {}", self.host_url);
 
@@ -243,7 +247,7 @@ impl SlaveState {
                     let ws_url = host_url
                         .replace("http://", "ws://")
                         .replace("https://", "wss://");
-                    let ws_url = format!("{}/api/hub/ws?token={}", ws_url, join_token);
+                    let ws_url = format!("{}{}?token={}", ws_url, HUB_WS_PATH, join_token);
 
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(5),
@@ -287,11 +291,8 @@ impl SlaveState {
                             // Re-register hooks
                             let session_token = crate::hub::compute_session_token(&self_auth_token);
                             let client = reqwest::Client::new();
-                            let hooks_body = serde_json::json!({
-                                "contacts_url": format!("http://localhost:{}/api/hub/tunnel_proxy/contacts/{{instance_id}}", self_local_port),
-                                "send_msg_relay_url": format!("http://localhost:{}/api/hub/tunnel_proxy/relay", self_local_port),
-                            });
-                            let _ = client.post(format!("http://localhost:{}/api/hooks", self_local_port))
+                            let hooks_body = build_hooks_json(self_local_port);
+                            let _ = client.post(format!("http://localhost:{}{}", self_local_port, HUB_HOOKS_PATH))
                                 .header("cookie", format!("session_token={}", session_token))
                                 .json(&hooks_body)
                                 .send()
@@ -409,13 +410,9 @@ impl SlaveState {
     /// Register hooks on local engine pointing to tunnel_proxy routes
     async fn register_tunnel_hooks(&self) {
         let client = reqwest::Client::new();
-        let url = format!("http://localhost:{}/api/hooks", self.local_port);
+        let url = format!("http://localhost:{}{}", self.local_port, HUB_HOOKS_PATH);
         let session_token = crate::hub::compute_session_token(&self.auth_token);
-
-        let hooks_body = serde_json::json!({
-            "contacts_url": format!("http://localhost:{}/api/hub/tunnel_proxy/contacts/{{instance_id}}", self.local_port),
-            "send_msg_relay_url": format!("http://localhost:{}/api/hub/tunnel_proxy/relay", self.local_port),
-        });
+        let hooks_body = build_hooks_json(self.local_port);
 
         match client.post(&url)
             .header("cookie", format!("session_token={}", session_token))
@@ -431,6 +428,14 @@ impl SlaveState {
             }
         }
     }
+}
+
+/// Build the hooks registration JSON body using centralized path constants.
+fn build_hooks_json(local_port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "contacts_url": format!("http://localhost:{}{}{{instance_id}}", local_port, HUB_TUNNEL_PROXY_CONTACTS_PATH_PREFIX),
+        "send_msg_relay_url": format!("http://localhost:{}{}", local_port, HUB_TUNNEL_PROXY_RELAY_PATH),
+    })
 }
 
 /// Handle a tunnel request by making a local HTTP request

@@ -86,3 +86,14 @@ bind_http! {
         register_hooks(body: HooksConfig) => POST "api/hooks" -> Response;
     }
 }
+
+// ── Hub Internal Path Constants ──
+// Used by slave.rs for outbound requests and routes.rs for manual handler registration.
+// Centralizes all Hub-related URL paths that aren't covered by http_service!/bind_http! macros.
+
+pub const HUB_WS_PATH: &str = "/api/hub/ws";
+pub const HUB_HOOKS_PATH: &str = "/api/hooks";
+pub const HUB_CONTACTS_PATH_PREFIX: &str = "/api/hub/contacts/";
+pub const HUB_RELAY_PATH: &str = "/api/hub/relay";
+pub const HUB_TUNNEL_PROXY_CONTACTS_PATH_PREFIX: &str = "/api/hub/tunnel_proxy/contacts/";
+pub const HUB_TUNNEL_PROXY_RELAY_PATH: &str = "/api/hub/tunnel_proxy/relay";

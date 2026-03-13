@@ -579,6 +579,7 @@ http_service! {
         GET "api/hub/contacts/{id}" => hub_contacts(id: String) -> Response;
         POST "api/hub/relay" => hub_relay(body: RelayRequest) -> Response;
         GET "api/hub/tunnel_proxy/contacts/{id}" => tunnel_proxy_contacts(id: String) -> Response;
+        POST "api/hub/tunnel_proxy/relay" => tunnel_proxy_relay(body: String) -> Response;
     }
 }
 
@@ -606,9 +607,38 @@ impl HubPublicApiService for EngineState {
         let req = crate::hub::tunnel::TunnelRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
             method: "GET".to_string(),
-            path: format!("/api/hub/contacts/{}", id),
+            path: format!("{}{}", HUB_CONTACTS_PATH_PREFIX, id),
             headers: std::collections::HashMap::new(),
             body: None,
+        };
+
+        match slave.proxy_request_to_host(req).await {
+            Some(resp) => Ok(tunnel_response_to_http(resp)),
+            None => Ok(json_error(StatusCode::BAD_GATEWAY, "Tunnel request to host failed")),
+        }
+    }
+
+    async fn tunnel_proxy_relay(&self, body: String) -> mad_hatter::Result<Response> {
+        let slave = match self.hub.as_slave().await {
+            Some(s) => s,
+            None => return Ok(json_error(StatusCode::NOT_FOUND, "Not in joined mode")),
+        };
+
+        use base64::Engine as _;
+        let req = crate::hub::tunnel::TunnelRequest {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            method: "POST".to_string(),
+            path: HUB_RELAY_PATH.to_string(),
+            headers: {
+                let mut h = std::collections::HashMap::new();
+                h.insert("content-type".to_string(), "application/json".to_string());
+                h
+            },
+            body: if body.is_empty() {
+                None
+            } else {
+                Some(base64::engine::general_purpose::STANDARD.encode(body.as_bytes()))
+            },
         };
 
         match slave.proxy_request_to_host(req).await {
@@ -619,39 +649,6 @@ impl HubPublicApiService for EngineState {
 }
 
 /// Tunnel proxy for relay: slave forwards to host via WebSocket tunnel
-#[post("/api/hub/tunnel_proxy/relay")]
-async fn handle_tunnel_proxy_relay(
-    State(state): State<Arc<EngineState>>,
-    body: axum::body::Bytes,
-) -> Response {
-    let slave = match state.hub.as_slave().await {
-        Some(s) => s,
-        None => return json_error(StatusCode::NOT_FOUND, "Not in joined mode"),
-    };
-
-    use base64::Engine as _;
-    let req = crate::hub::tunnel::TunnelRequest {
-        request_id: uuid::Uuid::new_v4().to_string(),
-        method: "POST".to_string(),
-        path: "/api/hub/relay".to_string(),
-        headers: {
-            let mut h = std::collections::HashMap::new();
-            h.insert("content-type".to_string(), "application/json".to_string());
-            h
-        },
-        body: if body.is_empty() {
-            None
-        } else {
-            Some(base64::engine::general_purpose::STANDARD.encode(&body))
-        },
-    };
-
-    match slave.proxy_request_to_host(req).await {
-        Some(resp) => tunnel_response_to_http(resp),
-        None => json_error(StatusCode::BAD_GATEWAY, "Tunnel request to host failed"),
-    }
-}
-
 /// Convert a TunnelResponse to an HTTP Response
 fn tunnel_response_to_http(resp: crate::hub::tunnel::TunnelResponse) -> Response {
     use base64::Engine as _;
@@ -842,8 +839,8 @@ pub fn public_api_routes() -> Router<Arc<EngineState>> {
     Router::new()
         .route(ROUTE_HANDLE_PUBLIC_STATIC, get(handle_public_static))
         .merge(HubPublicApi::router::<EngineState>())
-        .route(ROUTE_HANDLE_HUB_WS, get(handle_hub_ws))
-        .route(ROUTE_HANDLE_TUNNEL_PROXY_RELAY, post(handle_tunnel_proxy_relay))
+        .route(HUB_WS_PATH, get(handle_hub_ws))
+
 }
 
 // ── Embedded HTML (compiled into binary) ──
