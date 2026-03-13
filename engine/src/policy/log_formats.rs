@@ -95,16 +95,6 @@ pub fn infer_in_filename(timestamp: &str) -> String {
 }
 
 /// Build the inference input log content.
-pub fn infer_input_log_content(
-    model: &str,
-    api_url: &str,
-    system_prompt: &str,
-    user_prompt: &str,
-) -> String {
-    format!(
-        "[model: {}]\n[endpoint: {}]\n\n=== SYSTEM PROMPT ({} chars) ===\n{}\n\n=== USER PROMPT ({} chars) ===\n{}\n",
-        model, api_url,
-        system_prompt.len(), system_prompt,
-        user_prompt.len(), user_prompt,
-    )
+pub fn infer_input_log_content(prompt: &str) -> String {
+    format!("=== PROMPT ({} chars) ===\n{}\n", prompt.len(), prompt)
 }

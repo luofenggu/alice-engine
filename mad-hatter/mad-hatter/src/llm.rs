@@ -225,7 +225,7 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    stream_infer_with_on_text(channel, request, None)
+    stream_infer_with_on_text(channel, request, None, None)
 }
 
 /// Stream inference with optional text callback
@@ -241,6 +241,7 @@ pub fn stream_infer_with_on_text<'a, Req, Resp>(
     channel: &'a dyn LlmChannel,
     request: &Req,
     on_text: Option<Box<dyn FnMut(&str) + 'a>>,
+    on_input: Option<Box<dyn FnOnce(&str)>>,
 ) -> Result<StreamInfer<'a, Resp>, String>
 where
     Req: ToMarkdown + StructInput,
@@ -248,6 +249,9 @@ where
 {
     let token = generate_token();
     let prompt = build_prompt::<Req, Resp>(request, &token);
+    if let Some(cb) = on_input {
+        cb(&prompt);
+    }
     let stream = channel.infer_stream(prompt)?;
 
     Ok(StreamInfer {
@@ -419,7 +423,7 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    infer_with_on_text(channel, request, None)
+    infer_with_on_text(channel, request, None, None)
 }
 
 /// Full inference with optional text callback
@@ -430,12 +434,13 @@ pub fn infer_with_on_text<Req, Resp>(
     channel: &dyn LlmChannel,
     request: &Req,
     on_text: Option<Box<dyn FnMut(&str) + '_>>,
+    on_input: Option<Box<dyn FnOnce(&str)>>,
 ) -> Result<Vec<Resp>, String>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    let stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text)?;
+    let stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text, on_input)?;
     let mut results = Vec::new();
     for item in stream {
         results.push(item?);

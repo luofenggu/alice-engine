@@ -565,6 +565,7 @@ impl Alice {
             channel_configs: self.channel_configs.clone(),
             channel_index: self.channel_index.clone(),
             log_dir: self.log_dir.clone(),
+            infer_log_enabled: self.env_config.infer_log_enabled,
         }))
     }
 
@@ -655,12 +656,10 @@ impl Alice {
             self.instance.id
         );
         let channel = self.create_channel();
-        let compress_log_path = {
-            let infer_log_dir = self.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&self.instance.id);
-            std::fs::create_dir_all(&infer_log_dir).ok();
-            let ts = crate::policy::log_formats::format_infer_timestamp(&chrono::Local::now());
-            infer_log_dir.join(crate::policy::log_formats::infer_compress_out_filename(&ts))
-        };
+        let roll_infer_log_dir = self.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&self.instance.id);
+        std::fs::create_dir_all(&roll_infer_log_dir).ok();
+        let roll_ts = crate::policy::log_formats::format_infer_timestamp(&chrono::Local::now());
+        let compress_log_path = roll_infer_log_dir.join(crate::policy::log_formats::infer_compress_out_filename(&roll_ts));
         let mut compress_log_file = std::fs::OpenOptions::new()
             .create(true).append(true).open(&compress_log_path).ok();
         let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
@@ -670,7 +669,17 @@ impl Alice {
                 let _ = f.flush();
             }
         }));
-        let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &request, on_text)
+        let on_input: Option<Box<dyn FnOnce(&str)>> = if self.env_config.infer_log_enabled {
+            let in_log_path = roll_infer_log_dir.join(
+                crate::policy::log_formats::infer_in_filename(&roll_ts)
+            );
+            Some(Box::new(move |prompt: &str| {
+                crate::logging::write_infer_input_log(&in_log_path, prompt);
+            }))
+        } else {
+            None
+        };
+        let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &request, on_text, on_input)
             .map_err(|e| anyhow::anyhow!(e))?;
         let output = results.into_iter().next()
             .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
@@ -856,7 +865,7 @@ impl Alice {
         let request = build_beat_request(self, self.host.as_deref(), contacts_info, extra_skills);
 
         // 5. Set up inference log
-        let (log_path, _log_timestamp) =
+        let (log_path, log_timestamp) =
             crate::logging::create_infer_log_path(&self.log_dir, &self.instance.id);
         self.current_infer_log_path = Some(log_path.clone());
 
@@ -892,7 +901,17 @@ impl Alice {
                 let _ = f.flush();
             }
         }));
-        let stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text)
+        let on_input: Option<Box<dyn FnOnce(&str)>> = if self.env_config.infer_log_enabled {
+            let in_log_path = log_path.parent().unwrap().join(
+                crate::policy::log_formats::infer_in_filename(&log_timestamp)
+            );
+            Some(Box::new(move |prompt: &str| {
+                crate::logging::write_infer_input_log(&in_log_path, prompt);
+            }))
+        } else {
+            None
+        };
+        let stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input)
             .map_err(|e| {
                 let (backoff, rotation) = self.set_inference_backoff();
                 anyhow::anyhow!(
@@ -1085,6 +1104,7 @@ pub struct RollTask {
     pub channel_configs: Arc<RwLock<Vec<LlmConfig>>>,
     pub channel_index: Arc<std::sync::atomic::AtomicU64>,
     pub log_dir: PathBuf,
+    pub infer_log_enabled: bool,
 }
 
 pub struct CaptureTask {
@@ -1094,6 +1114,7 @@ pub struct CaptureTask {
     pub channel_configs: Arc<RwLock<Vec<LlmConfig>>>,
     pub channel_index: Arc<std::sync::atomic::AtomicU64>,
     pub log_dir: PathBuf,
+    pub infer_log_enabled: bool,
 }
 
 /// Build an OpenAiChannel from configs and atomic index (shared logic for Alice and background tasks).
@@ -1122,11 +1143,12 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
     let old_kb = task.memory.read_knowledge().len() as u64 / 1024;
 
     let channel = build_channel(&task.channel_configs, &task.channel_index);
-    let capture_log_path = {
+    let (capture_log_path, capture_ts) = {
         let infer_log_dir = task.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&task.instance_id);
         std::fs::create_dir_all(&infer_log_dir).ok();
         let ts = crate::policy::log_formats::format_infer_timestamp(&chrono::Local::now());
-        infer_log_dir.join(crate::policy::log_formats::infer_capture_out_filename(&ts))
+        let path = infer_log_dir.join(crate::policy::log_formats::infer_capture_out_filename(&ts));
+        (path, ts)
     };
     let mut capture_log_file = std::fs::OpenOptions::new()
         .create(true).append(true).open(&capture_log_path).ok();
@@ -1137,7 +1159,17 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
             let _ = f.flush();
         }
     }));
-    let results = infer_with_on_text::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request, on_text)
+    let on_input: Option<Box<dyn FnOnce(&str)>> = if task.infer_log_enabled {
+        let in_log_path = capture_log_path.parent().unwrap().join(
+            crate::policy::log_formats::infer_in_filename(&capture_ts)
+        );
+        Some(Box::new(move |prompt: &str| {
+            crate::logging::write_infer_input_log(&in_log_path, prompt);
+        }))
+    } else {
+        None
+    };
+    let results = infer_with_on_text::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request, on_text, on_input)
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no capture output"))?;
@@ -1168,11 +1200,12 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     );
 
     let channel = build_channel(&task.channel_configs, &task.channel_index);
-    let compress_log_path = {
+    let (compress_log_path, roll_ts) = {
         let infer_log_dir = task.log_dir.join(crate::policy::log_formats::INFER_DIR).join(&task.instance_id);
         std::fs::create_dir_all(&infer_log_dir).ok();
         let ts = crate::policy::log_formats::format_infer_timestamp(&chrono::Local::now());
-        infer_log_dir.join(crate::policy::log_formats::infer_compress_out_filename(&ts))
+        let path = infer_log_dir.join(crate::policy::log_formats::infer_compress_out_filename(&ts));
+        (path, ts)
     };
     let mut compress_log_file = std::fs::OpenOptions::new()
         .create(true).append(true).open(&compress_log_path).ok();
@@ -1183,7 +1216,17 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
             let _ = f.flush();
         }
     }));
-    let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &task.request, on_text)
+    let on_input: Option<Box<dyn FnOnce(&str)>> = if task.infer_log_enabled {
+        let in_log_path = compress_log_path.parent().unwrap().join(
+            crate::policy::log_formats::infer_in_filename(&roll_ts)
+        );
+        Some(Box::new(move |prompt: &str| {
+            crate::logging::write_infer_input_log(&in_log_path, prompt);
+        }))
+    } else {
+        None
+    };
+    let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &task.request, on_text, on_input)
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
@@ -1214,6 +1257,7 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
         channel_configs: alice.channel_configs.clone(),
         channel_index: alice.channel_index.clone(),
         log_dir: log_dir.to_path_buf(),
+        infer_log_enabled: alice.env_config.infer_log_enabled,
     };
 
     let chat = alice.instance.chat.clone();

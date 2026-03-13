@@ -171,19 +171,11 @@ pub fn create_infer_log_path(logs_dir: &Path, instance_id: &str) -> (PathBuf, St
 /// Only writes if `ALICE_INFER_LOG_IN` env var is set to `true` or `1`.
 /// Uses the same timestamp as the output log for correlation.
 pub fn write_infer_input_log(
-    logs_dir: &Path,
-    instance_id: &str,
-    timestamp: &str,
-    model: &str,
-    api_url: &str,
-    system_prompt: &str,
-    user_prompt: &str,
+    in_log_path: &Path,
+    prompt: &str,
 ) {
-    let infer_log_dir = logs_dir.join(logfmt::INFER_DIR).join(instance_id);
-    let in_log_path = infer_log_dir.join(logfmt::infer_in_filename(timestamp));
-    let in_log_content =
-        logfmt::infer_input_log_content(model, api_url, system_prompt, user_prompt);
-    if let Err(e) = std::fs::write(&in_log_path, &in_log_content) {
-        warn!("[INFER-{}] Failed to write in-log: {}", instance_id, e);
+    let in_log_content = logfmt::infer_input_log_content(prompt);
+    if let Err(e) = std::fs::write(in_log_path, &in_log_content) {
+        warn!("Failed to write in-log {:?}: {}", in_log_path, e);
     }
 }
