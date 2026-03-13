@@ -400,7 +400,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
 
     info!("[ACTION-{}] summary", tx.instance_id);
 
-    let current = alice.instance.memory.current.read().unwrap();
+    let current = alice.instance.memory.render_current_from_db().unwrap_or_default();
     if current.trim().is_empty() {
         return Ok(out::summary_empty());
     }
@@ -411,10 +411,11 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
         warn!("[ACTION-{}] summary: empty summary text", tx.instance_id);
     }
 
-    // Extract MSG IDs from current text
-    let msg_ids = crate::inference::beat::extract_msg_ids(&current);
-    let first_msg = msg_ids.first().cloned().unwrap_or_default();
-    let last_msg = msg_ids.last().cloned().unwrap_or_default();
+    // Query MSG IDs from DB (replaces extract_msg_ids text search)
+    let (first_msg_opt, last_msg_opt) = alice.instance.memory.query_msg_range()
+        .unwrap_or((None, None));
+    let first_msg = first_msg_opt.unwrap_or_default();
+    let last_msg = last_msg_opt.unwrap_or_default();
 
     // Build typed session entry
     let entry = SessionBlockEntry {
@@ -423,13 +424,14 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
         summary: summary_text.trim().to_string(),
     };
 
+    // Query msg count before commit (commit advances cursor, which would zero the count)
+    let msg_count = alice.instance.memory.query_msg_count().unwrap_or(0) as usize;
+
     // Commit: session block + clear current
     let block_name = alice
         .instance
         .memory
         .commit_summary(&entry, alice.session_block_kb)?;
-
-    let msg_count = msg_ids.len();
     Ok(out::summary_complete(
         msg_count,
         &first_msg,
@@ -454,6 +456,9 @@ fn execute_distill(
         .instance
         .memory
         .replace_action_block(target_action_id, summary.trim())?;
+
+    // DB dual-write: UPDATE action_log status='distilled'
+    alice.instance.memory.distill_action_log(target_action_id, summary.trim()).ok();
 
     info!(
         "[DISTILL-{}] Replaced action [{}]: {} -> {} chars (saved {})",
@@ -785,6 +790,26 @@ mod tests {
             )
             .unwrap();
 
+        // Insert action_log records so render_current_from_db() has content
+        alice.instance.memory.insert_action_log(
+            "20260223160000_aaaaaa", "read_msg",
+            &serde_json::to_string(&Action::ReadMsg).unwrap(),
+            "20260223160000",
+        ).unwrap();
+        alice.instance.memory.complete_action_log(
+            "20260223160000_aaaaaa", "read result with messages",
+            Some("20260223155500"), Some("20260223155500"),
+        ).unwrap();
+        alice.instance.memory.insert_action_log(
+            "20260223160100_bbbbbb", "send_msg",
+            &serde_json::to_string(&Action::SendMsg { recipient: "user1".into(), content: "hi back".into() }).unwrap(),
+            "20260223160100",
+        ).unwrap();
+        alice.instance.memory.complete_action_log(
+            "20260223160100_bbbbbb", "send success",
+            Some("20260223160100"), Some("20260223160100"),
+        ).unwrap();
+
         let action = Action::Summary {
             content: "Alice read a greeting and replied".to_string(),
         };
@@ -835,6 +860,17 @@ mod tests {
              ---------行为编号[20260223160000_aaaaaa]结束---------\n",
             )
             .unwrap();
+
+        // Insert action_log record so render_current_from_db() has content
+        alice.instance.memory.insert_action_log(
+            "20260223160000_aaaaaa", "send_msg",
+            &serde_json::to_string(&Action::SendMsg { recipient: "user".into(), content: "test".into() }).unwrap(),
+            "20260223160000",
+        ).unwrap();
+        alice.instance.memory.complete_action_log(
+            "20260223160000_aaaaaa", "send success",
+            Some("20260223160000"), Some("20260223160000"),
+        ).unwrap();
 
         let action = Action::Summary {
             content: "test summary".to_string(),

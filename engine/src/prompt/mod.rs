@@ -82,7 +82,7 @@ pub fn build_beat_request(
     let knowledge_content = load_knowledge_raw(alice);
     let history_content = alice.instance.memory.history.read().unwrap_or_default();
     let session_blocks = extract_all_session_blocks(alice);
-    let current_content = alice.instance.memory.current.read().unwrap_or_default();
+    let current_content = alice.instance.memory.render_current_from_db().unwrap_or_default();
     let skill_content = alice.instance.skill.read().unwrap_or_default();
     let unread_count: usize = alice.count_unread_messages().try_into().unwrap_or(0);
 
@@ -176,7 +176,7 @@ pub fn build_capture_request(alice: &Alice, summary_content: &str) -> CaptureReq
         }
     };
 
-    let current_content = alice.instance.memory.current.read().unwrap_or_default();
+    let current_content = alice.instance.memory.render_current_from_db().unwrap_or_default();
 
     CaptureRequest {
         knowledge_content,

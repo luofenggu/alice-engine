@@ -11,12 +11,18 @@
 //! - commit_summary() — summary transaction: write session → clear current
 //! - commit_history() — roll transaction: write history → delete old session block
 
+use crate::bindings::db::{
+    self, ActionLogRow, MemoryCursorRow, NewActionLog, ACTION_STATUS_DISTILLED,
+    ACTION_STATUS_DONE, ACTION_STATUS_EXECUTING,
+};
 use crate::persist::TextFile;
 use crate::policy::action_output as out;
 use anyhow::{Context, Result};
 use chrono::Local;
+use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// A single entry in a session block JSONL file.
 /// This struct is the single source of truth for session block format.
@@ -43,6 +49,10 @@ pub struct Memory {
     pub history: TextFile,
     /// current.txt — current session incremental memory
     pub current: TextFile,
+    /// Database connection for action_log and other tables
+    pub db: Arc<Mutex<SqliteConnection>>,
+    /// Instance ID for scoping DB queries
+    instance_id: String,
 }
 
 impl Memory {
@@ -53,7 +63,7 @@ impl Memory {
     ///
     /// Note: One-time migrations (e.g. keypoints.md → knowledge.md) should be
     /// performed BEFORE calling this, so TextFile::open reads the migrated content.
-    pub fn open(memory_dir: impl Into<PathBuf>) -> Result<Self> {
+    pub fn open(memory_dir: impl Into<PathBuf>, instance_id: &str) -> Result<Self> {
         let memory_dir = memory_dir.into();
         let sessions_dir = memory_dir.join("sessions");
 
@@ -71,12 +81,50 @@ impl Memory {
         let history = TextFile::open(sessions_dir.join("history.txt"))?;
         let current = TextFile::open(sessions_dir.join("current.txt"))?;
 
+        // Initialize memory database
+        let db_path = memory_dir.join("memory.db");
+        let mut conn = SqliteConnection::establish(
+            db_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid db path"))?,
+        )
+        .with_context(|| format!("Failed to open memory db: {}", db_path.display()))?;
+
+        // Create tables
+        diesel::sql_query(db::CREATE_ACTION_LOG_TABLE)
+            .execute(&mut conn)
+            .context("Failed to create action_log table")?;
+        diesel::sql_query(db::CREATE_ACTION_LOG_IDX_INSTANCE)
+            .execute(&mut conn)
+            .context("Failed to create action_log instance index")?;
+        diesel::sql_query(db::CREATE_ACTION_LOG_IDX_ACTION_ID)
+            .execute(&mut conn)
+            .context("Failed to create action_log action_id index")?;
+        diesel::sql_query(db::CREATE_ACTION_LOG_IDX_TYPE)
+            .execute(&mut conn)
+            .context("Failed to create action_log type index")?;
+        diesel::sql_query(db::CREATE_MEMORY_CURSOR_TABLE)
+            .execute(&mut conn)
+            .context("Failed to create memory_cursor table")?;
+        diesel::sql_query(db::CREATE_KNOWLEDGE_STORE_TABLE)
+            .execute(&mut conn)
+            .context("Failed to create knowledge_store table")?;
+        diesel::sql_query(db::CREATE_HISTORY_STORE_TABLE)
+            .execute(&mut conn)
+            .context("Failed to create history_store table")?;
+        diesel::sql_query(db::CREATE_SESSION_BLOCKS_TABLE)
+            .execute(&mut conn)
+            .context("Failed to create session_blocks table")?;
+        diesel::sql_query(db::CREATE_SESSION_BLOCKS_INDEX)
+            .execute(&mut conn)
+            .context("Failed to create session_blocks instance index")?;
+
         Ok(Self {
             memory_dir,
             sessions_dir,
             knowledge,
             history,
             current,
+            db: Arc::new(Mutex::new(conn)),
+            instance_id: instance_id.to_string(),
         })
     }
 
@@ -351,6 +399,9 @@ impl Memory {
         // Step 3: Clear current
         self.current.clear()?;
 
+        // Step 4: Advance DB cursor (marks action_log entries as consumed)
+        self.advance_cursor().ok();
+
         Ok(block_name)
     }
 
@@ -378,6 +429,313 @@ impl Memory {
         Ok(())
     }
 
+    // ── Action log (database) ──
+
+    /// Insert a new action log entry with status=executing (Write-Ahead Doing).
+    /// Called at the start of action execution.
+    pub fn insert_action_log(
+        &self,
+        action_id: &str,
+        action_type: &str,
+        action_data_json: &str,
+        created_at: &str,
+    ) -> Result<()> {
+        use crate::bindings::db::{action_log, NewActionLog, ACTION_STATUS_EXECUTING};
+
+        let new_row = NewActionLog {
+            instance_id: &self.instance_id,
+            action_id,
+            action_type,
+            action_data: action_data_json,
+            result_text: None,
+            status: ACTION_STATUS_EXECUTING,
+            msg_id_first: None,
+            msg_id_last: None,
+            created_at,
+        };
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        diesel::insert_into(action_log::table)
+            .values(&new_row)
+            .execute(conn)
+            .with_context(|| format!("[MEMORY-DB] Failed to insert action_log: {}", action_id))?;
+
+        tracing::debug!("[MEMORY-DB] Inserted action_log: {} ({})", action_id, action_type);
+        Ok(())
+    }
+
+    /// Complete an action log entry: update status to done, set result_text and msg_ids.
+    /// Called after action execution finishes.
+    /// Insert a completed note directly (for interrupt/reject events).
+    /// These are not Action enum variants but control flow markers.
+    pub fn insert_done_note(
+        &self,
+        action_id: &str,
+        action_type: &str,
+        text: &str,
+    ) -> Result<()> {
+        use crate::bindings::db::{action_log, NewActionLog, ACTION_STATUS_DONE};
+
+        let created_at = if action_id.len() >= 14 { &action_id[..14] } else { action_id };
+
+        let new_row = NewActionLog {
+            instance_id: &self.instance_id,
+            action_id,
+            action_type,
+            action_data: "",
+            result_text: Some(text),
+            status: ACTION_STATUS_DONE,
+            msg_id_first: None,
+            msg_id_last: None,
+            created_at,
+        };
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        diesel::insert_into(action_log::table)
+            .values(&new_row)
+            .execute(conn)
+            .with_context(|| format!("[MEMORY-DB] Failed to insert done note: {}", action_id))?;
+
+        tracing::debug!("[MEMORY-DB] Inserted done note: {} ({})", action_id, action_type);
+        Ok(())
+    }
+
+    pub fn complete_action_log(
+        &self,
+        action_id: &str,
+        result_text: &str,
+        msg_id_first: Option<&str>,
+        msg_id_last: Option<&str>,
+    ) -> Result<()> {
+        use crate::bindings::db::{action_log, ACTION_STATUS_DONE};
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let updated = diesel::update(
+            action_log::table
+                .filter(action_log::instance_id.eq(&self.instance_id))
+                .filter(action_log::action_id.eq(action_id)),
+        )
+        .set((
+            action_log::status.eq(ACTION_STATUS_DONE),
+            action_log::result_text.eq(Some(result_text)),
+            action_log::msg_id_first.eq(msg_id_first),
+            action_log::msg_id_last.eq(msg_id_last),
+        ))
+        .execute(conn)
+        .with_context(|| format!("[MEMORY-DB] Failed to complete action_log: {}", action_id))?;
+
+        if updated == 0 {
+            tracing::warn!("[MEMORY-DB] complete_action_log: no row found for {}", action_id);
+        }
+        Ok(())
+    }
+
+    /// Distill an action log entry: update status to distilled, replace result_text with summary.
+    pub fn distill_action_log(&self, action_id: &str, summary: &str) -> Result<(usize, usize)> {
+        use crate::bindings::db::{action_log, ActionLogRow, ACTION_STATUS_DISTILLED};
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+
+        // Read current result_text length for logging
+        let row: Option<ActionLogRow> = action_log::table
+            .filter(action_log::instance_id.eq(&self.instance_id))
+            .filter(action_log::action_id.eq(action_id))
+            .first(conn)
+            .optional()
+            .with_context(|| format!("[MEMORY-DB] Failed to query action_log: {}", action_id))?;
+
+        let old_len = row
+            .as_ref()
+            .and_then(|r| r.result_text.as_ref())
+            .map(|t| t.len())
+            .unwrap_or(0);
+
+        let updated = diesel::update(
+            action_log::table
+                .filter(action_log::instance_id.eq(&self.instance_id))
+                .filter(action_log::action_id.eq(action_id)),
+        )
+        .set((
+            action_log::status.eq(ACTION_STATUS_DISTILLED),
+            action_log::result_text.eq(Some(summary)),
+        ))
+        .execute(conn)
+        .with_context(|| format!("[MEMORY-DB] Failed to distill action_log: {}", action_id))?;
+
+        if updated == 0 {
+            anyhow::bail!("action_log [{}] not found for distill", action_id);
+        }
+
+        Ok((old_len, summary.len()))
+    }
+
+    /// Render current memory from action_log (all entries after cursor).
+    /// Returns the rendered string in the same format as current.txt.
+    pub fn render_current_from_db(&self) -> Result<String> {
+        use crate::bindings::db::{action_log, ActionLogRow, ACTION_STATUS_EXECUTING, ACTION_STATUS_DISTILLED};
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+
+        let cursor = self.get_cursor_inner(conn)?;
+
+        let rows: Vec<ActionLogRow> = action_log::table
+            .filter(action_log::instance_id.eq(&self.instance_id))
+            .filter(action_log::id.gt(cursor))
+            .order(action_log::id.asc())
+            .load(conn)
+            .context("[MEMORY-DB] Failed to load action_log for render")?;
+
+        let mut parts: Vec<String> = Vec::new();
+        for row in &rows {
+            parts.push(self.render_action_log_entry(row));
+        }
+
+        Ok(parts.join("\n"))
+    }
+
+    /// Render a single action_log entry in the current.txt format.
+    fn render_action_log_entry(&self, row: &crate::bindings::db::ActionLogRow) -> String {
+        use crate::bindings::db::{ACTION_STATUS_EXECUTING, ACTION_STATUS_DISTILLED};
+
+        let id = &row.action_id;
+        let start = out::action_block_start(id);
+        let end = out::action_block_end(id);
+
+        if row.status == ACTION_STATUS_DISTILLED {
+            // Distilled: show [已提炼] + summary
+            let summary = row.result_text.as_deref().unwrap_or("");
+            out::distilled_block(id, summary)
+        } else if row.status == ACTION_STATUS_EXECUTING {
+            // Executing: show doing description from action_data
+            let doing_desc = self.doing_description_from_data(&row.action_data, &row.action_type);
+            format!("{}\n{}\n---action executing, result pending---\n{}", start, doing_desc, end)
+        } else {
+            // Done: show result_text (which contains doing+done)
+            let result = row.result_text.as_deref().unwrap_or("");
+            format!("{}\n{}\n{}", start, result, end)
+        }
+    }
+
+    /// Extract doing description from action_data JSON.
+    /// Falls back to action_type if deserialization fails.
+    fn doing_description_from_data(&self, action_data: &str, action_type: &str) -> String {
+        use crate::inference::Action;
+        match serde_json::from_str::<Action>(action_data) {
+            Ok(action) => out::build_doing_description(&action),
+            Err(_) => {
+                tracing::warn!("[MEMORY-DB] Failed to deserialize action_data for doing description, action_type={}", action_type);
+                format!("execute {} (details unavailable)", action_type)
+            }
+        }
+    }
+
+    /// Advance cursor to the current maximum action_log id.
+    /// Called during summary to mark "current" as consumed.
+    pub fn advance_cursor(&self) -> Result<()> {
+        use crate::bindings::db::action_log;
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+
+        let max_id: Option<i64> = action_log::table
+            .filter(action_log::instance_id.eq(&self.instance_id))
+            .select(diesel::dsl::max(action_log::id))
+            .first(conn)
+            .context("[MEMORY-DB] Failed to query max action_log id")?;
+
+        let new_cursor = max_id.unwrap_or(0);
+        self.set_cursor_inner(conn, new_cursor)?;
+
+        tracing::info!("[MEMORY-DB] Advanced cursor to {}", new_cursor);
+        Ok(())
+    }
+
+    /// Query message ID range from action_log entries after cursor.
+    /// Returns (first_msg_id, last_msg_id) from read_msg and send_msg actions.
+    pub fn query_msg_range(&self) -> Result<(Option<String>, Option<String>)> {
+        use crate::bindings::db::action_log;
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let cursor = self.get_cursor_inner(conn)?;
+
+        // Find first non-null msg_id_first (ordered by id asc)
+        let first: Option<String> = action_log::table
+            .filter(action_log::instance_id.eq(&self.instance_id))
+            .filter(action_log::id.gt(cursor))
+            .filter(action_log::msg_id_first.is_not_null())
+            .order(action_log::id.asc())
+            .select(action_log::msg_id_first)
+            .first::<Option<String>>(conn)
+            .optional()
+            .context("[MEMORY-DB] Failed to query first msg_id")?
+            .flatten();
+
+        // Find last non-null msg_id_last (ordered by id desc)
+        let last: Option<String> = action_log::table
+            .filter(action_log::instance_id.eq(&self.instance_id))
+            .filter(action_log::id.gt(cursor))
+            .filter(action_log::msg_id_last.is_not_null())
+            .order(action_log::id.desc())
+            .select(action_log::msg_id_last)
+            .first::<Option<String>>(conn)
+            .optional()
+            .context("[MEMORY-DB] Failed to query last msg_id")?
+            .flatten();
+
+        Ok((first, last))
+    }
+
+    /// Count distinct message IDs in action_log entries after cursor.
+    /// Used by summary to report how many messages are covered.
+    pub fn query_msg_count(&self) -> Result<i64> {
+        use crate::bindings::db::action_log;
+        use diesel::dsl::sql;
+        use diesel::sql_types::BigInt;
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let cursor = self.get_cursor_inner(conn)?;
+
+        // Count rows that have at least one non-null msg_id field
+        let count: i64 = action_log::table
+            .filter(action_log::instance_id.eq(&self.instance_id))
+            .filter(action_log::id.gt(cursor))
+            .filter(action_log::msg_id_first.is_not_null())
+            .select(sql::<BigInt>("COUNT(*)"))
+            .first(conn)
+            .context("[MEMORY-DB] Failed to count msg_ids")?;
+
+        Ok(count)
+    }
+
+    // ── Cursor helpers (internal, conn already locked) ──
+
+    fn get_cursor_inner(&self, conn: &mut SqliteConnection) -> Result<i64> {
+        use crate::bindings::db::memory_cursor;
+
+        let row: Option<crate::bindings::db::MemoryCursorRow> = memory_cursor::table
+            .find(&self.instance_id)
+            .first(conn)
+            .optional()
+            .context("[MEMORY-DB] Failed to query cursor")?;
+
+        Ok(row.map(|r| r.current_cursor).unwrap_or(0))
+    }
+
+    fn set_cursor_inner(&self, conn: &mut SqliteConnection, cursor: i64) -> Result<()> {
+        use crate::bindings::db::memory_cursor;
+
+        let now = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+        diesel::replace_into(memory_cursor::table)
+            .values(&crate::bindings::db::MemoryCursorRow {
+                instance_id: self.instance_id.clone(),
+                current_cursor: cursor,
+                updated_at: now,
+            })
+            .execute(conn)
+            .context("[MEMORY-DB] Failed to update cursor")?;
+
+        Ok(())
+    }
+
     // ── Internal helpers ──
 
     fn session_block_path(&self, name: &str) -> PathBuf {
@@ -393,7 +751,7 @@ mod tests {
     fn setup() -> (TempDir, Memory) {
         let tmp = TempDir::new().unwrap();
         let memory_dir = tmp.path().join("memory");
-        let memory = Memory::open(&memory_dir).unwrap();
+        let memory = Memory::open(&memory_dir, "test-instance").unwrap();
         (tmp, memory)
     }
 
@@ -422,7 +780,7 @@ mod tests {
         std::fs::write(sessions_dir.join("history.txt"), "existing history").unwrap();
         std::fs::write(sessions_dir.join("current.txt"), "existing current").unwrap();
 
-        let memory = Memory::open(&memory_dir).unwrap();
+        let memory = Memory::open(&memory_dir, "test-instance").unwrap();
         assert_eq!(memory.knowledge.read().unwrap(), "existing knowledge");
         assert_eq!(memory.history.read().unwrap(), "existing history");
         assert_eq!(memory.current.read().unwrap(), "existing current");

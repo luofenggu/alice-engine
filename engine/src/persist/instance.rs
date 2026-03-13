@@ -119,7 +119,7 @@ impl Instance {
         // Open all persistent handles
         let settings =
             Document::open(&settings_path).context("Failed to open settings document")?;
-        let memory = Memory::open(&memory_dir).context("Failed to open memory")?;
+        let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
         let chat_db_path = data_dir.join("chat.db");
         let chat = ChatHistory::open(&chat_db_path).context("Failed to open chat history")?;
 
@@ -210,7 +210,7 @@ impl Instance {
             .with_context(|| format!("Failed to open settings: {}", settings_path.display()))?;
 
         // Open memory (after migration so TextFile reads migrated content)
-        let memory = Memory::open(&memory_dir).context("Failed to open memory")?;
+        let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
 
         // Open chat history
         let chat_db_path = data_dir.join("chat.db");
@@ -270,7 +270,7 @@ impl Instance {
         let settings = Document::open(&settings_path)
             .with_context(|| format!("Failed to open settings: {}", settings_path.display()))?;
 
-        let memory = Memory::open(&memory_dir).context("Failed to open memory")?;
+        let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
 
         info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
 

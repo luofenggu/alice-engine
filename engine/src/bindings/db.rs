@@ -22,8 +22,59 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    action_log (id) {
+        id -> BigInt,
+        instance_id -> Text,
+        action_id -> Text,
+        action_type -> Text,
+        action_data -> Text,
+        result_text -> Nullable<Text>,
+        status -> Text,
+        msg_id_first -> Nullable<Text>,
+        msg_id_last -> Nullable<Text>,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
+    memory_cursor (instance_id) {
+        instance_id -> Text,
+        current_cursor -> BigInt,
+        updated_at -> Text,
+    }
+}
+
+diesel::table! {
+    knowledge_store (instance_id) {
+        instance_id -> Text,
+        content -> Text,
+        updated_at -> Text,
+    }
+}
+
+diesel::table! {
+    history_store (instance_id) {
+        instance_id -> Text,
+        content -> Text,
+        updated_at -> Text,
+    }
+}
+
+diesel::table! {
+    session_blocks (id) {
+        id -> BigInt,
+        instance_id -> Text,
+        block_name -> Text,
+        first_msg -> Text,
+        last_msg -> Text,
+        summary -> Text,
+        created_at -> Text,
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Models — Queryable / Insertable structs
+// Models — messages
 // ---------------------------------------------------------------------------
 
 /// A complete message record (all columns, for SELECT queries).
@@ -54,6 +105,102 @@ pub struct NewMessage<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Models — action_log
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = action_log)]
+pub struct ActionLogRow {
+    pub id: i64,
+    pub instance_id: String,
+    pub action_id: String,
+    pub action_type: String,
+    pub action_data: String,
+    pub result_text: Option<String>,
+    pub status: String,
+    pub msg_id_first: Option<String>,
+    pub msg_id_last: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = action_log)]
+pub struct NewActionLog<'a> {
+    pub instance_id: &'a str,
+    pub action_id: &'a str,
+    pub action_type: &'a str,
+    pub action_data: &'a str,
+    pub result_text: Option<&'a str>,
+    pub status: &'a str,
+    pub msg_id_first: Option<&'a str>,
+    pub msg_id_last: Option<&'a str>,
+    pub created_at: &'a str,
+}
+
+// ---------------------------------------------------------------------------
+// Models — memory_cursor
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Queryable, Selectable, Insertable)]
+#[diesel(table_name = memory_cursor)]
+pub struct MemoryCursorRow {
+    pub instance_id: String,
+    pub current_cursor: i64,
+    pub updated_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Models — knowledge_store
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Queryable, Selectable, Insertable)]
+#[diesel(table_name = knowledge_store)]
+pub struct KnowledgeRow {
+    pub instance_id: String,
+    pub content: String,
+    pub updated_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Models — history_store
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Queryable, Selectable, Insertable)]
+#[diesel(table_name = history_store)]
+pub struct HistoryRow {
+    pub instance_id: String,
+    pub content: String,
+    pub updated_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Models — session_blocks
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = session_blocks)]
+pub struct SessionBlockRow {
+    pub id: i64,
+    pub instance_id: String,
+    pub block_name: String,
+    pub first_msg: String,
+    pub last_msg: String,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = session_blocks)]
+pub struct NewSessionBlock<'a> {
+    pub instance_id: &'a str,
+    pub block_name: &'a str,
+    pub first_msg: &'a str,
+    pub last_msg: &'a str,
+    pub summary: &'a str,
+    pub created_at: &'a str,
+}
+
+// ---------------------------------------------------------------------------
 // Constants — role/status/type values
 // ---------------------------------------------------------------------------
 
@@ -63,6 +210,11 @@ pub const ROLE_SYSTEM: &str = "system";
 pub const STATUS_READ: &str = "read";
 pub const STATUS_UNREAD: &str = "unread";
 pub const TYPE_CHAT: &str = "chat";
+
+// Action log status constants
+pub const ACTION_STATUS_EXECUTING: &str = "executing";
+pub const ACTION_STATUS_DONE: &str = "done";
+pub const ACTION_STATUS_DISTILLED: &str = "distilled";
 
 // ---------------------------------------------------------------------------
 // Schema migration SQL (raw SQL, Diesel doesn't auto-migrate)
@@ -79,6 +231,64 @@ pub const CREATE_MESSAGES_TABLE: &str =
         msg_type TEXT NOT NULL DEFAULT '',
         recipient TEXT NOT NULL DEFAULT ''
     )";
+
+pub const CREATE_ACTION_LOG_TABLE: &str =
+    "CREATE TABLE IF NOT EXISTS action_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        instance_id TEXT NOT NULL,
+        action_id TEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        action_data TEXT NOT NULL,
+        result_text TEXT,
+        status TEXT NOT NULL DEFAULT 'executing',
+        msg_id_first TEXT,
+        msg_id_last TEXT,
+        created_at TEXT NOT NULL
+    )";
+
+pub const CREATE_ACTION_LOG_IDX_INSTANCE: &str =
+    "CREATE INDEX IF NOT EXISTS idx_action_log_instance ON action_log(instance_id)";
+
+pub const CREATE_ACTION_LOG_IDX_ACTION_ID: &str =
+    "CREATE INDEX IF NOT EXISTS idx_action_log_action_id ON action_log(action_id)";
+
+pub const CREATE_ACTION_LOG_IDX_TYPE: &str =
+    "CREATE INDEX IF NOT EXISTS idx_action_log_type ON action_log(instance_id, action_type)";
+
+pub const CREATE_MEMORY_CURSOR_TABLE: &str =
+    "CREATE TABLE IF NOT EXISTS memory_cursor (
+        instance_id TEXT PRIMARY KEY,
+        current_cursor INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+    )";
+
+pub const CREATE_KNOWLEDGE_STORE_TABLE: &str =
+    "CREATE TABLE IF NOT EXISTS knowledge_store (
+        instance_id TEXT PRIMARY KEY,
+        content TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+    )";
+
+pub const CREATE_HISTORY_STORE_TABLE: &str =
+    "CREATE TABLE IF NOT EXISTS history_store (
+        instance_id TEXT PRIMARY KEY,
+        content TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+    )";
+
+pub const CREATE_SESSION_BLOCKS_TABLE: &str =
+    "CREATE TABLE IF NOT EXISTS session_blocks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        instance_id TEXT NOT NULL,
+        block_name TEXT NOT NULL,
+        first_msg TEXT NOT NULL,
+        last_msg TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )";
+
+pub const CREATE_SESSION_BLOCKS_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_session_blocks_instance ON session_blocks(instance_id)";
 
 pub const CHECK_RECIPIENT_COLUMN: &str = "SELECT recipient FROM messages LIMIT 0";
 

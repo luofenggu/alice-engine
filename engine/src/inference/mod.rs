@@ -55,9 +55,10 @@ pub fn safe_render(template: &str, vars: &[(&str, &str)]) -> String {
 
 use mad_hatter::FromMarkdown;
 use mad_hatter::llm::FromMarkdown as _;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, FromMarkdown)]
+#[derive(Debug, Clone, FromMarkdown, Serialize, Deserialize)]
 pub enum Action {
     /// Action：什么都不做（继续等待）
     /// idle是终结动作，输出idle后本轮推理结束，不能再输出任何action
@@ -161,6 +162,25 @@ pub enum Action {
         /// 提炼总结（替换原action的完整内容）
         summary: String,
     },
+}
+
+impl Action {
+    /// Returns the snake_case type name for the action_type column.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Action::Idle { .. } => "idle",
+            Action::ReadMsg => "read_msg",
+            Action::SendMsg { .. } => "send_msg",
+            Action::Thinking { .. } => "thinking",
+            Action::Script { .. } => "script",
+            Action::WriteFile { .. } => "write_file",
+            Action::ReplaceInFile { .. } => "replace_in_file",
+            Action::Summary { .. } => "summary",
+            Action::SetProfile { .. } => "set_profile",
+            Action::CreateInstance { .. } => "create_instance",
+            Action::Distill { .. } => "distill",
+        }
+    }
 }
 
 impl fmt::Display for Action {

@@ -842,6 +842,12 @@ impl Alice {
                 self.instance.memory.append_current(&doing_block).ok();
             }
 
+            // DB dual-write: insert action_log (executing)
+            let action_data_json = serde_json::to_string(&Action::ReadMsg).unwrap_or_default();
+            self.instance.memory.insert_action_log(
+                &action_id, Action::ReadMsg.type_name(), &action_data_json, &action_id[..14],
+            ).ok();
+
             let result = execute_action(&Action::ReadMsg, self, &mut tx);
             let done_text = match result {
                 Ok(ref output) if output.is_empty() => String::new(),
@@ -857,6 +863,15 @@ impl Alice {
                     record.done_text.as_deref(),
                 );
                 self.instance.memory.append_current(&done_block).ok();
+            }
+
+            // DB dual-write: complete action_log (done)
+            if let Some(record) = tx.action_records.last() {
+                let result_text = record.done_text.as_deref().unwrap_or("");
+                let (mf, ml) = extract_msg_ids_for_db("read_msg", result_text);
+                self.instance.memory.complete_action_log(
+                    &record.action_id, result_text, mf.as_deref(), ml.as_deref(),
+                ).ok();
             }
 
             self.last_was_idle = false;
@@ -946,6 +961,9 @@ impl Alice {
                 );
                 let interrupt_text = action_output::inference_interrupted().to_string();
                 self.instance.memory.append_current(&interrupt_text).ok();
+                // DB: record interrupt as done note
+                let note_id = action_output::generate_action_id();
+                self.instance.memory.insert_done_note(&note_id, "interrupt", &interrupt_text).ok();
                 break;
             }
 
@@ -966,6 +984,9 @@ impl Alice {
                             let reject_text =
                                 action_output::hallucination_defense_interrupted(&reason);
                             self.instance.memory.append_current(&reject_text).ok();
+                            // DB: record reject as done note
+                            let note_id = action_output::generate_action_id();
+                            self.instance.memory.insert_done_note(&note_id, "reject", &reject_text).ok();
                             break;
                         }
                     }
@@ -983,6 +1004,12 @@ impl Alice {
                         );
                         self.instance.memory.append_current(&doing_block).ok();
                     }
+
+                    // DB dual-write: insert action_log (executing)
+                    let action_data_json = serde_json::to_string(&action).unwrap_or_default();
+                    self.instance.memory.insert_action_log(
+                        &action_id, action.type_name(), &action_data_json, &action_id[..14],
+                    ).ok();
 
                     // Cancel idle if a prior send_msg failed in this beat
                     if tx.cancel_idle && matches!(action, Action::Idle { .. }) {
@@ -1003,6 +1030,12 @@ impl Alice {
                             );
                             self.instance.memory.append_current(&done_block).ok();
                         }
+
+                        // DB dual-write: complete action_log (done) for cancelled idle
+                        self.instance.memory.complete_action_log(
+                            &action_id, &action_output::idle_cancelled_after_send_failure(), None, None,
+                        ).ok();
+
                         continue;
                     }
 
@@ -1032,6 +1065,15 @@ impl Alice {
                         Err(e) => action_output::action_error(&e),
                     };
                     tx.record_done(&action_id, done_text);
+
+                    // DB dual-write: complete action_log (done)
+                    if let Some(record) = tx.action_records.last() {
+                        let result_text = record.done_text.as_deref().unwrap_or("");
+                        let (mf, ml) = extract_msg_ids_for_db(action.type_name(), result_text);
+                        self.instance.memory.complete_action_log(
+                            &record.action_id, result_text, mf.as_deref(), ml.as_deref(),
+                        ).ok();
+                    }
 
                     // Phase 2: append done block after execution
                     // Summary clears current during execution, so skip done block
@@ -1284,6 +1326,18 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
             let _ = chat.write_system_message(&notify_msg, &ts);
         }
     });
+}
+
+/// Extract msg_ids from a single action's result text for DB storage.
+/// Only read_msg and send_msg actions carry message IDs.
+fn extract_msg_ids_for_db(action_type: &str, result_text: &str) -> (Option<String>, Option<String>) {
+    match action_type {
+        "read_msg" | "send_msg" => {
+            let ids = crate::inference::beat::extract_msg_ids(result_text);
+            (ids.first().cloned(), ids.last().cloned())
+        }
+        _ => (None, None),
+    }
 }
 
 pub mod signal;
