@@ -19,7 +19,7 @@ use crate::persist::TextFile;
 
 const SETTINGS_FILE: &str = "settings.json";
 const SKILL_FILE: &str = "skill.md";
-const KNOWLEDGE_FILE: &str = "knowledge.md";
+
 
 /// Preset colors for new instances.
 const PRESET_COLORS: &[&str] = &[
@@ -205,22 +205,10 @@ impl Instance {
         // Open memory (DB-backed)
         let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
 
-        // One-time migration: file → DB
-        if memory.read_knowledge().is_empty() {
-            let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
-            if knowledge_file.exists() {
-                // Migrate from knowledge.md file
-                if let Ok(content) = std::fs::read_to_string(&knowledge_file) {
-                    if !content.trim().is_empty() {
-                        memory.write_knowledge(&content)?;
-                        info!("[INSTANCE-{}] Migrated knowledge.md → DB ({} bytes)", id, content.len());
-                    }
-                }
-            } else if let Some(content) = Self::migrate_knowledge(&knowledge_dir, &id)? {
-                // Migrate from old format: keypoints.md + knowledge/*.md
-                memory.write_knowledge(&content)?;
-            }
-        }
+        // One-time legacy migration: files → DB
+        let sessions_dir = memory_dir.join("sessions");
+        crate::legacy::migrate::migrate_all(&memory, &memory_dir, &sessions_dir)
+            .unwrap_or_else(|e| tracing::warn!("[INSTANCE-{}] Legacy migration: {}", id, e));
 
         // Open chat history
         let chat_db_path = data_dir.join("chat.db");
@@ -276,20 +264,10 @@ impl Instance {
 
         let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
 
-        // One-time migration: files → DB knowledge
-        if memory.read_knowledge().is_empty() {
-            let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
-            if knowledge_file.exists() {
-                if let Ok(content) = std::fs::read_to_string(&knowledge_file) {
-                    if !content.trim().is_empty() {
-                        memory.write_knowledge(&content)?;
-                        info!("[INSTANCE-{}] Migrated knowledge.md → DB ({} bytes)", id, content.len());
-                    }
-                }
-            } else if let Some(content) = Self::migrate_knowledge(&knowledge_dir, &id)? {
-                memory.write_knowledge(&content)?;
-            }
-        }
+        // One-time legacy migration: files → DB
+        let sessions_dir = memory_dir.join("sessions");
+        crate::legacy::migrate::migrate_all(&memory, &memory_dir, &sessions_dir)
+            .unwrap_or_else(|e| tracing::warn!("[INSTANCE-{}] Legacy migration: {}", id, e));
 
         info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
 
@@ -308,58 +286,6 @@ impl Instance {
     }
 
 
-    /// One-time migration: keypoints.md + knowledge/*.md → merged content.
-    /// Returns Some(content) if migration found content, None otherwise.
-    fn migrate_knowledge(
-        knowledge_dir: &Path,
-        instance_id: &str,
-    ) -> Result<Option<String>> {
-        let keypoints_path = knowledge_dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Invalid knowledge dir"))?
-            .join("keypoints.md");
-
-        if !keypoints_path.exists() {
-            return Ok(None);
-        }
-
-        let mut merged = String::new();
-        if let Ok(kp) = std::fs::read_to_string(&keypoints_path) {
-            if !kp.trim().is_empty() {
-                merged.push_str(&kp);
-            }
-        }
-
-        // Read knowledge/*.md files sorted by name
-        if let Ok(entries) = std::fs::read_dir(knowledge_dir) {
-            let mut files: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map_or(false, |ext| ext == "md"))
-                .collect();
-            files.sort_by_key(|e| e.file_name());
-            for entry in files {
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    if !content.trim().is_empty() {
-                        if !merged.is_empty() {
-                            merged.push_str("\n\n");
-                        }
-                        merged.push_str(&content);
-                    }
-                }
-            }
-        }
-
-        if merged.is_empty() {
-            Ok(None)
-        } else {
-            info!(
-                "[INSTANCE-{}] Migrated keypoints.md + knowledge/*.md → DB ({} bytes)",
-                instance_id,
-                merged.len()
-            );
-            Ok(Some(merged))
-        }
-    }
 }
 
 // ─── InstanceStore (grandparent) ─────────────────────────────────

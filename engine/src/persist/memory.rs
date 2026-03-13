@@ -598,6 +598,48 @@ impl Memory {
         Ok(())
     }
 
+    /// Batch insert session block entries within a single transaction.
+    /// Used by legacy migration to atomically migrate an entire session block file.
+    pub fn batch_insert_session_entries(
+        &self,
+        block_name: &str,
+        entries: &[SessionBlockEntry],
+    ) -> Result<()> {
+        use crate::bindings::db::session_blocks;
+        use diesel::Connection;
+
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let now = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+
+        conn.transaction(|conn| {
+            for entry in entries {
+                diesel::insert_into(session_blocks::table)
+                    .values(&NewSessionBlock {
+                        instance_id: &self.instance_id,
+                        block_name,
+                        first_msg: &entry.first_msg,
+                        last_msg: &entry.last_msg,
+                        summary: &entry.summary,
+                        created_at: &now,
+                    })
+                    .execute(conn)?;
+            }
+            Ok::<(), diesel::result::Error>(())
+        })
+        .context("[MEMORY-DB] Failed to batch insert session block entries")?;
+
+        tracing::debug!(
+            "[MEMORY-DB] Batch inserted {} entries for block {}",
+            entries.len(),
+            block_name
+        );
+        Ok(())
+    }
+
     /// Delete all entries for a specific block from DB.
     pub fn delete_session_block_db(&self, block_name: &str) -> Result<()> {
         use crate::bindings::db::session_blocks;

@@ -37,6 +37,7 @@ pub mod engine;
 pub mod hub;
 pub mod persist;
 pub mod bindings;
+pub mod legacy;
 pub mod prompt;
 pub mod util;
 pub mod service;
