@@ -438,10 +438,13 @@ pub fn truncate_stdout(text: &str) -> (String, bool) {
         return (text.to_string(), false);
     }
     let keep = STDOUT_TRUNCATE_LIMIT / 2;
-    let head = &text[..keep];
-    let tail = &text[text.len() - keep..];
+    // Use floor/ceil_char_boundary to avoid slicing mid-UTF8 character
+    let head_end = text.floor_char_boundary(keep);
+    let tail_start = text.ceil_char_boundary(text.len() - keep);
+    let head = &text[..head_end];
+    let tail = &text[tail_start..];
     (format!(
-        "{}...\n\n[truncated: {} bytes total, showing first and last {} bytes]\n\n...{}",
+        "{}...\n\n[truncated: {} bytes total, showing first and last ~{} bytes]\n\n...{}",
         head,
         text.len(),
         keep,
@@ -454,7 +457,9 @@ fn truncate_for_display(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         text.to_string()
     } else {
-        format!("{}...", &text[..max_len])
+        // Use floor_char_boundary to avoid slicing mid-UTF8 character
+        let end = text.floor_char_boundary(max_len);
+        format!("{}...", &text[..end])
     }
 }
 
