@@ -12,8 +12,8 @@
 //! - commit_history() — roll transaction: write history → delete old session block
 
 use crate::bindings::db::{
-    self, ActionLogRow, MemoryCursorRow, NewActionLog, ACTION_STATUS_DISTILLED,
-    ACTION_STATUS_DONE, ACTION_STATUS_EXECUTING,
+    self, ActionLogRow, HistoryRow, KnowledgeRow, MemoryCursorRow, NewActionLog, NewSessionBlock, SessionBlockRow,
+    ACTION_STATUS_DISTILLED, ACTION_STATUS_DONE, ACTION_STATUS_EXECUTING,
 };
 use crate::persist::TextFile;
 use crate::policy::action_output as out;
@@ -326,10 +326,10 @@ impl Memory {
         entry: &SessionBlockEntry,
         session_block_kb: u32,
     ) -> Result<String> {
-        // Step 1: Resolve target block
-        let blocks = self.list_session_blocks()?;
+        // Step 1: Resolve target block (from DB)
+        let blocks = self.list_session_blocks_db()?;
         let block_name = if let Some(latest) = blocks.last() {
-            let size = self.session_block_size(latest);
+            let size = self.session_block_size_db(latest);
             if size < (session_block_kb as u64 * 1024) {
                 latest.clone()
             } else {
@@ -353,15 +353,10 @@ impl Memory {
             Local::now().format("%Y%m%d%H%M%S").to_string()
         };
 
-        // Step 2: Serialize and append
-        let jsonl_line =
-            serde_json::to_string(entry).context("Failed to serialize session block entry")? + "\n";
-        self.append_session_block(&block_name, &jsonl_line)?;
+        // Step 2: Insert entry into DB
+        self.insert_session_block_entry(&block_name, entry)?;
 
-        // Step 3: Clear current
-        self.current.clear()?;
-
-        // Step 4: Advance DB cursor (marks action_log entries as consumed)
+        // Step 3: Advance DB cursor (marks action_log entries as consumed)
         self.advance_cursor().ok();
 
         Ok(block_name)
@@ -379,11 +374,11 @@ impl Memory {
         // Step 1: Write idempotency marker before any mutation
         self.set_last_rolled(oldest_block_name);
 
-        // Step 2: Write history (atomic: tmp + rename)
-        self.history.write(new_history)?;
+        // Step 2: Write history to DB
+        self.write_history(new_history)?;
 
-        // Step 3: Delete oldest session block
-        self.delete_session_block(oldest_block_name)?;
+        // Step 3: Delete oldest session block from DB
+        self.delete_session_block_db(oldest_block_name)?;
 
         // Step 4: Clear marker after successful commit
         self.clear_last_rolled();
@@ -668,6 +663,173 @@ impl Memory {
         Ok(count)
     }
 
+    // ── Knowledge store (DB) ──
+
+    /// Write knowledge content to DB (UPSERT).
+    pub fn write_knowledge(&self, content: &str) -> Result<()> {
+        use crate::bindings::db::knowledge_store;
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let now = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+        diesel::replace_into(knowledge_store::table)
+            .values(&KnowledgeRow {
+                instance_id: self.instance_id.clone(),
+                content: content.to_string(),
+                updated_at: now,
+            })
+            .execute(conn)
+            .context("[MEMORY-DB] Failed to write knowledge")?;
+        Ok(())
+    }
+
+    /// Read knowledge content from DB. Returns empty string if no record.
+    pub fn read_knowledge(&self) -> String {
+        use crate::bindings::db::knowledge_store;
+
+        let conn = &mut *match self.db.lock() {
+            Ok(c) => c,
+            Err(_) => return String::new(),
+        };
+        knowledge_store::table
+            .find(&self.instance_id)
+            .select(knowledge_store::content)
+            .first::<String>(conn)
+            .unwrap_or_default()
+    }
+
+    // ── History store (DB) ──
+
+    /// Write history content to DB (UPSERT).
+    pub fn write_history(&self, content: &str) -> Result<()> {
+        use crate::bindings::db::history_store;
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let now = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+        diesel::replace_into(history_store::table)
+            .values(&HistoryRow {
+                instance_id: self.instance_id.clone(),
+                content: content.to_string(),
+                updated_at: now,
+            })
+            .execute(conn)
+            .context("[MEMORY-DB] Failed to write history")?;
+        Ok(())
+    }
+
+    /// Read history content from DB. Returns empty string if no record.
+    pub fn read_history(&self) -> String {
+        use crate::bindings::db::history_store;
+
+        let conn = &mut *match self.db.lock() {
+            Ok(c) => c,
+            Err(_) => return String::new(),
+        };
+        history_store::table
+            .find(&self.instance_id)
+            .select(history_store::content)
+            .first::<String>(conn)
+            .unwrap_or_default()
+    }
+
+    // ── Session blocks (DB) ──
+
+    /// List distinct block names for this instance, ordered chronologically.
+    pub fn list_session_blocks_db(&self) -> Result<Vec<String>> {
+        use crate::bindings::db::session_blocks;
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let names: Vec<String> = session_blocks::table
+            .filter(session_blocks::instance_id.eq(&self.instance_id))
+            .select(session_blocks::block_name)
+            .distinct()
+            .order(session_blocks::block_name.asc())
+            .load(conn)
+            .context("[MEMORY-DB] Failed to list session blocks")?;
+        Ok(names)
+    }
+
+    /// Read session entries for a specific block from DB.
+    pub fn read_session_entries_db(&self, block_name: &str) -> Result<Vec<SessionBlockEntry>> {
+        use crate::bindings::db::session_blocks;
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let rows: Vec<SessionBlockRow> = session_blocks::table
+            .filter(session_blocks::instance_id.eq(&self.instance_id))
+            .filter(session_blocks::block_name.eq(block_name))
+            .order(session_blocks::id.asc())
+            .load(conn)
+            .context("[MEMORY-DB] Failed to read session entries")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| SessionBlockEntry {
+                first_msg: r.first_msg,
+                last_msg: r.last_msg,
+                summary: r.summary,
+            })
+            .collect())
+    }
+
+    /// Insert a session block entry into DB.
+    pub fn insert_session_block_entry(
+        &self,
+        block_name: &str,
+        entry: &SessionBlockEntry,
+    ) -> Result<()> {
+        use crate::bindings::db::session_blocks;
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let now = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+        diesel::insert_into(session_blocks::table)
+            .values(&NewSessionBlock {
+                instance_id: &self.instance_id,
+                block_name,
+                first_msg: &entry.first_msg,
+                last_msg: &entry.last_msg,
+                summary: &entry.summary,
+                created_at: &now,
+            })
+            .execute(conn)
+            .context("[MEMORY-DB] Failed to insert session block entry")?;
+        Ok(())
+    }
+
+    /// Delete all entries for a specific block from DB.
+    pub fn delete_session_block_db(&self, block_name: &str) -> Result<()> {
+        use crate::bindings::db::session_blocks;
+
+        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        diesel::delete(
+            session_blocks::table
+                .filter(session_blocks::instance_id.eq(&self.instance_id))
+                .filter(session_blocks::block_name.eq(block_name)),
+        )
+        .execute(conn)
+        .context("[MEMORY-DB] Failed to delete session block")?;
+        Ok(())
+    }
+
+    /// Estimate total size of a session block in bytes (sum of text field lengths).
+    pub fn session_block_size_db(&self, block_name: &str) -> u64 {
+        use crate::bindings::db::session_blocks;
+        use diesel::dsl::sql;
+        use diesel::sql_types::BigInt;
+
+        let conn = &mut *match self.db.lock() {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+        let size: i64 = session_blocks::table
+            .filter(session_blocks::instance_id.eq(&self.instance_id))
+            .filter(session_blocks::block_name.eq(block_name))
+            .select(sql::<BigInt>(
+                "COALESCE(SUM(LENGTH(first_msg) + LENGTH(last_msg) + LENGTH(summary)), 0)",
+            ))
+            .first(conn)
+            .unwrap_or(0);
+        size as u64
+    }
+
     // ── Cursor helpers (internal, conn already locked) ──
 
     fn get_cursor_inner(&self, conn: &mut SqliteConnection) -> Result<i64> {
@@ -837,27 +999,29 @@ mod tests {
         let block_name = memory.commit_summary(&entry, 100).unwrap();
 
         // Verify: session block written with serialized entry
-        let entries = memory.read_session_entries(&block_name).unwrap();
+        let entries = memory.read_session_entries_db(&block_name).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].summary, "session data");
         assert_eq!(entries[0].first_msg, "MSG001");
 
-        // Verify: knowledge updated
-        assert_eq!(memory.knowledge.read().unwrap(), "");
+        // Verify: knowledge not changed (no capture)
+        assert_eq!(memory.read_knowledge(), "");
 
-        // Verify: current cleared
-        assert_eq!(memory.current.read().unwrap(), "");
+        // Verify: current cleared (cursor advanced)
+        // current.txt no longer used, skip file check
     }
 
     #[test]
     fn test_commit_history() {
         let (_tmp, mut memory) = setup();
 
-        // Setup: write a session block and initial history
-        memory
-            .write_session_block("20260301120000", "old session data\n")
-            .unwrap();
-        memory.history.write("old history").unwrap();
+        // Setup: write a session block entry and initial history
+        memory.insert_session_block_entry("20260301120000", &SessionBlockEntry {
+            first_msg: "MSG001".to_string(),
+            last_msg: "MSG002".to_string(),
+            summary: "old session data".to_string(),
+        }).unwrap();
+        memory.write_history("old history");
 
         // Commit history (roll)
         memory
@@ -865,19 +1029,19 @@ mod tests {
             .unwrap();
 
         // Verify: history updated
-        assert_eq!(memory.history.read().unwrap(), "compressed new history");
+        assert_eq!(memory.read_history(), "compressed new history");
 
         // Verify: old session block deleted
         assert!(memory
-            .read_session_block("20260301120000")
-            .unwrap()
+            .read_session_entries_db("20260301120000")
+            .unwrap_or_default()
             .is_empty());
 
         // Verify: .last_rolled marker is cleared after successful commit
         assert!(memory.get_last_rolled().is_none());
 
         // Verify persistence
-        assert_eq!(memory.history.read().unwrap(), "compressed new history");
+        assert_eq!(memory.read_history(), "compressed new history");
     }
 
     #[test]
@@ -922,13 +1086,13 @@ mod tests {
 
         // Both went to same block
         assert_eq!(block1, block2);
-        let entries = memory.read_session_entries(&block1).unwrap();
+        let entries = memory.read_session_entries_db(&block1).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].summary, "first summary");
         assert_eq!(entries[1].summary, "second summary");
 
         // Knowledge is latest version
-        assert_eq!(memory.knowledge.read().unwrap(), "");
+        assert_eq!(memory.read_knowledge(), "");
     }
 
     #[test]

@@ -814,22 +814,22 @@ mod tests {
         assert!(result.contains("小结完成"));
         assert!(result.contains("2个消息ID"));
 
-        // current should be cleared
-        let current = alice.instance.memory.current.read().unwrap();
-        assert!(current.is_empty());
+        // current should be cleared (DB view: render_current_from_db returns empty after advance_cursor)
+        let current = alice.instance.memory.render_current_from_db().unwrap_or_default();
+        assert!(current.is_empty(), "render_current_from_db should be empty after summary, got: {}", current);
 
-        // session block should exist with JSONL content
-        let blocks = alice.instance.memory.list_session_blocks().unwrap();
+        // session block should exist in DB
+        let blocks = alice.instance.memory.list_session_blocks_db().unwrap_or_default();
         assert_eq!(blocks.len(), 1);
-        let block_content = alice
+        let entries = alice
             .instance
             .memory
-            .read_session_block(&blocks[0])
-            .unwrap();
-        assert!(block_content.contains("first_msg"));
-        assert!(block_content.contains("20260223155500"));
-        assert!(block_content.contains("20260223160100"));
-        assert!(block_content.contains("Alice read a greeting and replied"));
+            .read_session_entries_db(&blocks[0])
+            .unwrap_or_default();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].first_msg, "20260223155500");
+        assert_eq!(entries[0].last_msg, "20260223160100");
+        assert!(entries[0].summary.contains("Alice read a greeting and replied"));
     }
 
     #[test]
@@ -837,14 +837,15 @@ mod tests {
         let (mut alice, mut tx, _tmp) = setup();
 
         // Pre-fill a session block to exceed the size limit
-        let large_content = format!(
-            "{{\"first_msg\":\"20260223100000\",\"last_msg\":\"20260223110000\",\"summary\":\"{}\"}}\n",
-            "x".repeat(alice.session_block_kb as usize * 1024)
-        );
+        let large_entry = crate::persist::SessionBlockEntry {
+            first_msg: "20260223100000".to_string(),
+            last_msg: "20260223110000".to_string(),
+            summary: "x".repeat(alice.session_block_kb as usize * 1024),
+        };
         alice
             .instance
             .memory
-            .append_session_block("20260223100000", &large_content)
+            .insert_session_block_entry("20260223100000", &large_entry)
             .unwrap();
 
         // Write current with MSG markers
@@ -876,7 +877,7 @@ mod tests {
         assert!(result.contains("小结完成"));
 
         // Should have 2 blocks now (old full one + new one)
-        let blocks = alice.instance.memory.list_session_blocks().unwrap();
+        let blocks = alice.instance.memory.list_session_blocks_db().unwrap_or_default();
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0], "20260223100000");
         // Second block should be a new timestamp

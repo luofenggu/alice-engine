@@ -517,7 +517,7 @@ impl Alice {
     // ─── History Rolling ────────────────────────────────────────
 
     pub fn prepare_roll(&mut self) -> anyhow::Result<Option<RollTask>> {
-        let blocks = self.instance.memory.list_session_blocks()?;
+        let blocks = self.instance.memory.list_session_blocks_db()?;
         if (blocks.len() as u32) < self.session_blocks_limit {
             return Ok(None);
         }
@@ -531,7 +531,7 @@ impl Alice {
                     "[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
                     self.instance.id, oldest_block
                 );
-                self.instance.memory.delete_session_block(oldest_block)?;
+                self.instance.memory.delete_session_block_db(oldest_block).ok();
                 self.instance.memory.clear_last_rolled();
                 return Ok(None);
             }
@@ -548,9 +548,9 @@ impl Alice {
         );
 
         // Read and render the oldest block
-        let block_entries = self.instance.memory.read_session_entries(oldest_block)?;
+        let block_entries = self.instance.memory.read_session_entries_db(oldest_block)?;
         if block_entries.is_empty() {
-            self.instance.memory.delete_session_block(oldest_block)?;
+            self.instance.memory.delete_session_block_db(oldest_block).ok();
             return Ok(None);
         }
 
@@ -561,8 +561,8 @@ impl Alice {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        // Read current history
-        let current_history = self.instance.memory.history.read()?;
+        // Read current history from DB
+        let current_history = self.instance.memory.read_history();
 
         // Build LLM prompt via CompressRequest
         let content = if current_history.is_empty() {
@@ -595,7 +595,7 @@ impl Alice {
     ///
     /// @TRACE: MEMORY
     pub fn check_and_roll_history(&mut self) -> Result<Option<String>> {
-        let blocks = self.instance.memory.list_session_blocks()?;
+        let blocks = self.instance.memory.list_session_blocks_db()?;
         if (blocks.len() as u32) < self.session_blocks_limit {
             return Ok(None);
         }
@@ -611,7 +611,7 @@ impl Alice {
                     "[ROLL-{}] Idempotency: block {} was already compressed, deleting residual",
                     self.instance.id, oldest_block
                 );
-                self.instance.memory.delete_session_block(oldest_block)?;
+                self.instance.memory.delete_session_block_db(oldest_block)?;
                 self.instance.memory.clear_last_rolled();
                 return Ok(Some(crate::policy::messages::roll_deleted_residual(
                     oldest_block,
@@ -630,10 +630,10 @@ impl Alice {
         );
 
         // 1. Read and render the oldest block
-        let entries = self.instance.memory.read_session_entries(oldest_block)?;
+        let entries = self.instance.memory.read_session_entries_db(oldest_block)?;
         if entries.is_empty() {
             // Empty block, just delete it
-            self.instance.memory.delete_session_block(oldest_block)?;
+            self.instance.memory.delete_session_block_db(oldest_block)?;
             return Ok(Some(crate::policy::messages::roll_deleted_empty(
                 oldest_block,
             )));
@@ -654,8 +654,8 @@ impl Alice {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        // 2. Read current history (from memory handle)
-        let current_history = self.instance.memory.history.read()?;
+        // 2. Read current history from DB
+        let current_history = self.instance.memory.read_history();
 
         // 3. Build LLM request via CompressRequest
         let content = if current_history.is_empty() {
@@ -703,16 +703,12 @@ impl Alice {
             return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
         }
 
-        // 5. Commit history (marker lifecycle managed inside commit_history)
-        let old_kb = std::fs::metadata(self.instance.memory.history.path())
-            .map(|m| m.len() / 1024)
-            .unwrap_or(0);
+        // 5. Commit history via DB
+        let old_kb = self.instance.memory.read_history().len() as u64 / 1024;
         self.instance
             .memory
             .commit_history(clean_history, oldest_block)?;
-        let new_kb = std::fs::metadata(self.instance.memory.history.path())
-            .map(|m| m.len() / 1024)
-            .unwrap_or(0);
+        let new_kb = self.instance.memory.read_history().len() as u64 / 1024;
 
         let result = crate::policy::messages::roll_result(old_kb, new_kb);
         info!("[ROLL-{}] {}", self.instance.id, result);
@@ -1156,9 +1152,7 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         task.instance_id
     );
 
-    let old_kb = std::fs::metadata(task.memory.knowledge.path())
-        .map(|m| m.len() / 1024)
-        .unwrap_or(0);
+    let old_kb = task.memory.read_knowledge().len() as u64 / 1024;
 
     let channel = build_channel(&task.channel_configs, &task.channel_index);
     let capture_log_path = {
@@ -1186,11 +1180,9 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
         anyhow::bail!("LLM returned empty knowledge");
     }
 
-    task.memory.knowledge.write(clean_knowledge)?;
+    task.memory.write_knowledge(clean_knowledge)?;
 
-    let new_kb = std::fs::metadata(task.memory.knowledge.path())
-        .map(|m| m.len() / 1024)
-        .unwrap_or(0);
+    let new_kb = task.memory.read_knowledge().len() as u64 / 1024;
 
     let result = crate::policy::messages::capture_result(old_kb, new_kb);
     info!("[CAPTURE-{}] Background: {}", task.instance_id, result);
@@ -1235,14 +1227,10 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     }
 
     // Commit via Memory (marker → write history → delete block → clear marker)
-    let old_kb = std::fs::metadata(task.memory.history.path())
-        .map(|m| m.len() / 1024)
-        .unwrap_or(0);
+    let old_kb = task.memory.read_history().len() as u64 / 1024;
     task.memory
         .commit_history(clean_history, &task.oldest_block)?;
-    let new_kb = std::fs::metadata(task.memory.history.path())
-        .map(|m| m.len() / 1024)
-        .unwrap_or(0);
+    let new_kb = task.memory.read_history().len() as u64 / 1024;
 
     let result = crate::policy::messages::roll_result(old_kb, new_kb);
     info!("[ROLL-{}] Background: {}", task.instance_id, result);

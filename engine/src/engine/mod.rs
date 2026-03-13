@@ -217,12 +217,11 @@ impl AliceEngine {
         });
 
         // Write initial memory (imprint learning) on first creation
-        if alice.instance.memory.history.read()?.is_empty() {
+        if alice.instance.memory.read_history().is_empty() {
             alice
                 .instance
                 .memory
-                .history
-                .write(crate::inference::beat::INITIAL_HISTORY)
+                .write_history(crate::inference::beat::INITIAL_HISTORY)
                 .ok();
             info!("[INSTANCE] Initial history written for {}", name);
         }

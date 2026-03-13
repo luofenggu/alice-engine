@@ -80,7 +80,7 @@ pub fn build_beat_request(
     extra_skills: String,
 ) -> BeatRequest {
     let knowledge_content = load_knowledge_raw(alice);
-    let history_content = alice.instance.memory.history.read().unwrap_or_default();
+    let history_content = alice.instance.memory.read_history();
     let session_blocks = extract_all_session_blocks(alice);
     let current_content = alice.instance.memory.render_current_from_db().unwrap_or_default();
     let skill_content = alice.instance.skill.read().unwrap_or_default();
@@ -155,7 +155,7 @@ pub fn build_beat_request(
 /// Load knowledge raw content from memory.
 /// Returns raw content or empty string.
 pub fn load_knowledge_raw(alice: &Alice) -> String {
-    alice.instance.memory.knowledge.read().unwrap_or_default()
+    alice.instance.memory.read_knowledge()
 }
 
 /// Build capture request from current memory state.
@@ -189,21 +189,24 @@ pub fn build_capture_request(alice: &Alice, summary_content: &str) -> CaptureReq
 /// Extract all session blocks as structured data in chronological order.
 /// Each SessionBlockEntry becomes a SessionBlock.
 fn extract_all_session_blocks(alice: &Alice) -> Vec<SessionBlock> {
-    let block_files = alice
+    let block_names = alice
         .instance
         .memory
-        .list_session_blocks()
+        .list_session_blocks_db()
         .unwrap_or_default();
-    if block_files.is_empty() {
+    if block_names.is_empty() {
         return Vec::new();
     }
 
     let mut result = Vec::new();
-    for block_name in &block_files {
-        if let Ok(block_entries) = alice.instance.memory.read_session_entries(block_name) {
-            let blocks = extract_session_blocks_from_entries(&block_entries, alice);
-            result.extend(blocks);
-        }
+    for block_name in &block_names {
+        let block_entries = alice
+            .instance
+            .memory
+            .read_session_entries_db(block_name)
+            .unwrap_or_default();
+        let blocks = extract_session_blocks_from_entries(&block_entries, alice);
+        result.extend(blocks);
     }
     result
 }
@@ -215,6 +218,7 @@ fn extract_all_session_blocks(alice: &Alice) -> Vec<SessionBlock> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persist::SessionBlockEntry;
     use mad_hatter::llm::ToMarkdown;
     use tempfile::TempDir;
 
@@ -304,7 +308,7 @@ mod tests {
     #[test]
     fn test_build_beat_request_with_session_block() {
         let (mut alice, _tmp) = setup_alice();
-        alice.instance.memory.history.write("some history").unwrap();
+        alice.instance.memory.write_history("some history").unwrap();
         alice
             .instance
             .chat
@@ -312,11 +316,17 @@ mod tests {
             .unwrap()
             .write_user_message("hi there", "20260223120000")
             .unwrap();
-        let jsonl = r#"{"first_msg":"20260223120000","last_msg":"20260223120000","summary":"User said hi"}"#;
         alice
             .instance
             .memory
-            .append_session_block("20260223120000", jsonl)
+            .insert_session_block_entry(
+                "20260223120000",
+                &crate::persist::SessionBlockEntry {
+                    first_msg: "20260223120000".to_string(),
+                    last_msg: "20260223120000".to_string(),
+                    summary: "User said hi".to_string(),
+                },
+            )
             .unwrap();
 
         let request = build_beat_request(&alice, None, String::new(), String::new());
@@ -332,8 +342,7 @@ mod tests {
         alice
             .instance
             .memory
-            .knowledge
-            .write("raw knowledge content")
+            .write_knowledge("raw knowledge content")
             .unwrap();
         let raw = load_knowledge_raw(&alice);
         assert_eq!(raw, "raw knowledge content");
@@ -345,8 +354,7 @@ mod tests {
         alice
             .instance
             .memory
-            .knowledge
-            .write("# 泛准则\n- 谨慎加信任")
+            .write_knowledge("# 泛准则\n- 谨慎加信任")
             .unwrap();
         let request = build_beat_request(&alice, None, String::new(), String::new());
         let output = request.to_markdown();
