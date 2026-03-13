@@ -336,17 +336,7 @@ pub fn action_block_full(action_id: &str, doing_text: &str, done_text: Option<&s
     )
 }
 
-/// Build the "doing" block: start marker + doing text (no end marker).
-/// Used for write-ahead: written to current before action execution.
-pub fn action_block_doing(action_id: &str, doing_text: &str) -> String {
-    format!("{}\n{}", action_block_start(action_id), doing_text.trim_end_matches('\n'))
-}
 
-/// Build the "done" block: done text + end marker.
-/// Used for write-ahead: appended to current after action execution.
-pub fn action_block_done(action_id: &str, done_text: Option<&str>) -> String {
-    format!("{}\n{}\n", done_text.unwrap_or(""), action_block_end(action_id))
-}
 
 /// Build the "doing" text for an action (description + executing marker).
 pub fn build_doing_text(action: &Action) -> String {

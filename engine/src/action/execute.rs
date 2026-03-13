@@ -455,13 +455,10 @@ fn execute_distill(
     let (old_len, new_len) = alice
         .instance
         .memory
-        .replace_action_block(target_action_id, summary.trim())?;
-
-    // DB dual-write: UPDATE action_log status='distilled'
-    alice.instance.memory.distill_action_log(target_action_id, summary.trim()).ok();
+        .distill_action_log(target_action_id, summary.trim())?;
 
     info!(
-        "[DISTILL-{}] Replaced action [{}]: {} -> {} chars (saved {})",
+        "[DISTILL-{}] Distilled action [{}]: {} -> {} chars (saved {})",
         alice.instance.id,
         target_action_id,
         old_len,

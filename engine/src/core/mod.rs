@@ -833,16 +833,7 @@ impl Alice {
             let doing_text = action_output::build_doing_text(&Action::ReadMsg);
             let action_id = tx.record_doing(Action::ReadMsg, doing_text);
 
-            // Phase 1 (Write-Ahead): write doing block before execution
-            if let Some(record) = tx.action_records.last() {
-                let doing_block = action_output::action_block_doing(
-                    &record.action_id,
-                    &record.doing_text,
-                );
-                self.instance.memory.append_current(&doing_block).ok();
-            }
-
-            // DB dual-write: insert action_log (executing)
+            // DB: insert action_log (executing)
             let action_data_json = serde_json::to_string(&Action::ReadMsg).unwrap_or_default();
             self.instance.memory.insert_action_log(
                 &action_id, Action::ReadMsg.type_name(), &action_data_json, &action_id[..14],
@@ -856,16 +847,7 @@ impl Alice {
             };
             tx.record_done(&action_id, done_text);
 
-            // Phase 2: append done block after execution
-            if let Some(record) = tx.action_records.last() {
-                let done_block = action_output::action_block_done(
-                    &record.action_id,
-                    record.done_text.as_deref(),
-                );
-                self.instance.memory.append_current(&done_block).ok();
-            }
-
-            // DB dual-write: complete action_log (done)
+            // DB: complete action_log (done)
             if let Some(record) = tx.action_records.last() {
                 let result_text = record.done_text.as_deref().unwrap_or("");
                 let (mf, ml) = extract_msg_ids_for_db("read_msg", result_text);
@@ -960,7 +942,6 @@ impl Alice {
                     self.instance.id
                 );
                 let interrupt_text = action_output::inference_interrupted().to_string();
-                self.instance.memory.append_current(&interrupt_text).ok();
                 // DB: record interrupt as done note
                 let note_id = action_output::generate_action_id();
                 self.instance.memory.insert_done_note(&note_id, "interrupt", &interrupt_text).ok();
@@ -983,7 +964,6 @@ impl Alice {
                             warn!("{}", reason);
                             let reject_text =
                                 action_output::hallucination_defense_interrupted(&reason);
-                            self.instance.memory.append_current(&reject_text).ok();
                             // DB: record reject as done note
                             let note_id = action_output::generate_action_id();
                             self.instance.memory.insert_done_note(&note_id, "reject", &reject_text).ok();
@@ -996,16 +976,7 @@ impl Alice {
 
                     let action_id = tx.record_doing(action.clone(), doing_text);
 
-                    // Phase 1 (Write-Ahead): write doing block before execution
-                    if let Some(record) = tx.action_records.last() {
-                        let doing_block = action_output::action_block_doing(
-                            &record.action_id,
-                            &record.doing_text,
-                        );
-                        self.instance.memory.append_current(&doing_block).ok();
-                    }
-
-                    // DB dual-write: insert action_log (executing)
+                    // DB: insert action_log (executing)
                     let action_data_json = serde_json::to_string(&action).unwrap_or_default();
                     self.instance.memory.insert_action_log(
                         &action_id, action.type_name(), &action_data_json, &action_id[..14],
@@ -1022,16 +993,7 @@ impl Alice {
                         let done_text = action_output::build_done_text(&action_output::idle_cancelled_after_send_failure());
                         tx.record_done(&action_id, done_text);
 
-                        // Phase 2: append done block
-                        if let Some(record) = tx.action_records.last() {
-                            let done_block = action_output::action_block_done(
-                                &record.action_id,
-                                record.done_text.as_deref(),
-                            );
-                            self.instance.memory.append_current(&done_block).ok();
-                        }
-
-                        // DB dual-write: complete action_log (done) for cancelled idle
+                        // DB: complete action_log (done) for cancelled idle
                         self.instance.memory.complete_action_log(
                             &action_id, &action_output::idle_cancelled_after_send_failure(), None, None,
                         ).ok();
@@ -1066,7 +1028,7 @@ impl Alice {
                     };
                     tx.record_done(&action_id, done_text);
 
-                    // DB dual-write: complete action_log (done)
+                    // DB: complete action_log (done)
                     if let Some(record) = tx.action_records.last() {
                         let result_text = record.done_text.as_deref().unwrap_or("");
                         let (mf, ml) = extract_msg_ids_for_db(action.type_name(), result_text);
@@ -1075,17 +1037,7 @@ impl Alice {
                         ).ok();
                     }
 
-                    // Phase 2: append done block after execution
-                    // Summary clears current during execution, so skip done block
-                    if !matches!(action, Action::Summary { .. }) {
-                        if let Some(record) = tx.action_records.last() {
-                            let done_block = action_output::action_block_done(
-                                &record.action_id,
-                                record.done_text.as_deref(),
-                            );
-                            self.instance.memory.append_current(&done_block).ok();
-                        }
-                    }
+
 
                     // Blocking action: end inference after execution
                     if action.is_blocking() {
