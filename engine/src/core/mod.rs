@@ -47,7 +47,7 @@ use tracing::{error, info, warn};
 use crate::action::execute::execute_action;
 use mad_hatter::llm::{stream_infer_with_on_text, infer_with_on_text, OpenAiChannel, ToMarkdown};
 use crate::external::llm::LlmConfig;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::RwLock;
 use crate::inference::Action;
 use crate::persist::instance;
@@ -1327,138 +1327,7 @@ mod tests {
         assert!(alice.instance.memory.sessions_dir().exists());
     }
 
-    #[test]
-    fn test_history_read_write() {
-        let (alice, _tmp) = create_test_alice();
-        assert_eq!(alice.instance.memory.history.read().unwrap(), "");
-        alice
-            .instance
-            .memory
-            .history
-            .write("hello history")
-            .unwrap();
-        assert_eq!(
-            alice.instance.memory.history.read().unwrap(),
-            "hello history"
-        );
-    }
 
-    #[test]
-    fn test_current_read_write_append() {
-        let (alice, _tmp) = create_test_alice();
-        assert_eq!(alice.instance.memory.current.read().unwrap(), "");
-        alice.instance.memory.write_current("line1").unwrap();
-        assert_eq!(alice.instance.memory.current.read().unwrap(), "line1");
-        alice.instance.memory.append_current("line2").unwrap();
-        assert_eq!(
-            alice.instance.memory.current.read().unwrap(),
-            "line1\nline2"
-        );
-    }
-
-    #[test]
-    fn test_session_block_append_and_read() {
-        let (alice, _tmp) = create_test_alice();
-        assert_eq!(
-            alice
-                .instance
-                .memory
-                .read_session_block("20260223172500")
-                .unwrap(),
-            ""
-        );
-        alice
-            .instance
-            .memory
-            .append_session_block(
-                "20260223172500",
-                "{\"first_msg\":\"a\",\"last_msg\":\"b\",\"summary\":\"test\"}\n",
-            )
-            .unwrap();
-        let content = alice
-            .instance
-            .memory
-            .read_session_block("20260223172500")
-            .unwrap();
-        assert!(content.contains("summary"));
-    }
-
-    #[test]
-    fn test_session_block_size() {
-        let (alice, _tmp) = create_test_alice();
-        assert_eq!(
-            alice.instance.memory.session_block_size("20260223172500"),
-            0
-        );
-        alice
-            .instance
-            .memory
-            .append_session_block("20260223172500", "some content\n")
-            .unwrap();
-        assert!(alice.instance.memory.session_block_size("20260223172500") > 0);
-    }
-
-    #[test]
-    fn test_list_session_blocks() {
-        let (alice, _tmp) = create_test_alice();
-        alice
-            .instance
-            .memory
-            .append_session_block("20260223172500", "line\n")
-            .unwrap();
-        alice
-            .instance
-            .memory
-            .append_session_block("20260221150000", "line\n")
-            .unwrap();
-        alice
-            .instance
-            .memory
-            .append_session_block("20260222100000", "line\n")
-            .unwrap();
-        let blocks = alice.instance.memory.list_session_blocks().unwrap();
-        assert_eq!(
-            blocks,
-            vec!["20260221150000", "20260222100000", "20260223172500"]
-        );
-    }
-
-    #[test]
-    fn test_delete_session_block() {
-        let (alice, _tmp) = create_test_alice();
-        alice
-            .instance
-            .memory
-            .append_session_block("20260223172500", "line\n")
-            .unwrap();
-        assert!(!alice
-            .instance
-            .memory
-            .read_session_block("20260223172500")
-            .unwrap()
-            .is_empty());
-        alice
-            .instance
-            .memory
-            .delete_session_block("20260223172500")
-            .unwrap();
-        assert_eq!(
-            alice
-                .instance
-                .memory
-                .read_session_block("20260223172500")
-                .unwrap(),
-            ""
-        );
-    }
-
-    #[test]
-    fn test_session_files_in_sessions_dir() {
-        let (alice, _tmp) = create_test_alice();
-        alice.instance.memory.write_current("test content").unwrap();
-        let current_file = alice.instance.memory.sessions_dir().join("current.txt");
-        assert!(current_file.exists());
-    }
 
     #[test]
     fn test_transaction_creation() {

@@ -1,21 +1,20 @@
-//! Memory subsystem — manages all persistent memory files for an Alice instance.
+//! Memory subsystem — manages all persistent memory for an Alice instance.
 //!
-//! Memory is not a single Document but a composite of multiple persistence handles:
-//! - knowledge.md (TextFile) — persistent cognitive framework
-//! - history.txt (TextFile) — compressed long-term narrative
-//! - current.txt (TextFile) — current session incremental memory
-//! - sessions/*.jsonl — session block files (directory-based)
+//! All memory state is stored in SQLite (memory.db):
+//! - action_log — current session action records (replaces current.txt)
+//! - knowledge_store — persistent cognitive framework (replaces knowledge.md)
+//! - history_store — compressed long-term narrative (replaces history.txt)
+//! - session_blocks — session block entries (replaces sessions/*.jsonl)
+//! - memory_cursor — tracks rendering start position
 //!
-//! Multiple commit methods control flush order for crash safety:
-//! - append_current() — normal beat, write current to disk
-//! - commit_summary() — summary transaction: write session → clear current
-//! - commit_history() — roll transaction: write history → delete old session block
+//! Commit methods control flush order for crash safety:
+//! - commit_summary() — write session block → advance cursor
+//! - commit_history() — write history → delete old session block
 
 use crate::bindings::db::{
-    self, ActionLogRow, HistoryRow, KnowledgeRow, MemoryCursorRow, NewActionLog, NewSessionBlock, SessionBlockRow,
-    ACTION_STATUS_DISTILLED, ACTION_STATUS_DONE, ACTION_STATUS_EXECUTING,
+    self, HistoryRow, KnowledgeRow, NewSessionBlock, SessionBlockRow,
 };
-use crate::persist::TextFile;
+
 use crate::policy::action_output as out;
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -33,8 +32,7 @@ pub struct SessionBlockEntry {
     pub summary: String,
 }
 
-/// Session block file extension
-const SESSION_EXT: &str = "jsonl";
+
 
 /// Memory subsystem for an Alice instance.
 #[derive(Clone)]
@@ -43,13 +41,7 @@ pub struct Memory {
     memory_dir: PathBuf,
     /// Sessions directory (memory_dir/sessions)
     sessions_dir: PathBuf,
-    /// knowledge.md — persistent cognitive framework
-    pub knowledge: TextFile,
-    /// history.txt — compressed long-term narrative
-    pub history: TextFile,
-    /// current.txt — current session incremental memory
-    pub current: TextFile,
-    /// Database connection for action_log and other tables
+    /// Database connection for memory tables
     pub db: Arc<Mutex<SqliteConnection>>,
     /// Instance ID for scoping DB queries
     instance_id: String,
@@ -58,11 +50,8 @@ pub struct Memory {
 impl Memory {
     /// Open memory from the given memory directory.
     ///
-    /// Initializes TextFile handles for knowledge, history, and current.
+    /// Initializes SQLite database and creates all required tables.
     /// Creates directories if they don't exist.
-    ///
-    /// Note: One-time migrations (e.g. keypoints.md → knowledge.md) should be
-    /// performed BEFORE calling this, so TextFile::open reads the migrated content.
     pub fn open(memory_dir: impl Into<PathBuf>, instance_id: &str) -> Result<Self> {
         let memory_dir = memory_dir.into();
         let sessions_dir = memory_dir.join("sessions");
@@ -73,13 +62,6 @@ impl Memory {
         std::fs::create_dir_all(&sessions_dir).with_context(|| {
             format!("Failed to create sessions dir: {}", sessions_dir.display())
         })?;
-
-        // Clean up .tmp residuals from atomic_write after crash (self-contained cleanup)
-        Self::cleanup_tmp_residuals(&memory_dir);
-
-        let knowledge = TextFile::open(memory_dir.join("knowledge.md"))?;
-        let history = TextFile::open(sessions_dir.join("history.txt"))?;
-        let current = TextFile::open(sessions_dir.join("current.txt"))?;
 
         // Initialize memory database
         let db_path = memory_dir.join("memory.db");
@@ -120,41 +102,9 @@ impl Memory {
         Ok(Self {
             memory_dir,
             sessions_dir,
-            knowledge,
-            history,
-            current,
             db: Arc::new(Mutex::new(conn)),
             instance_id: instance_id.to_string(),
         })
-    }
-
-    /// Clean up .tmp files left by atomic_write after crash.
-    /// Recursively scans memory directory and subdirectories.
-    fn cleanup_tmp_residuals(dir: &Path) {
-        let mut cleaned = 0u32;
-        Self::cleanup_tmp_in_dir(dir, &mut cleaned);
-        if cleaned > 0 {
-            tracing::info!(
-                "[MEMORY] Cleaned {} .tmp residual files from previous crash",
-                cleaned
-            );
-        }
-    }
-
-    fn cleanup_tmp_in_dir(dir: &Path, cleaned: &mut u32) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if path.is_file() && path.extension().is_some_and(|ext| ext == "tmp") {
-                    if std::fs::remove_file(&path).is_ok() {
-                        tracing::info!("[MEMORY] Cleaned tmp file: {:?}", path);
-                        *cleaned += 1;
-                    }
-                } else if path.is_dir() {
-                    Self::cleanup_tmp_in_dir(&path, cleaned);
-                }
-            }
-        }
     }
 
     /// Root memory directory path.
@@ -197,130 +147,14 @@ impl Memory {
         self.sessions_dir.join(".last_rolled")
     }
 
-    // ── Current: convenience methods ──
-
-    /// Append text to current memory, with newline separator if not empty.
-    pub fn append_current(&self, text: &str) -> Result<()> {
-        let existing = self.current.read()?;
-        if existing.is_empty() {
-            self.current.write(text)
-        } else {
-            // Read existing + newline + new text, write atomically
-            let combined = format!("{}\n{}", existing, text);
-            self.current.write(&combined)
-        }
-    }
-
-    /// Replace current content.
-    pub fn write_current(&self, content: &str) -> Result<()> {
-        self.current.write(content)
-    }
-
-
-
-    // ── Session blocks ──
-
-    /// Read a session block file content.
-    pub fn read_session_block(&self, name: &str) -> Result<String> {
-        let path = self.session_block_path(name);
-        if !path.exists() {
-            return Ok(String::new());
-        }
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read session block: {}", path.display()))
-    }
-
-    /// Append lines to a session block file (creates if not exists).
-    /// Uses fsync for durability.
-    pub fn append_session_block(&self, name: &str, lines: &str) -> Result<()> {
-        use std::io::Write;
-        let path = self.session_block_path(name);
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .with_context(|| {
-                format!(
-                    "Failed to open session block for append: {}",
-                    path.display()
-                )
-            })?;
-        file.write_all(lines.as_bytes())
-            .with_context(|| format!("Failed to append to session block: {}", path.display()))?;
-        file.sync_all()
-            .with_context(|| format!("Failed to fsync session block: {}", path.display()))?;
-        Ok(())
-    }
-
-    /// Write (overwrite) a session block file.
-    pub fn write_session_block(&self, name: &str, content: &str) -> Result<()> {
-        let path = self.session_block_path(name);
-        std::fs::write(&path, content)
-            .with_context(|| format!("Failed to write session block: {}", path.display()))
-    }
-
-    /// Delete a session block file.
-    pub fn delete_session_block(&self, name: &str) -> Result<()> {
-        let path = self.session_block_path(name);
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("Failed to delete session block: {}", path.display()))?;
-        }
-        Ok(())
-    }
-
-    /// Get the size of a session block file in bytes.
-    pub fn session_block_size(&self, name: &str) -> u64 {
-        let path = self.session_block_path(name);
-        std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
-    }
-
-    /// List all session block names (sorted), without extension.
-    pub fn list_session_blocks(&self) -> Result<Vec<String>> {
-        let mut blocks = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&self.sessions_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == SESSION_EXT) {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        blocks.push(stem.to_string());
-                    }
-                }
-            }
-        }
-        blocks.sort();
-        Ok(blocks)
-    }
-
     // ── Commit methods (transaction-like, controlled flush order) ──
-
-
-
-    /// Read and deserialize all entries from a session block.
-    pub fn read_session_entries(&self, block_name: &str) -> Result<Vec<SessionBlockEntry>> {
-        let content = self.read_session_block(block_name)?;
-        let mut entries = Vec::new();
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(entry) = serde_json::from_str::<SessionBlockEntry>(line) {
-                entries.push(entry);
-            }
-        }
-        Ok(entries)
-    }
 
     /// Summary transaction:
     /// 1. Resolve target session block (append to existing if under size limit, else create new)
-    /// 2. Serialize entry and append to session block
-    /// 3. Clear current
+    /// 2. Insert entry into session_blocks DB table
+    /// 3. Advance cursor (marks action_log entries as consumed)
     ///
     /// Returns the block name used (for logging).
-    ///
-    /// Crash safety: write targets first, clear source last.
-    /// Worst case on crash: duplicate session entry + stale current (no data loss).
     pub fn commit_summary(
         &self,
         entry: &SessionBlockEntry,
@@ -364,8 +198,8 @@ impl Memory {
 
     /// Roll history transaction:
     /// 1. Write idempotency marker (so crash recovery knows what was being rolled)
-    /// 2. Write compressed history (atomic: tmp + rename)
-    /// 3. Delete oldest session block
+    /// 2. Write compressed history to DB
+    /// 3. Delete oldest session block from DB
     /// 4. Clear idempotency marker
     ///
     /// Crash safety: marker written first, cleared last.
@@ -529,7 +363,7 @@ impl Memory {
     /// Render current memory from action_log (all entries after cursor).
     /// Returns the rendered string in the same format as current.txt.
     pub fn render_current_from_db(&self) -> Result<String> {
-        use crate::bindings::db::{action_log, ActionLogRow, ACTION_STATUS_EXECUTING, ACTION_STATUS_DISTILLED};
+        use crate::bindings::db::{action_log, ActionLogRow};
 
         let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
 
@@ -860,11 +694,7 @@ impl Memory {
         Ok(())
     }
 
-    // ── Internal helpers ──
 
-    fn session_block_path(&self, name: &str) -> PathBuf {
-        self.sessions_dir.join(format!("{}.{}", name, SESSION_EXT))
-    }
 }
 
 #[cfg(test)]
@@ -887,96 +717,60 @@ mod tests {
     }
 
     #[test]
-    fn test_open_empty_files() {
+    fn test_open_empty_db() {
         let (_tmp, memory) = setup();
-        assert_eq!(memory.knowledge.read().unwrap(), "");
-        assert_eq!(memory.history.read().unwrap(), "");
-        assert_eq!(memory.current.read().unwrap(), "");
+        assert_eq!(memory.read_knowledge(), "");
+        assert_eq!(memory.read_history(), "");
+        assert_eq!(memory.render_current_from_db().unwrap(), "");
     }
 
     #[test]
-    fn test_open_existing_files() {
-        let tmp = TempDir::new().unwrap();
-        let memory_dir = tmp.path().join("memory");
-        let sessions_dir = memory_dir.join("sessions");
-        std::fs::create_dir_all(&sessions_dir).unwrap();
-        std::fs::write(memory_dir.join("knowledge.md"), "existing knowledge").unwrap();
-        std::fs::write(sessions_dir.join("history.txt"), "existing history").unwrap();
-        std::fs::write(sessions_dir.join("current.txt"), "existing current").unwrap();
-
-        let memory = Memory::open(&memory_dir, "test-instance").unwrap();
-        assert_eq!(memory.knowledge.read().unwrap(), "existing knowledge");
-        assert_eq!(memory.history.read().unwrap(), "existing history");
-        assert_eq!(memory.current.read().unwrap(), "existing current");
-    }
-
-    #[test]
-    fn test_append_current() {
-        let (_tmp, mut memory) = setup();
-        memory.append_current("line 1\n").unwrap();
-        memory.append_current("line 2\n").unwrap();
-        assert_eq!(memory.current.read().unwrap(), "line 1\n\nline 2\n");
-
-        // Verify persisted
-        assert_eq!(memory.current.read().unwrap(), "line 1\n\nline 2\n");
-    }
-
-    #[test]
-    fn test_write_current() {
-        let (_tmp, mut memory) = setup();
-        memory.append_current("old content").unwrap();
-        memory.write_current("new content").unwrap();
-        assert_eq!(memory.current.read().unwrap(), "new content");
-        assert_eq!(memory.current.read().unwrap(), "new content");
-    }
-
-    #[test]
-    fn test_session_blocks() {
+    fn test_session_blocks_db() {
         let (_tmp, memory) = setup();
 
         // Initially empty
-        assert_eq!(memory.list_session_blocks().unwrap(), Vec::<String>::new());
+        assert_eq!(memory.list_session_blocks_db().unwrap(), Vec::<String>::new());
 
-        // Write a block
-        memory
-            .write_session_block("20260301120000", "line1\nline2\n")
-            .unwrap();
+        // Insert entries
+        let entry = SessionBlockEntry {
+            first_msg: "MSG001".to_string(),
+            last_msg: "MSG002".to_string(),
+            summary: "test".to_string(),
+        };
+        memory.insert_session_block_entry("20260301120000", &entry).unwrap();
+
         assert_eq!(
-            memory.list_session_blocks().unwrap(),
+            memory.list_session_blocks_db().unwrap(),
             vec!["20260301120000"]
         );
 
-        // Read it back
-        let content = memory.read_session_block("20260301120000").unwrap();
-        assert_eq!(content, "line1\nline2\n");
+        // Read entries back
+        let entries = memory.read_session_entries_db("20260301120000").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].summary, "test");
 
-        // Append to it
-        memory
-            .append_session_block("20260301120000", "line3\n")
-            .unwrap();
-        let content = memory.read_session_block("20260301120000").unwrap();
-        assert_eq!(content, "line1\nline2\nline3\n");
-
-        // Size
-        assert!(memory.session_block_size("20260301120000") > 0);
-        assert_eq!(memory.session_block_size("nonexistent"), 0);
+        // Size > 0
+        assert!(memory.session_block_size_db("20260301120000") > 0);
+        assert_eq!(memory.session_block_size_db("nonexistent"), 0);
 
         // Delete
-        memory.delete_session_block("20260301120000").unwrap();
-        assert_eq!(memory.list_session_blocks().unwrap(), Vec::<String>::new());
-
-        // Delete nonexistent is ok
-        memory.delete_session_block("nonexistent").unwrap();
+        memory.delete_session_block_db("20260301120000").unwrap();
+        assert_eq!(memory.list_session_blocks_db().unwrap(), Vec::<String>::new());
     }
 
     #[test]
-    fn test_session_blocks_sorted() {
+    fn test_session_blocks_db_sorted() {
         let (_tmp, memory) = setup();
-        memory.write_session_block("20260301150000", "b").unwrap();
-        memory.write_session_block("20260301120000", "a").unwrap();
-        memory.write_session_block("20260301180000", "c").unwrap();
+        let entry = SessionBlockEntry {
+            first_msg: "a".to_string(),
+            last_msg: "b".to_string(),
+            summary: "s".to_string(),
+        };
+        memory.insert_session_block_entry("20260301150000", &entry).unwrap();
+        memory.insert_session_block_entry("20260301120000", &entry).unwrap();
+        memory.insert_session_block_entry("20260301180000", &entry).unwrap();
 
-        let blocks = memory.list_session_blocks().unwrap();
+        let blocks = memory.list_session_blocks_db().unwrap();
         assert_eq!(
             blocks,
             vec!["20260301120000", "20260301150000", "20260301180000"]
@@ -985,10 +779,7 @@ mod tests {
 
     #[test]
     fn test_commit_summary() {
-        let (_tmp, mut memory) = setup();
-
-        // Setup: some current content
-        memory.append_current("thinking about stuff\n").unwrap();
+        let (_tmp, memory) = setup();
 
         // Commit summary
         let entry = SessionBlockEntry {
@@ -1065,7 +856,7 @@ mod tests {
 
     #[test]
     fn test_commit_summary_appends_to_existing_session() {
-        let (_tmp, mut memory) = setup();
+        let (_tmp, memory) = setup();
 
         // First summary (small block limit so second appends to same block)
         let entry1 = SessionBlockEntry {
@@ -1076,7 +867,6 @@ mod tests {
         let block1 = memory.commit_summary(&entry1, 100).unwrap();
 
         // Second summary appends to same block (under size limit)
-        memory.append_current("more thinking\n").unwrap();
         let entry2 = SessionBlockEntry {
             first_msg: "MSG003".to_string(),
             last_msg: "MSG004".to_string(),

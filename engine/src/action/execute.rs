@@ -769,24 +769,6 @@ mod tests {
     fn test_execute_summary() {
         let (mut alice, mut tx, _tmp) = setup();
 
-        // Write content to current with MSG markers
-        alice
-            .instance
-            .memory
-            .write_current(
-                "---------行为编号[20260223160000_aaaaaa]开始---------\n\
-             你打开了收件箱，开始阅读来信。\n\
-             ---action executing, result pending---\n\n\
-             24007 [MSG:20260223155500]发来一条消息：\nhello\n\
-             ---------行为编号[20260223160000_aaaaaa]结束---------\n\
-             ---------行为编号[20260223160100_bbbbbb]开始---------\n\
-             you send a letter to [user1]: \nhi back\n\
-             ---action executing, result pending---\n\n\
-             send success [MSG:20260223160100]\n\
-             ---------行为编号[20260223160100_bbbbbb]结束---------\n",
-            )
-            .unwrap();
-
         // Insert action_log records so render_current_from_db() has content
         alice.instance.memory.insert_action_log(
             "20260223160000_aaaaaa", "read_msg",
@@ -846,17 +828,6 @@ mod tests {
             .instance
             .memory
             .insert_session_block_entry("20260223100000", &large_entry)
-            .unwrap();
-
-        // Write current with MSG markers
-        alice
-            .instance
-            .memory
-            .write_current(
-                "---------行为编号[20260223160000_aaaaaa]开始---------\n\
-             send success [MSG:20260223160000]\n\
-             ---------行为编号[20260223160000_aaaaaa]结束---------\n",
-            )
             .unwrap();
 
         // Insert action_log record so render_current_from_db() has content

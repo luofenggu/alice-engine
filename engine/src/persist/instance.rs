@@ -108,18 +108,17 @@ impl Instance {
         std::fs::write(&settings_path, &settings_json)
             .with_context(|| format!("Failed to write settings: {}", settings_path.display()))?;
 
-        // Write initial knowledge if provided
-        if let Some(k) = knowledge {
-            if !k.is_empty() {
-                let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
-                crate::util::atomic_write(&knowledge_file, k)?;
-            }
-        }
-
         // Open all persistent handles
         let settings =
             Document::open(&settings_path).context("Failed to open settings document")?;
         let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
+
+        // Write initial knowledge to DB if provided
+        if let Some(k) = knowledge {
+            if !k.is_empty() {
+                memory.write_knowledge(k)?;
+            }
+        }
         let chat_db_path = data_dir.join("chat.db");
         let chat = ChatHistory::open(&chat_db_path).context("Failed to open chat history")?;
 
@@ -198,19 +197,30 @@ impl Instance {
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("Failed to create data dir: {}", data_dir.display()))?;
 
-        // One-time migration: keypoints.md + knowledge/*.md → knowledge.md
-        let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
-        if !knowledge_file.exists() {
-            Self::migrate_knowledge(&knowledge_dir, &knowledge_file, &id)?;
-        }
-
         // Open settings
         let settings_path = instance_dir.join(SETTINGS_FILE);
         let settings = Document::open(&settings_path)
             .with_context(|| format!("Failed to open settings: {}", settings_path.display()))?;
 
-        // Open memory (after migration so TextFile reads migrated content)
+        // Open memory (DB-backed)
         let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
+
+        // One-time migration: file → DB
+        if memory.read_knowledge().is_empty() {
+            let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
+            if knowledge_file.exists() {
+                // Migrate from knowledge.md file
+                if let Ok(content) = std::fs::read_to_string(&knowledge_file) {
+                    if !content.trim().is_empty() {
+                        memory.write_knowledge(&content)?;
+                        info!("[INSTANCE-{}] Migrated knowledge.md → DB ({} bytes)", id, content.len());
+                    }
+                }
+            } else if let Some(content) = Self::migrate_knowledge(&knowledge_dir, &id)? {
+                // Migrate from old format: keypoints.md + knowledge/*.md
+                memory.write_knowledge(&content)?;
+            }
+        }
 
         // Open chat history
         let chat_db_path = data_dir.join("chat.db");
@@ -260,17 +270,26 @@ impl Instance {
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("Failed to create data dir: {}", data_dir.display()))?;
 
-        // One-time migration: keypoints.md + knowledge/*.md → knowledge.md
-        let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
-        if !knowledge_file.exists() {
-            Self::migrate_knowledge(&knowledge_dir, &knowledge_file, &id)?;
-        }
-
         let settings_path = instance_dir.join(SETTINGS_FILE);
         let settings = Document::open(&settings_path)
             .with_context(|| format!("Failed to open settings: {}", settings_path.display()))?;
 
         let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
+
+        // One-time migration: files → DB knowledge
+        if memory.read_knowledge().is_empty() {
+            let knowledge_file = memory_dir.join(KNOWLEDGE_FILE);
+            if knowledge_file.exists() {
+                if let Ok(content) = std::fs::read_to_string(&knowledge_file) {
+                    if !content.trim().is_empty() {
+                        memory.write_knowledge(&content)?;
+                        info!("[INSTANCE-{}] Migrated knowledge.md → DB ({} bytes)", id, content.len());
+                    }
+                }
+            } else if let Some(content) = Self::migrate_knowledge(&knowledge_dir, &id)? {
+                memory.write_knowledge(&content)?;
+            }
+        }
 
         info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
 
@@ -289,19 +308,19 @@ impl Instance {
     }
 
 
-    /// One-time migration: keypoints.md + knowledge/*.md → knowledge.md
+    /// One-time migration: keypoints.md + knowledge/*.md → merged content.
+    /// Returns Some(content) if migration found content, None otherwise.
     fn migrate_knowledge(
         knowledge_dir: &Path,
-        knowledge_file: &Path,
         instance_id: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         let keypoints_path = knowledge_dir
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Invalid knowledge dir"))?
             .join("keypoints.md");
 
         if !keypoints_path.exists() {
-            return Ok(());
+            return Ok(None);
         }
 
         let mut merged = String::new();
@@ -330,16 +349,16 @@ impl Instance {
             }
         }
 
-        if !merged.is_empty() {
-            crate::util::atomic_write(knowledge_file, &merged)?;
+        if merged.is_empty() {
+            Ok(None)
+        } else {
             info!(
-                "[INSTANCE-{}] Migrated keypoints.md + knowledge/*.md → knowledge.md ({} bytes)",
+                "[INSTANCE-{}] Migrated keypoints.md + knowledge/*.md → DB ({} bytes)",
                 instance_id,
                 merged.len()
             );
+            Ok(Some(merged))
         }
-
-        Ok(())
     }
 }
 
@@ -543,7 +562,7 @@ mod tests {
         )
         .unwrap();
 
-        let knowledge = instance.memory.knowledge.read().unwrap();
+        let knowledge = instance.memory.read_knowledge();
         assert!(knowledge.contains("Test Knowledge"));
         assert!(knowledge.contains("Hello world"));
     }
@@ -635,7 +654,7 @@ mod tests {
 
         // Open triggers migration
         let instance = Instance::open(&instance_dir).unwrap();
-        let knowledge = instance.memory.knowledge.read().unwrap();
+        let knowledge = instance.memory.read_knowledge();
         assert!(knowledge.contains("Keypoints"));
         assert!(knowledge.contains("Basics"));
     }
@@ -678,9 +697,7 @@ mod tests {
         assert_eq!(opened.id, id);
         assert!(opened
             .memory
-            .knowledge
-            .read()
-            .unwrap()
+            .read_knowledge()
             .contains("test knowledge"));
     }
 

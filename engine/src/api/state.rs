@@ -668,11 +668,7 @@ impl EngineState {
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
-            instance
-                .memory
-                .knowledge
-                .read()
-                .map_err(anyhow::Error::from)
+            anyhow::Ok(instance.memory.read_knowledge())
         })
         .await;
 
