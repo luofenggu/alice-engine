@@ -824,7 +824,7 @@ mod tests {
             last_msg: "MSG002".to_string(),
             summary: "old session data".to_string(),
         }).unwrap();
-        memory.write_history("old history");
+        let _ = memory.write_history("old history");
 
         // Commit history (roll)
         memory

@@ -33,11 +33,7 @@ pub fn migrate_all(memory: &Memory, memory_dir: &Path, sessions_dir: &Path) -> R
 
 // ── Knowledge migration ──
 
-/// Migrate knowledge.md (or keypoints.md + knowledge/*.md) → knowledge_store table.
-///
-/// Priority:
-/// 1. memory_dir/knowledge.md — direct migration
-/// 2. memory_dir/../keypoints.md + memory_dir/../knowledge/*.md — merge migration
+/// Migrate knowledge.md → knowledge_store table.
 fn migrate_knowledge(memory: &Memory, memory_dir: &Path) -> Result<()> {
     // Skip if DB already has knowledge
     if !memory.read_knowledge().is_empty() {
@@ -45,75 +41,22 @@ fn migrate_knowledge(memory: &Memory, memory_dir: &Path) -> Result<()> {
     }
 
     let knowledge_file = memory_dir.join("knowledge.md");
-
-    if knowledge_file.exists() {
-        // Direct migration from knowledge.md
-        let content = std::fs::read_to_string(&knowledge_file)
-            .with_context(|| format!("Failed to read {}", knowledge_file.display()))?;
-        if !content.trim().is_empty() {
-            memory.write_knowledge(&content)?;
-            rename_migrated(&knowledge_file)?;
-            info!(
-                "[LEGACY] Migrated knowledge.md → DB ({} bytes)",
-                content.len()
-            );
-        }
+    if !knowledge_file.exists() {
         return Ok(());
     }
 
-    // Try old format: keypoints.md + knowledge/*.md (both under memory_dir)
-    let keypoints_path = memory_dir.join("keypoints.md");
-    let knowledge_dir = memory_dir.join("knowledge");
-
-    if !keypoints_path.exists() && !knowledge_dir.exists() {
+    let content = std::fs::read_to_string(&knowledge_file)
+        .with_context(|| format!("Failed to read {}", knowledge_file.display()))?;
+    if content.trim().is_empty() {
         return Ok(());
     }
 
-    let mut merged = String::new();
-
-    if keypoints_path.exists() {
-        if let Ok(kp) = std::fs::read_to_string(&keypoints_path) {
-            if !kp.trim().is_empty() {
-                merged.push_str(&kp);
-            }
-        }
-    }
-
-    if knowledge_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&knowledge_dir) {
-            let mut files: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map_or(false, |ext| ext == "md"))
-                .collect();
-            files.sort_by_key(|e| e.file_name());
-            for entry in files {
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    if !content.trim().is_empty() {
-                        if !merged.is_empty() {
-                            merged.push_str("\n\n");
-                        }
-                        merged.push_str(&content);
-                    }
-                }
-            }
-        }
-    }
-
-    if !merged.is_empty() {
-        memory.write_knowledge(&merged)?;
-        // Rename source files
-        let _ = rename_migrated(&keypoints_path);
-        if knowledge_dir.exists() {
-            let _ = std::fs::rename(
-                &knowledge_dir,
-                knowledge_dir.with_extension("migrated"),
-            );
-        }
-        info!(
-            "[LEGACY] Migrated keypoints.md + knowledge/*.md → DB ({} bytes)",
-            merged.len()
-        );
-    }
+    memory.write_knowledge(&content)?;
+    rename_migrated(&knowledge_file)?;
+    info!(
+        "[LEGACY] Migrated knowledge.md → DB ({} bytes)",
+        content.len()
+    );
 
     Ok(())
 }
@@ -310,11 +253,6 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn create_test_memory(dir: &Path) -> Memory {
-        let memory_dir = dir.join("memory");
-        fs::create_dir_all(&memory_dir).unwrap();
-        Memory::open(&memory_dir, "test-instance").unwrap()
-    }
 
     #[test]
     fn test_migrate_knowledge_from_file() {
@@ -466,5 +404,141 @@ mod tests {
 
         assert!(!file.exists());
         assert!(tmp.path().join("test.txt.migrated").exists());
+    }
+
+    #[test]
+    fn test_migrate_sessions_multiple_files() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        let sessions_dir = memory_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+
+        // Create 3 jsonl files — should be migrated in filename order
+        let jsonl_a = r#"{"first_msg":"a1","last_msg":"a2","summary":"block A"}"#;
+        let jsonl_b = r#"{"first_msg":"b1","last_msg":"b2","summary":"block B1"}
+{"first_msg":"b3","last_msg":"b4","summary":"block B2"}"#;
+        let jsonl_c = r#"{"first_msg":"c1","last_msg":"c2","summary":"block C"}"#;
+
+        fs::write(sessions_dir.join("20260301000000.jsonl"), jsonl_a).unwrap();
+        fs::write(sessions_dir.join("20260302000000.jsonl"), jsonl_b).unwrap();
+        fs::write(sessions_dir.join("20260303000000.jsonl"), jsonl_c).unwrap();
+
+        let memory = Memory::open(&memory_dir, "test").unwrap();
+        migrate_sessions(&memory, &sessions_dir).unwrap();
+
+        let blocks = memory.list_session_blocks_db().unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0], "20260301000000");
+        assert_eq!(blocks[1], "20260302000000");
+        assert_eq!(blocks[2], "20260303000000");
+
+        // Verify entries count per block
+        let entries_a = memory.read_session_entries_db("20260301000000").unwrap();
+        assert_eq!(entries_a.len(), 1);
+        assert_eq!(entries_a[0].summary, "block A");
+
+        let entries_b = memory.read_session_entries_db("20260302000000").unwrap();
+        assert_eq!(entries_b.len(), 2);
+        assert_eq!(entries_b[0].summary, "block B1");
+        assert_eq!(entries_b[1].summary, "block B2");
+
+        // All files renamed
+        assert!(sessions_dir.join("20260301000000.jsonl.migrated").exists());
+        assert!(sessions_dir.join("20260302000000.jsonl.migrated").exists());
+        assert!(sessions_dir.join("20260303000000.jsonl.migrated").exists());
+    }
+
+    #[test]
+    fn test_migrate_current_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        let sessions_dir = memory_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+
+        let memory = Memory::open(&memory_dir, "test").unwrap();
+
+        // Pre-populate DB with an action_log entry
+        memory
+            .insert_done_note("existing_001", "some_action", "existing content")
+            .unwrap();
+
+        // Write current.txt that should NOT be migrated
+        fs::write(
+            sessions_dir.join("current.txt"),
+            "legacy current content",
+        )
+        .unwrap();
+
+        migrate_current(&memory, &sessions_dir).unwrap();
+
+        // File should NOT be renamed (migration was skipped)
+        assert!(sessions_dir.join("current.txt").exists());
+    }
+
+    #[test]
+    fn test_migrate_sessions_invalid_json_lines() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        let sessions_dir = memory_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+
+        // Mix of valid and invalid lines
+        let jsonl = r#"{"first_msg":"ok1","last_msg":"ok2","summary":"valid line 1"}
+this is not valid json
+{"first_msg":"ok3","last_msg":"ok4","summary":"valid line 2"}
+{"broken json
+"#;
+        fs::write(sessions_dir.join("20260301000000.jsonl"), jsonl).unwrap();
+
+        let memory = Memory::open(&memory_dir, "test").unwrap();
+        migrate_sessions(&memory, &sessions_dir).unwrap();
+
+        // Only valid lines should be imported
+        let entries = memory.read_session_entries_db("20260301000000").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].summary, "valid line 1");
+        assert_eq!(entries[1].summary, "valid line 2");
+
+        // File still renamed (partial import is OK)
+        assert!(sessions_dir.join("20260301000000.jsonl.migrated").exists());
+    }
+
+    #[test]
+    fn test_migrate_all_full() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        let sessions_dir = memory_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+
+        // Set up all 4 data types
+        fs::write(memory_dir.join("knowledge.md"), "full test knowledge").unwrap();
+        fs::write(sessions_dir.join("history.txt"), "full test history").unwrap();
+
+        let jsonl = r#"{"first_msg":"m1","last_msg":"m2","summary":"session entry"}"#;
+        fs::write(sessions_dir.join("20260301000000.jsonl"), jsonl).unwrap();
+
+        let current = "action content from current.txt";
+        fs::write(sessions_dir.join("current.txt"), current).unwrap();
+
+        let memory = Memory::open(&memory_dir, "test").unwrap();
+        migrate_all(&memory, &memory_dir, &sessions_dir).unwrap();
+
+        // Verify all 4 data types migrated
+        assert_eq!(memory.read_knowledge(), "full test knowledge");
+        assert_eq!(memory.read_history(), "full test history");
+
+        let blocks = memory.list_session_blocks_db().unwrap();
+        assert_eq!(blocks, vec!["20260301000000"]);
+        let entries = memory.read_session_entries_db("20260301000000").unwrap();
+        assert_eq!(entries.len(), 1);
+
+        let rendered = memory.render_current_from_db().unwrap();
+        assert!(rendered.contains(current));
+
+        // All files renamed
+        assert!(memory_dir.join("knowledge.md.migrated").exists());
+        assert!(sessions_dir.join("history.txt.migrated").exists());
+        assert!(sessions_dir.join("20260301000000.jsonl.migrated").exists());
+        assert!(sessions_dir.join("current.txt.migrated").exists());
     }
 }

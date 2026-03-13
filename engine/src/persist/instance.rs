@@ -550,41 +550,6 @@ mod tests {
         assert!(instance.instance_dir.join("data").exists());
     }
 
-    #[test]
-    fn test_knowledge_migration() {
-        let tmp = TempDir::new().unwrap();
-        let instance_dir = tmp.path().join("migr01");
-        std::fs::create_dir_all(&instance_dir).unwrap();
-
-        // Setup: keypoints.md in memory/
-        let memory_dir = instance_dir.join("memory");
-        let knowledge_dir = memory_dir.join("knowledge");
-        std::fs::create_dir_all(&knowledge_dir).unwrap();
-        std::fs::write(
-            memory_dir.join("keypoints.md"),
-            "# Keypoints\nImportant stuff",
-        )
-        .unwrap();
-        std::fs::write(knowledge_dir.join("01_basics.md"), "# Basics\nBasic info").unwrap();
-
-        // Write settings
-        let settings = Settings {
-            user_id: Some("user1".to_string()),
-            ..Default::default()
-        };
-        std::fs::write(
-            instance_dir.join(SETTINGS_FILE),
-            serde_json::to_string_pretty(&settings).unwrap(),
-        )
-        .unwrap();
-
-        // Open triggers migration
-        let instance = Instance::open(&instance_dir).unwrap();
-        let knowledge = instance.memory.read_knowledge();
-        assert!(knowledge.contains("Keypoints"));
-        assert!(knowledge.contains("Basics"));
-    }
-
     // ─── InstanceStore tests ─────────────────────────────────
 
     #[test]
