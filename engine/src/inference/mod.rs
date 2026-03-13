@@ -55,11 +55,12 @@ pub fn safe_render(template: &str, vars: &[(&str, &str)]) -> String {
 // ---------------------------------------------------------------------------
 
 use mad_hatter::FromMarkdown;
+use mad_hatter::ToMarkdown;
 use mad_hatter::llm::FromMarkdown as _;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, FromMarkdown, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromMarkdown, ToMarkdown, Serialize, Deserialize)]
 pub enum Action {
     /// Action：什么都不做（继续等待）
     /// idle是终结动作，输出idle后本轮推理结束，不能再输出任何action

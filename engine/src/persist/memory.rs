@@ -16,6 +16,7 @@ use crate::bindings::db::{
 };
 
 use crate::inference::output::{ActionOutput, ActionRecord};
+use mad_hatter::llm::ToMarkdown;
 use anyhow::{Context, Result};
 use chrono::Local;
 use diesel::prelude::*;
@@ -384,7 +385,7 @@ impl Memory {
         let mut parts: Vec<String> = Vec::new();
         for row in &rows {
             let record = ActionRecord::from_db_row(row);
-            parts.push(record.render());
+            parts.push(record.to_markdown());
         }
 
         Ok(parts.join("\n"))

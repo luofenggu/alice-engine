@@ -4,6 +4,7 @@
 //! ActionOutput enum mirrors Action enum — one output variant per action type.
 //! ActionRecord combines input + status + output for rendering.
 
+use mad_hatter::ToMarkdown;
 use serde::{Deserialize, Serialize};
 
 use crate::bindings::db::ActionLogRow;
@@ -16,7 +17,7 @@ const STDOUT_TRUNCATE_LIMIT: usize = 102_400;
 ///
 /// Each variant corresponds to an Action input variant.
 /// Serialized as JSON with `type` tag for storage in action_log.action_output.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToMarkdown)]
 #[serde(tag = "type")]
 pub enum ActionOutput {
     /// No output (idle, thinking)
@@ -133,7 +134,7 @@ pub enum ActionOutput {
 }
 
 /// A single message entry from read_msg.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToMarkdown)]
 pub struct ReadMsgEntry {
     /// Message role (user/agent/system)
     pub role: String,
@@ -156,12 +157,19 @@ pub enum ActionStatus {
 }
 
 /// Complete action record for rendering.
+#[derive(ToMarkdown)]
 pub struct ActionRecord {
+    /// action_id
     pub action_id: String,
+    #[markdown(skip)]
     pub action_type: String,
-    pub input: Action,
+    #[markdown(skip)]
     pub status: ActionStatus,
+    /// input
+    pub input: Option<Action>,
+    /// output
     pub output: Option<ActionOutput>,
+    /// distill_text
     pub distill_text: Option<String>,
 }
 
@@ -181,11 +189,11 @@ impl ActionRecord {
             _ => ActionStatus::Executing,
         };
 
-        // For distilled records, don't load output (save space in prompt)
-        let output = if status == ActionStatus::Distilled {
-            None
+        // For distilled records, don't load input or output (only distill_text)
+        let (final_input, output) = if status == ActionStatus::Distilled {
+            (None, None)
         } else {
-            row.action_output.as_deref().and_then(|s| {
+            let output = row.action_output.as_deref().and_then(|s| {
                 if s.is_empty() {
                     None
                 } else {
@@ -193,164 +201,22 @@ impl ActionRecord {
                         .ok()
                         .or_else(|| Some(ActionOutput::Note { text: s.to_string() }))
                 }
-            })
+            });
+            (Some(input), output)
         };
 
         ActionRecord {
             action_id: row.action_id.clone(),
             action_type: row.action_type.clone(),
-            input,
+            input: final_input,
             status,
             output,
             distill_text: row.distill_text.clone(),
         }
     }
-
-    /// Render this record for inclusion in the prompt current section.
-    pub fn render(&self) -> String {
-        let mut s = String::new();
-        let block_start = format!("---------行为编号[{}]开始---------\n", self.action_id);
-        let block_end = format!("---------行为编号[{}]结束---------\n", self.action_id);
-
-        match &self.status {
-            ActionStatus::Distilled => {
-                s.push_str(&block_start);
-                s.push_str("[已提炼] ");
-                if let Some(ref dt) = self.distill_text {
-                    s.push_str(dt);
-                }
-                s.push('\n');
-                s.push_str(&block_end);
-            }
-            ActionStatus::Executing => {
-                s.push_str(&block_start);
-                s.push_str(&describe_action_input(&self.input));
-                s.push_str("\n---action executing, result pending---\n");
-                s.push_str(&block_end);
-            }
-            ActionStatus::Done => {
-                s.push_str(&block_start);
-                s.push_str(&describe_action_input(&self.input));
-                s.push_str("\n---action executing, result pending---\n");
-                if let Some(ref output) = self.output {
-                    let rendered = output.render();
-                    if !rendered.is_empty() {
-                        s.push('\n');
-                        s.push_str(&rendered);
-                        s.push('\n');
-                    }
-                }
-                s.push_str(&block_end);
-            }
-        }
-        s
-    }
 }
 
 impl ActionOutput {
-    /// Render this output as human-readable text for the prompt.
-    pub fn render(&self) -> String {
-        match self {
-            ActionOutput::Empty => String::new(),
-
-            ActionOutput::ReadMsg { entries } => {
-                if entries.is_empty() {
-                    "收件箱为空，没有未读消息。\n".to_string()
-                } else {
-                    let mut s = String::new();
-                    for entry in entries {
-                        s.push_str(&render_msg_entry(entry));
-                        s.push('\n');
-                    }
-                    s
-                }
-            }
-
-            ActionOutput::SendMsg { msg_id } => {
-                format!("send success [MSG:{}]\n", msg_id)
-            }
-
-            ActionOutput::SendMsgFailed { error } => {
-                format!("{}\n", error)
-            }
-
-            ActionOutput::Script { stdout, exit_code, elapsed_secs, truncated: _ } => {
-                let mut s = format!("\n---exec result ({:.1}s)---\n", elapsed_secs);
-                s.push_str(stdout);
-                if !stdout.ends_with('\n') {
-                    s.push('\n');
-                }
-                if *exit_code != 0 {
-                    s.push_str(&format!("\n[exit code: {}]\n", exit_code));
-                }
-                s
-            }
-
-            ActionOutput::WriteFile { skeleton, bytes, lines } => {
-                let mut s = format!("write success ({} bytes, {} lines)\n", bytes, lines);
-                if !skeleton.is_empty() {
-                    s.push_str("skeleton:\n");
-                    s.push_str(skeleton);
-                    if !skeleton.ends_with('\n') {
-                        s.push('\n');
-                    }
-                }
-                s
-            }
-
-            ActionOutput::ReplaceInFile { match_count: _, before, after: _ } => {
-                format!("replaced 1 block(s) successfully\n  replaced '{}'\n", before)
-            }
-
-            ActionOutput::ReplaceInFileFailed { match_count, search_preview } => {
-                if *match_count == 0 {
-                    format!("replace failed: search text not found in file\n  search: '{}'\n", search_preview)
-                } else {
-                    format!("replace failed: search text matched {} times (must be unique)\n  search: '{}'\n", match_count, search_preview)
-                }
-            }
-
-            ActionOutput::Summary { block_name, knowledge_chars, msg_count, msg_range } => {
-                let mut s = format!("小结完成，已归档到session block [{}]\n", block_name);
-                s.push_str(&format!("知识库: {} 字符\n", knowledge_chars));
-                if *msg_count > 0 {
-                    s.push_str(&format!("{}个消息ID ({})\n", msg_count, msg_range));
-                } else {
-                    s.push_str("0个消息ID\n");
-                }
-                s
-            }
-
-            ActionOutput::SummaryEmpty => {
-                "nothing to summarize (current is empty)\n".to_string()
-            }
-
-            ActionOutput::Distill { old_bytes, new_bytes } => {
-                format!("distilled: {} bytes → {} bytes\n", old_bytes, new_bytes)
-            }
-
-            ActionOutput::SetProfile { updated } => {
-                format!("profile updated: {}\n", updated)
-            }
-
-            ActionOutput::SetProfileFailed { unknown_key } => {
-                format!("profile update failed: unknown key '{}'\n", unknown_key)
-            }
-
-            ActionOutput::CreateInstance { instance_id, name, knowledge_bytes } => {
-                format!("instance created: {} (id: {}, knowledge: {} bytes)\n", name, instance_id, knowledge_bytes)
-            }
-
-            ActionOutput::Note { text } => {
-                if text.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}\n", text)
-                }
-            }
-        }
-    }
-
     /// Extract msg_id from SendMsg variant.
     pub fn msg_id(&self) -> Option<&str> {
         match self {
@@ -366,51 +232,6 @@ impl ActionOutput {
                 entries.iter().map(|e| e.timestamp.as_str()).collect()
             }
             _ => vec![],
-        }
-    }
-}
-
-/// Generate a human-readable description of the action input (the "doing" line).
-pub fn describe_action_input(action: &Action) -> String {
-    match action {
-        Action::Idle { timeout_secs } => {
-            match timeout_secs {
-                Some(secs) => format!("idle ({}s)", secs),
-                None => "idle".to_string(),
-            }
-        }
-        Action::Thinking { content } => {
-            format!("记录思考: {}", content)
-        }
-        Action::ReadMsg => {
-            "你打开了收件箱，开始阅读来信。".to_string()
-        }
-        Action::SendMsg { recipient, content: _ } => {
-            format!("寄出信件给 {}", recipient)
-        }
-        Action::Script { content } => {
-            let preview = truncate_for_display(content, 80);
-            format!("execute script: \n{}", preview)
-        }
-        Action::WriteFile { path, content: _ } => {
-            format!("write file: {}", path)
-        }
-        Action::ReplaceInFile { path, search: _, replace: _ } => {
-            format!("replace in file [{}]", path)
-        }
-        Action::Summary { content } => {
-            let preview = truncate_for_display(content, 120);
-            format!("小结: {}", preview)
-        }
-        Action::Distill { target_action_id, summary } => {
-            let preview = truncate_for_display(summary, 80);
-            format!("提炼 [{}]: {}", target_action_id, preview)
-        }
-        Action::SetProfile { content } => {
-            format!("设置个人资料: {}", content)
-        }
-        Action::CreateInstance { name, knowledge } => {
-            format!("创建实例: {} (knowledge: {} bytes)", name, knowledge.len())
         }
     }
 }
@@ -438,7 +259,6 @@ pub fn truncate_stdout(text: &str) -> (String, bool) {
         return (text.to_string(), false);
     }
     let keep = STDOUT_TRUNCATE_LIMIT / 2;
-    // Use floor/ceil_char_boundary to avoid slicing mid-UTF8 character
     let head_end = text.floor_char_boundary(keep);
     let tail_start = text.ceil_char_boundary(text.len() - keep);
     let head = &text[..head_end];
@@ -457,7 +277,6 @@ fn truncate_for_display(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         text.to_string()
     } else {
-        // Use floor_char_boundary to avoid slicing mid-UTF8 character
         let end = text.floor_char_boundary(max_len);
         format!("{}...", &text[..end])
     }
@@ -507,37 +326,6 @@ mod tests {
     }
 
     #[test]
-    fn test_action_output_render_empty() {
-        let output = ActionOutput::Empty;
-        assert_eq!(output.render(), "");
-    }
-
-    #[test]
-    fn test_action_output_render_script() {
-        let output = ActionOutput::Script {
-            stdout: "hello world\n".into(),
-            exit_code: 0,
-            elapsed_secs: 1.5,
-            truncated: false,
-        };
-        let rendered = output.render();
-        assert!(rendered.contains("hello world"));
-        assert!(rendered.contains("1.5s"));
-    }
-
-    #[test]
-    fn test_action_output_render_script_nonzero_exit() {
-        let output = ActionOutput::Script {
-            stdout: "error\n".into(),
-            exit_code: 1,
-            elapsed_secs: 0.1,
-            truncated: false,
-        };
-        let rendered = output.render();
-        assert!(rendered.contains("[exit code: 1]"));
-    }
-
-    #[test]
     fn test_truncate_stdout_short() {
         let (text, truncated) = truncate_stdout("hello");
         assert_eq!(text, "hello");
@@ -551,20 +339,6 @@ mod tests {
         assert!(result.contains("[truncated"));
         assert!(result.len() < long.len());
         assert!(truncated);
-    }
-
-    #[test]
-    fn test_describe_action_input_idle() {
-        let desc = describe_action_input(&Action::Idle { timeout_secs: None });
-        assert_eq!(desc, "idle");
-        let desc = describe_action_input(&Action::Idle { timeout_secs: Some(120) });
-        assert!(desc.contains("120"));
-    }
-
-    #[test]
-    fn test_describe_action_input_read_msg() {
-        let desc = describe_action_input(&Action::ReadMsg);
-        assert!(desc.contains("收件箱"));
     }
 
     #[test]
@@ -600,4 +374,3 @@ mod tests {
         assert_eq!(ids, vec!["ts1", "ts2"]);
     }
 }
-
