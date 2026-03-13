@@ -77,8 +77,11 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
                     .to_compile_error();
             }
         },
+        Data::Enum(_) => {
+            return derive_to_markdown_enum(input);
+        }
         _ => {
-            return syn::Error::new_spanned(struct_name, "ToMarkdown only supports structs")
+            return syn::Error::new_spanned(struct_name, "ToMarkdown only supports structs or enums")
                 .to_compile_error();
         }
     };
@@ -148,6 +151,363 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
             }
         }
         impl ::mad_hatter::llm::StructInput for #struct_name {}
+    }
+}
+
+/// Generate `impl ToMarkdown for Enum` from derive attributes.
+fn derive_to_markdown_enum(input: DeriveInput) -> TokenStream {
+    let enum_name = &input.ident;
+
+    let variants_data = match &input.data {
+        Data::Enum(data) => &data.variants,
+        _ => unreachable!(),
+    };
+
+    // Name collision detection: enum name vs field names (case-insensitive)
+    {
+        let enum_lower = enum_name.to_string().to_lowercase();
+        for v in variants_data {
+            if let Fields::Named(named) = &v.fields {
+                for f in &named.named {
+                    let fname = f.ident.as_ref().unwrap().to_string();
+                    if fname.to_lowercase() == enum_lower {
+                        return syn::Error::new_spanned(
+                            f.ident.as_ref().unwrap(),
+                            format!("field name '{}' collides with enum name '{}' (case-insensitive). This would cause ambiguous separators in markdown format.", fname, enum_name)
+                        ).to_compile_error();
+                    }
+                }
+            }
+        }
+    }
+
+    // Generate match arms for to_markdown_depth
+    let depth_arms: Vec<TokenStream> = variants_data.iter().map(|v| {
+        let variant_ident = &v.ident;
+        let snake_name = to_snake_case(&variant_ident.to_string());
+
+        match &v.fields {
+            Fields::Unit => {
+                quote! {
+                    Self::#variant_ident => {
+                        __out.push_str(#snake_name);
+                        __out.push('\n');
+                    }
+                }
+            }
+            Fields::Named(named) => {
+                let field_bindings: Vec<TokenStream> = named.named.iter()
+                    .map(|f| {
+                        let fident = f.ident.as_ref().unwrap();
+                        if has_markdown_skip(&f.attrs) {
+                            let skip_ident = syn::Ident::new(&format!("_{}", fident), fident.span());
+                            quote! { #fident: #skip_ident }
+                        } else {
+                            quote! { #fident }
+                        }
+                    })
+                    .collect();
+                let field_renders: Vec<TokenStream> = named.named.iter().map(|f| {
+                    let fident = f.ident.as_ref().unwrap();
+                    let skip = has_markdown_skip(&f.attrs);
+                    if skip { return quote! {}; }
+                    let docs = extract_doc_comments(&f.attrs);
+                    let title = if docs.is_empty() {
+                        fident.to_string()
+                    } else {
+                        docs.join(" ")
+                    };
+                    let kind = classify_field_type(&f.ty);
+                    gen_enum_field_depth_render(fident, &title, &kind)
+                }).collect();
+                quote! {
+                    Self::#variant_ident { #(#field_bindings),* } => {
+                        __out.push_str(#snake_name);
+                        __out.push('\n');
+                        #(#field_renders)*
+                    }
+                }
+            }
+            Fields::Unnamed(_) => {
+                syn::Error::new_spanned(variant_ident, "ToMarkdown does not support tuple variants")
+                    .to_compile_error()
+            }
+        }
+    }).collect();
+
+    // Generate match arms for to_markdown_item
+    let item_arms: Vec<TokenStream> = variants_data.iter().map(|v| {
+        let variant_ident = &v.ident;
+        let snake_name = to_snake_case(&variant_ident.to_string());
+
+        match &v.fields {
+            Fields::Unit => {
+                quote! {
+                    Self::#variant_ident => {
+                        __out.push_str(#snake_name);
+                        __out.push('\n');
+                    }
+                }
+            }
+            Fields::Named(named) => {
+                let field_bindings: Vec<TokenStream> = named.named.iter()
+                    .map(|f| {
+                        let fident = f.ident.as_ref().unwrap();
+                        if has_markdown_skip(&f.attrs) {
+                            let skip_ident = syn::Ident::new(&format!("_{}", fident), fident.span());
+                            quote! { #fident: #skip_ident }
+                        } else {
+                            quote! { #fident }
+                        }
+                    })
+                    .collect();
+                let field_renders: Vec<TokenStream> = named.named.iter().map(|f| {
+                    let fident = f.ident.as_ref().unwrap();
+                    let skip = has_markdown_skip(&f.attrs);
+                    if skip { return quote! {}; }
+                    let field_name = fident.to_string();
+                    let kind = classify_field_type(&f.ty);
+                    gen_enum_field_item_render(fident, &field_name, &kind)
+                }).collect();
+                quote! {
+                    Self::#variant_ident { #(#field_bindings),* } => {
+                        __out.push_str(#snake_name);
+                        __out.push('\n');
+                        #(#field_renders)*
+                    }
+                }
+            }
+            Fields::Unnamed(_) => {
+                syn::Error::new_spanned(variant_ident, "ToMarkdown does not support tuple variants")
+                    .to_compile_error()
+            }
+        }
+    }).collect();
+
+    quote! {
+        impl ::mad_hatter::llm::ToMarkdown for #enum_name {
+            fn to_markdown_depth(&self, __depth: usize) -> ::std::string::String {
+                let mut __out = ::std::string::String::new();
+                match self {
+                    #(#depth_arms)*
+                }
+                __out
+            }
+            fn to_markdown_item(&self) -> ::std::string::String {
+                let mut __out = ::std::string::String::new();
+                match self {
+                    #(#item_arms)*
+                }
+                __out
+            }
+        }
+        impl ::mad_hatter::llm::StructInput for #enum_name {}
+    }
+}
+
+/// Generate depth-mode rendering for a single enum variant field.
+/// Similar to gen_depth_render but accesses field via local binding (not self.field).
+fn gen_enum_field_depth_render(ident: &syn::Ident, title: &str, kind: &FieldKind) -> TokenStream {
+    match kind {
+        FieldKind::String => {
+            quote! {
+                {
+                    let __val = #ident;
+                    if !__val.is_empty() {
+                        if __val.contains('\n') {
+                            let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                            __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                            __out.push_str(__val);
+                            __out.push('\n');
+                        } else {
+                            __out.push_str(#title);
+                            __out.push_str(": ");
+                            __out.push_str(__val);
+                            __out.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                {
+                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                    __out.push_str(&#ident.to_string());
+                    __out.push('\n');
+                }
+            }
+        }
+        FieldKind::Vec(inner_ty) => {
+            let inner_kind = classify_field_type(inner_ty);
+            let element_render = gen_vec_element_render_depth(&inner_kind);
+            quote! {
+                {
+                    let __items = #ident;
+                    if !__items.is_empty() {
+                        let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                        __out.push_str(&::std::format!("\n{} {} {}\n\n", __hashes, #title, __hashes));
+                        for (__i, __item) in __items.iter().enumerate() {
+                            if __i > 0 { __out.push('\n'); }
+                            #element_render
+                        }
+                    }
+                }
+            }
+        }
+        FieldKind::Option(inner_kind) => {
+            gen_enum_option_depth_render(ident, title, inner_kind)
+        }
+        FieldKind::Other => {
+            quote! {
+                {
+                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                    __out.push_str(&#ident.to_markdown_depth(__depth + 1));
+                }
+            }
+        }
+    }
+}
+
+/// Generate depth-mode rendering for Option<T> enum variant fields.
+fn gen_enum_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKind) -> TokenStream {
+    let value_render = match inner_kind {
+        FieldKind::String => {
+            quote! {
+                if !__val.is_empty() {
+                    if __val.contains('\n') {
+                        let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                        __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                        __out.push_str(__val);
+                        __out.push('\n');
+                    } else {
+                        __out.push_str(#title);
+                        __out.push_str(": ");
+                        __out.push_str(__val);
+                        __out.push('\n');
+                    }
+                }
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                __out.push_str(&__val.to_string());
+                __out.push('\n');
+            }
+        }
+        _ => {
+            quote! {
+                let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                __out.push_str(&__val.to_markdown_depth(__depth + 1));
+            }
+        }
+    };
+
+    quote! {
+        if let ::std::option::Option::Some(__val) = #ident {
+            #value_render
+        }
+    }
+}
+
+/// Generate item-mode rendering for a single enum variant field.
+fn gen_enum_field_item_render(ident: &syn::Ident, field_name: &str, kind: &FieldKind) -> TokenStream {
+    match kind {
+        FieldKind::String => {
+            quote! {
+                {
+                    let __val = #ident;
+                    if !__val.is_empty() {
+                        __out.push_str(#field_name);
+                        __out.push_str(": ");
+                        __out.push_str(__val);
+                        __out.push('\n');
+                    }
+                }
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                {
+                    __out.push_str(#field_name);
+                    __out.push_str(": ");
+                    __out.push_str(&#ident.to_string());
+                    __out.push('\n');
+                }
+            }
+        }
+        FieldKind::Vec(inner_ty) => {
+            let inner_kind = classify_field_type(inner_ty);
+            let element_render = gen_vec_element_render_item(&inner_kind);
+            quote! {
+                {
+                    let __items = #ident;
+                    if !__items.is_empty() {
+                        __out.push_str(#field_name);
+                        __out.push_str(":\n");
+                        for __item in __items.iter() {
+                            #element_render
+                        }
+                    }
+                }
+            }
+        }
+        FieldKind::Option(inner_kind) => {
+            gen_enum_option_item_render(ident, field_name, inner_kind)
+        }
+        FieldKind::Other => {
+            quote! {
+                {
+                    __out.push_str(#field_name);
+                    __out.push_str(": ");
+                    __out.push_str(&#ident.to_markdown_item());
+                    __out.push('\n');
+                }
+            }
+        }
+    }
+}
+
+/// Generate item-mode rendering for Option<T> enum variant fields.
+fn gen_enum_option_item_render(ident: &syn::Ident, field_name: &str, inner_kind: &FieldKind) -> TokenStream {
+    let value_render = match inner_kind {
+        FieldKind::String => {
+            quote! {
+                if !__val.is_empty() {
+                    __out.push_str(#field_name);
+                    __out.push_str(": ");
+                    __out.push_str(__val);
+                    __out.push('\n');
+                }
+            }
+        }
+        FieldKind::Bool | FieldKind::Numeric => {
+            quote! {
+                __out.push_str(#field_name);
+                __out.push_str(": ");
+                __out.push_str(&__val.to_string());
+                __out.push('\n');
+            }
+        }
+        _ => {
+            quote! {
+                __out.push_str(#field_name);
+                __out.push_str(": ");
+                __out.push_str(&__val.to_markdown_item());
+                __out.push('\n');
+            }
+        }
+    };
+
+    quote! {
+        if let ::std::option::Option::Some(__val) = #ident {
+            #value_render
+        }
     }
 }
 

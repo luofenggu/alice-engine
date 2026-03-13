@@ -274,6 +274,7 @@ fn test_stream_infer_on_text_receives_all_chunks() {
         Some(Box::new(move |chunk: &str| {
             collected_clone.borrow_mut().push(chunk.to_string());
         })),
+        None,
     ).unwrap();
 
     let results: Vec<Result<StreamAction, String>> = stream.collect();
@@ -312,6 +313,7 @@ fn test_stream_infer_on_text_none_equivalent() {
     let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &SimpleCallbackChannel,
         &request,
+        None,
         None,
     ).unwrap();
 

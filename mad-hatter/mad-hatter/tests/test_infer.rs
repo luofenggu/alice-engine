@@ -417,6 +417,7 @@ fn test_infer_with_on_text_receives_chunks() {
         Some(Box::new(move |chunk: &str| {
             collected_clone.borrow_mut().push(chunk.to_string());
         })),
+        None,
     ).unwrap();
 
     // Verify parsing works
@@ -454,6 +455,7 @@ fn test_infer_with_on_text_none_equivalent() {
     let results = infer_with_on_text::<SimpleRequest, SimpleAction>(
         &NoneCallbackChannel,
         &request,
+        None,
         None,
     ).unwrap();
 
