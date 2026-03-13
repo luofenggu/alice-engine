@@ -9,6 +9,7 @@
 pub mod beat;
 pub mod capture;
 pub mod compress;
+pub mod output;
 
 // ---------------------------------------------------------------------------
 // Safe template rendering

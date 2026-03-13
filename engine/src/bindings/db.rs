@@ -28,11 +28,10 @@ diesel::table! {
         instance_id -> Text,
         action_id -> Text,
         action_type -> Text,
-        action_data -> Text,
-        result_text -> Nullable<Text>,
+        action_input -> Text,
+        action_output -> Nullable<Text>,
         status -> Text,
-        msg_id_first -> Nullable<Text>,
-        msg_id_last -> Nullable<Text>,
+        distill_text -> Nullable<Text>,
         created_at -> Text,
     }
 }
@@ -115,11 +114,10 @@ pub struct ActionLogRow {
     pub instance_id: String,
     pub action_id: String,
     pub action_type: String,
-    pub action_data: String,
-    pub result_text: Option<String>,
+    pub action_input: String,
+    pub action_output: Option<String>,
     pub status: String,
-    pub msg_id_first: Option<String>,
-    pub msg_id_last: Option<String>,
+    pub distill_text: Option<String>,
     pub created_at: String,
 }
 
@@ -129,11 +127,10 @@ pub struct NewActionLog<'a> {
     pub instance_id: &'a str,
     pub action_id: &'a str,
     pub action_type: &'a str,
-    pub action_data: &'a str,
-    pub result_text: Option<&'a str>,
+    pub action_input: &'a str,
+    pub action_output: Option<&'a str>,
     pub status: &'a str,
-    pub msg_id_first: Option<&'a str>,
-    pub msg_id_last: Option<&'a str>,
+    pub distill_text: Option<&'a str>,
     pub created_at: &'a str,
 }
 
@@ -238,11 +235,10 @@ pub const CREATE_ACTION_LOG_TABLE: &str =
         instance_id TEXT NOT NULL,
         action_id TEXT NOT NULL,
         action_type TEXT NOT NULL,
-        action_data TEXT NOT NULL,
-        result_text TEXT,
+        action_input TEXT NOT NULL,
+        action_output TEXT,
         status TEXT NOT NULL DEFAULT 'executing',
-        msg_id_first TEXT,
-        msg_id_last TEXT,
+        distill_text TEXT,
         created_at TEXT NOT NULL
     )";
 

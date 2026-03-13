@@ -50,6 +50,7 @@ use crate::external::llm::LlmConfig;
 use std::sync::atomic::AtomicU64;
 use std::sync::RwLock;
 use crate::inference::Action;
+use crate::inference::output::ActionOutput;
 use crate::persist::instance;
 use crate::persist::hooks::HooksCaller;
 use crate::persist::settings::GlobalSettingsStore;
@@ -836,20 +837,18 @@ impl Alice {
             ).ok();
 
             let result = execute_action(&Action::ReadMsg, self, &mut tx);
-            let done_text = match result {
-                Ok(ref output) if output.is_empty() => String::new(),
-                Ok(output) => action_output::build_done_text(&output),
-                Err(e) => action_output::action_error(&e),
-            };
-            tx.record_done(&action_id, done_text);
-
-            // DB: complete action_log (done)
-            if let Some(record) = tx.action_records.last() {
-                let result_text = record.done_text.as_deref().unwrap_or("");
-                let (mf, ml) = extract_msg_ids_for_db("read_msg", result_text);
-                self.instance.memory.complete_action_log(
-                    &record.action_id, result_text, mf.as_deref(), ml.as_deref(),
-                ).ok();
+            match result {
+                Ok(ref output) => {
+                    let done_text = output.render();
+                    tx.record_done(&action_id, done_text);
+                    self.instance.memory.complete_action_log(&action_id, output).ok();
+                }
+                Err(ref e) => {
+                    let done_text = action_output::action_error(e);
+                    tx.record_done(&action_id, done_text);
+                    let error_output = ActionOutput::Note { text: action_output::action_error(e) };
+                    self.instance.memory.complete_action_log(&action_id, &error_output).ok();
+                }
             }
 
             self.last_was_idle = false;
@@ -986,13 +985,11 @@ impl Alice {
                         );
 
                         // Record done
-                        let done_text = action_output::build_done_text(&action_output::idle_cancelled_after_send_failure());
-                        tx.record_done(&action_id, done_text);
+                        let cancelled_output = ActionOutput::Note { text: "idle cancelled: send_msg failed earlier in this beat".into() };
+                        tx.record_done(&action_id, cancelled_output.render());
 
                         // DB: complete action_log (done) for cancelled idle
-                        self.instance.memory.complete_action_log(
-                            &action_id, &action_output::idle_cancelled_after_send_failure(), None, None,
-                        ).ok();
+                        self.instance.memory.complete_action_log(&action_id, &cancelled_output).ok();
 
                         continue;
                     }
@@ -1016,21 +1013,19 @@ impl Alice {
                         }
                     }
 
-                    // Record done
-                    let done_text = match result {
-                        Ok(ref output) if output.is_empty() => String::new(),
-                        Ok(output) => action_output::build_done_text(&output),
-                        Err(e) => action_output::action_error(&e),
-                    };
-                    tx.record_done(&action_id, done_text);
-
-                    // DB: complete action_log (done)
-                    if let Some(record) = tx.action_records.last() {
-                        let result_text = record.done_text.as_deref().unwrap_or("");
-                        let (mf, ml) = extract_msg_ids_for_db(action.type_name(), result_text);
-                        self.instance.memory.complete_action_log(
-                            &record.action_id, result_text, mf.as_deref(), ml.as_deref(),
-                        ).ok();
+                    // Record done + DB complete
+                    match result {
+                        Ok(ref output) => {
+                            let done_text = output.render();
+                            tx.record_done(&action_id, done_text);
+                            self.instance.memory.complete_action_log(&action_id, output).ok();
+                        }
+                        Err(ref e) => {
+                            let done_text = action_output::action_error(e);
+                            tx.record_done(&action_id, done_text);
+                            let error_output = ActionOutput::Note { text: action_output::action_error(e) };
+                            self.instance.memory.complete_action_log(&action_id, &error_output).ok();
+                        }
                     }
 
 
@@ -1268,17 +1263,7 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
     });
 }
 
-/// Extract msg_ids from a single action's result text for DB storage.
-/// Only read_msg and send_msg actions carry message IDs.
-fn extract_msg_ids_for_db(action_type: &str, result_text: &str) -> (Option<String>, Option<String>) {
-    match action_type {
-        "read_msg" | "send_msg" => {
-            let ids = crate::inference::beat::extract_msg_ids(result_text);
-            (ids.first().cloned(), ids.last().cloned())
-        }
-        _ => (None, None),
-    }
-}
+
 
 pub mod signal;
 

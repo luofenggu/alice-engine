@@ -11,8 +11,8 @@ use tracing::{info, warn};
 use crate::core::{Alice, Transaction};
 use crate::external::shell::{resolve_action_path, Shell};
 use crate::inference::Action;
+use crate::inference::output::{ActionOutput, ReadMsgEntry, truncate_stdout};
 use crate::persist::hooks::ContactInfo;
-use crate::policy::action_output as out;
 
 /// Create a Shell instance with appropriate sandboxing for the given Alice.
 /// In local mode (no sandbox user), runs without sandboxing.
@@ -27,8 +27,8 @@ fn make_shell(alice: &Alice) -> Shell {
 
 /// Execute a single action against the Alice instance.
 ///
-/// Returns the "done" text (execution result) to be appended to the action record.
-pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
+/// Returns a structured ActionOutput describing the execution result.
+pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOutput> {
     match action {
         Action::Idle { timeout_secs } => execute_idle(alice, tx, *timeout_secs),
         Action::ReadMsg => execute_read_msg(alice, tx),
@@ -56,15 +56,15 @@ fn execute_idle(
     _alice: &mut Alice,
     tx: &mut Transaction,
     timeout_secs: Option<u64>,
-) -> Result<String> {
+) -> Result<ActionOutput> {
     match timeout_secs {
         Some(secs) => info!("[ACTION-{}] idle (timeout: {}s)", tx.instance_id, secs),
         None => info!("[ACTION-{}] idle", tx.instance_id),
     }
-    Ok(String::new())
+    Ok(ActionOutput::Empty)
 }
 
-fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
+fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOutput> {
     info!("[ACTION-{}] read_msg", tx.instance_id);
 
     let messages = alice
@@ -76,7 +76,7 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
         .context("Failed to read unread messages")?;
 
     if messages.is_empty() {
-        return Ok(out::inbox_empty());
+        return Ok(ActionOutput::ReadMsg { entries: vec![] });
     }
 
     // Build known sender set: "user" (owner) + contacts IDs
@@ -92,21 +92,23 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<String> {
         })
         .unwrap_or_default();
 
-    let mut result = String::new();
-    for msg in &messages {
-        let is_known = msg.sender.is_empty() || msg.sender == "user"
-            || contact_ids.iter().any(|id| id == &msg.sender);
-        result.push_str(&out::read_msg_entry(
-            &msg.role,
-            &msg.sender,
-            &alice.instance.id,
-            &msg.timestamp,
-            &msg.content,
-            is_known,
-        ));
-    }
+    let entries: Vec<ReadMsgEntry> = messages
+        .iter()
+        .map(|msg| {
+            let is_known = msg.sender.is_empty()
+                || msg.sender == "user"
+                || contact_ids.iter().any(|id| id == &msg.sender);
+            ReadMsgEntry {
+                role: msg.role.clone(),
+                sender: msg.sender.clone(),
+                timestamp: msg.timestamp.clone(),
+                content: msg.content.clone(),
+                is_known,
+            }
+        })
+        .collect();
 
-    Ok(result)
+    Ok(ActionOutput::ReadMsg { entries })
 }
 
 /// Resolve a recipient string to an instance ID using the contacts list.
@@ -136,7 +138,7 @@ fn execute_send_msg(
     tx: &mut Transaction,
     recipient: &str,
     content: &str,
-) -> Result<String> {
+) -> Result<ActionOutput> {
     info!("[ACTION-{}] send_msg to {}", tx.instance_id, recipient);
 
     // Send to user directly (recipient is "user" or empty)
@@ -149,7 +151,7 @@ fn execute_send_msg(
             .unwrap()
             .write_agent_reply(&alice.instance.id, content, &timestamp, "")
             .context("Failed to write agent reply")?;
-        return Ok(out::send_success(&timestamp));
+        return Ok(ActionOutput::SendMsg { msg_id: timestamp });
     }
 
     // Non-user recipient: must go through contacts lookup
@@ -161,7 +163,9 @@ fn execute_send_msg(
                 tx.instance_id, recipient
             );
             tx.cancel_idle = true;
-            return Ok(out::send_failed_service_unavailable(recipient));
+            return Ok(ActionOutput::SendMsgFailed {
+                error: format!("发送失败：通讯服务不可用，无法联系 \"{}\"", recipient),
+            });
         }
     };
 
@@ -174,7 +178,9 @@ fn execute_send_msg(
                 tx.instance_id, recipient, e
             );
             tx.cancel_idle = true;
-            return Ok(out::send_failed_service_unavailable(recipient));
+            return Ok(ActionOutput::SendMsgFailed {
+                error: format!("发送失败：通讯服务不可用，无法联系 \"{}\"", recipient),
+            });
         }
     };
 
@@ -187,7 +193,23 @@ fn execute_send_msg(
                 tx.instance_id, recipient
             );
             tx.cancel_idle = true;
-            return Ok(out::send_failed_recipient_not_found(recipient, &contacts));
+            let names: Vec<String> = contacts
+                .iter()
+                .map(|c| {
+                    if let Some(name) = &c.name {
+                        format!("{}({})", name, c.id)
+                    } else {
+                        c.id.clone()
+                    }
+                })
+                .collect();
+            return Ok(ActionOutput::SendMsgFailed {
+                error: format!(
+                    "发送失败：收件人 \"{}\" 不在联系人列表中。可用联系人：{}",
+                    recipient,
+                    names.join(", ")
+                ),
+            });
         }
     };
 
@@ -213,7 +235,7 @@ fn execute_send_msg(
                 .unwrap()
                 .write_agent_reply(&alice.instance.id, content, &timestamp, &resolved)
                 .context("Failed to write relayed agent reply")?;
-            Ok(out::send_success(&timestamp))
+            Ok(ActionOutput::SendMsg { msg_id: timestamp })
         }
         Ok(response) => {
             warn!(
@@ -223,7 +245,9 @@ fn execute_send_msg(
                 response.message.unwrap_or_default()
             );
             tx.cancel_idle = true;
-            Ok(out::send_failed_relay_error(recipient))
+            Ok(ActionOutput::SendMsgFailed {
+                error: format!("发送失败：消息转发到 \"{}\" 时被拒绝", recipient),
+            })
         }
         Err(e) => {
             warn!(
@@ -231,21 +255,23 @@ fn execute_send_msg(
                 tx.instance_id, resolved, e
             );
             tx.cancel_idle = true;
-            Ok(out::send_failed_relay_error(recipient))
+            Ok(ActionOutput::SendMsgFailed {
+                error: format!("发送失败：消息转发到 \"{}\" 时被拒绝", recipient),
+            })
         }
     }
 }
 
-fn execute_thinking(_alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<String> {
+fn execute_thinking(_alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<ActionOutput> {
     info!(
         "[ACTION-{}] thinking ({} chars)",
         tx.instance_id,
         content.len()
     );
-    Ok(String::new())
+    Ok(ActionOutput::Empty)
 }
 
-fn execute_script(alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<String> {
+fn execute_script(alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<ActionOutput> {
     info!(
         "[ACTION-{}] script ({} chars)",
         tx.instance_id,
@@ -254,36 +280,62 @@ fn execute_script(alice: &mut Alice, tx: &mut Transaction, content: &str) -> Res
     let shell = make_shell(alice);
     let result = shell.exec(content)?;
 
-    let output = out::truncate_result(&result.output);
-    Ok(out::script_result(
-        result.duration.as_secs_f64(),
-        &output,
-        result.exit_code,
-    ))
+    let (stdout, truncated) = truncate_stdout(&result.output);
+    Ok(ActionOutput::Script {
+        stdout,
+        exit_code: result.exit_code.unwrap_or(-1),
+        elapsed_secs: result.duration.as_secs_f64(),
+        truncated,
+    })
 }
 
 /// Extract a skeleton view of file content based on file extension.
-/// Delegates to SkeletonConfig for language-aware extraction logic.
+/// Returns the skeleton text for display in action output.
 fn extract_skeleton(path: &str, content: &str) -> String {
     use crate::external::{ExtractionResult, SkeletonConfig};
 
-    let lines: Vec<&str> = content.lines().collect();
-    let total_lines = lines.len();
-    let total_bytes = content.len();
-
     match SkeletonConfig::get().extract_from_path(path, content) {
         ExtractionResult::Full => {
-            let display = out::truncate_result(content);
-            out::write_success_full(path, total_bytes, total_lines, &display)
+            let (truncated, _) = truncate_stdout(content);
+            format!("---file content---\n{}", truncated)
         }
         ExtractionResult::Skeleton(skeleton) => {
-            out::write_success_skeleton(path, total_bytes, total_lines, &skeleton)
+            format!("--- skeleton (auto-extracted, showing interface & comments only, not full content) ---\n{}", skeleton)
         }
         ExtractionResult::NoRule => {
-            let preview = out::format_preview(&lines);
-            out::write_success_preview(path, total_bytes, total_lines, &preview)
+            let lines: Vec<&str> = content.lines().collect();
+            let preview = format_preview(&lines);
+            format!("--- preview (first 10 + last 5 lines, not full content) ---\n{}", preview)
         }
     }
+}
+
+/// Number of head lines in preview.
+const PREVIEW_HEAD_LINES: usize = 10;
+/// Number of tail lines in preview.
+const PREVIEW_TAIL_LINES: usize = 5;
+/// Line count threshold to switch from head-only to head+tail preview.
+const PREVIEW_THRESHOLD: usize = 15;
+
+/// Format head+tail preview from lines with line numbers.
+fn format_preview(lines: &[&str]) -> String {
+    let total = lines.len();
+    let actual_head = std::cmp::min(PREVIEW_HEAD_LINES, total);
+    let mut preview: Vec<String> = Vec::new();
+    for (i, line) in lines[..actual_head].iter().enumerate() {
+        preview.push(format!("{:>4}: {}", i + 1, line));
+    }
+    if total > PREVIEW_THRESHOLD {
+        preview.push("     ...".to_string());
+        for (i, line) in lines[total - PREVIEW_TAIL_LINES..].iter().enumerate() {
+            preview.push(format!("{:>4}: {}", total - PREVIEW_TAIL_LINES + i + 1, line));
+        }
+    } else if total > PREVIEW_HEAD_LINES {
+        for (i, line) in lines[PREVIEW_HEAD_LINES..].iter().enumerate() {
+            preview.push(format!("{:>4}: {}", PREVIEW_HEAD_LINES + i + 1, line));
+        }
+    }
+    preview.join("\n")
 }
 
 fn execute_write_file(
@@ -291,7 +343,7 @@ fn execute_write_file(
     tx: &mut Transaction,
     path: &str,
     content: &str,
-) -> Result<String> {
+) -> Result<ActionOutput> {
     info!("[ACTION-{}] write_file: {}", tx.instance_id, path);
 
     let abs_path = resolve_action_path(&alice.instance.workspace, path)?;
@@ -315,15 +367,21 @@ fn execute_write_file(
         }
     }
 
-    Ok(extract_skeleton(path, content))
+    let skeleton = extract_skeleton(path, content);
+    let bytes = content.len();
+    let lines = content.lines().count();
+    Ok(ActionOutput::WriteFile { skeleton, bytes, lines })
 }
+/// Max chars for search/replace preview in output.
+const REPLACE_PREVIEW_LIMIT: usize = 40;
+
 fn execute_replace_in_file(
     alice: &mut Alice,
     tx: &mut Transaction,
     path: &str,
     search: &str,
     replace: &str,
-) -> Result<String> {
+) -> Result<ActionOutput> {
     info!(
         "[ACTION-{}] replace_in_file: {}",
         tx.instance_id,
@@ -331,25 +389,40 @@ fn execute_replace_in_file(
     );
 
     let abs_path = resolve_action_path(&alice.instance.workspace, path)?;
-    let truncated = crate::util::safe_truncate(search, out::truncate_display_limit());
+    let search_preview = crate::util::safe_truncate(search, REPLACE_PREVIEW_LIMIT).to_string();
+
+    let do_replace = |content: &str| -> Result<ActionOutput, usize> {
+        crate::util::replace_once(content, search, replace).map(|_| {
+            let before = crate::util::safe_truncate(search, REPLACE_PREVIEW_LIMIT).to_string();
+            let after = crate::util::safe_truncate(replace, REPLACE_PREVIEW_LIMIT).to_string();
+            ActionOutput::ReplaceInFile {
+                match_count: 1,
+                before,
+                after,
+            }
+        })
+    };
 
     if alice.privileged {
-        // Direct filesystem access for privileged instances
         let content = std::fs::read_to_string(&abs_path)
             .with_context(|| format!("Failed to read file: {}", path))?;
 
-        match crate::util::replace_once(&content, search, replace) {
-            Ok(new_content) => {
+        match do_replace(&content) {
+            Ok(output) => {
+                // Write back the replaced content
+                let new_content = crate::util::replace_once(&content, search, replace).unwrap();
                 std::fs::write(&abs_path, &new_content)
                     .with_context(|| format!("Failed to write file: {}", path))?;
-                Ok(out::replace_success(&truncated))
+                Ok(output)
             }
             Err(count) => {
-                Ok(out::replace_match_error(&truncated, count))
+                Ok(ActionOutput::ReplaceInFileFailed {
+                    match_count: count,
+                    search_preview,
+                })
             }
         }
     } else {
-        // Shell-based access for sandboxed instances
         let shell = make_shell(alice);
         let read_result = shell.read_file(&abs_path.to_string_lossy())?;
         if !read_result.success() {
@@ -363,8 +436,9 @@ fn execute_replace_in_file(
 
         let content = read_result.output;
 
-        match crate::util::replace_once(&content, search, replace) {
-            Ok(new_content) => {
+        match do_replace(&content) {
+            Ok(output) => {
+                let new_content = crate::util::replace_once(&content, search, replace).unwrap();
                 let shell = make_shell(alice);
                 let write_result = shell.write_file(&abs_path.to_string_lossy(), &new_content)?;
                 if !write_result.success() {
@@ -375,10 +449,13 @@ fn execute_replace_in_file(
                         write_result.output.trim()
                     );
                 }
-                Ok(out::replace_success(&truncated))
+                Ok(output)
             }
             Err(count) => {
-                Ok(out::replace_match_error(&truncated, count))
+                Ok(ActionOutput::ReplaceInFileFailed {
+                    match_count: count,
+                    search_preview,
+                })
             }
         }
     }
@@ -395,14 +472,14 @@ fn execute_replace_in_file(
 /// 4. Commit summary (session block + clear current)
 ///
 /// Knowledge is maintained separately by async capture.
-fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) -> Result<String> {
+fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) -> Result<ActionOutput> {
     use crate::persist::SessionBlockEntry;
 
     info!("[ACTION-{}] summary", tx.instance_id);
 
     let current = alice.instance.memory.render_current_from_db().unwrap_or_default();
     if current.trim().is_empty() {
-        return Ok(out::summary_empty());
+        return Ok(ActionOutput::SummaryEmpty);
     }
 
     let summary_text = raw_output;
@@ -414,6 +491,14 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     // Query MSG IDs from DB (replaces extract_msg_ids text search)
     let (first_msg_opt, last_msg_opt) = alice.instance.memory.query_msg_range()
         .unwrap_or((None, None));
+
+    // Build msg_range string before consuming the Options
+    let msg_range = match (&first_msg_opt, &last_msg_opt) {
+        (Some(first), Some(last)) if first != last => format!("{} ~ {}", first, last),
+        (Some(first), _) => first.clone(),
+        _ => String::new(),
+    };
+
     let first_msg = first_msg_opt.unwrap_or_default();
     let last_msg = last_msg_opt.unwrap_or_default();
 
@@ -425,20 +510,23 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     };
 
     // Query msg count before commit (commit advances cursor, which would zero the count)
-    let msg_count = alice.instance.memory.query_msg_count().unwrap_or(0) as usize;
+    let msg_count = alice.instance.memory.query_msg_count().unwrap_or(0);
 
     // Commit: session block + clear current
     let block_name = alice
         .instance
         .memory
         .commit_summary(&entry, alice.session_block_kb)?;
-    Ok(out::summary_complete(
+
+    // Knowledge chars will be updated asynchronously by capture task
+    let knowledge_chars = alice.instance.memory.read_knowledge().len();
+
+    Ok(ActionOutput::Summary {
+        block_name,
+        knowledge_chars,
         msg_count,
-        &first_msg,
-        &last_msg,
-        &block_name,
-        &out::knowledge_skipped(),
-    ))
+        msg_range,
+    })
 }
 
 /// Parse summary dual output: split by first ===KNOWLEDGE_TOKEN=== on its own line.
@@ -451,7 +539,7 @@ fn execute_distill(
     _tx: &mut Transaction,
     target_action_id: &str,
     summary: &str,
-) -> Result<String> {
+) -> Result<ActionOutput> {
     let (old_len, new_len) = alice
         .instance
         .memory
@@ -466,19 +554,22 @@ fn execute_distill(
         old_len as i64 - new_len as i64
     );
 
-    Ok(String::new())
+    Ok(ActionOutput::Distill {
+        old_bytes: old_len,
+        new_bytes: new_len,
+    })
 }
 
 fn execute_set_profile(
     alice: &mut Alice,
     tx: &mut Transaction,
     content: &str,
-) -> Result<String> {
+) -> Result<ActionOutput> {
     info!("[ACTION-{}] set_profile", tx.instance_id);
 
     // Parse key:value lines into Settings
     let mut update = crate::persist::Settings::default();
-    let _known_keys = ["name", "color", "avatar"];
+    let mut updated_keys: Vec<String> = Vec::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -488,13 +579,24 @@ fn execute_set_profile(
         if let Some(colon_pos) = line.find(':') {
             let key = line[..colon_pos].trim().to_lowercase();
             let value = line[colon_pos + 1..].trim().to_string();
-            let value_opt = if value.is_empty() { None } else { Some(value) };
+            let value_opt = if value.is_empty() { None } else { Some(value.clone()) };
             match key.as_str() {
-                "name" => update.name = value_opt,
-                "color" => update.color = value_opt,
-                "avatar" => update.avatar = value_opt,
+                "name" => {
+                    update.name = value_opt;
+                    updated_keys.push(format!("name={}", value));
+                }
+                "color" => {
+                    update.color = value_opt;
+                    updated_keys.push(format!("color={}", value));
+                }
+                "avatar" => {
+                    update.avatar = value_opt;
+                    updated_keys.push(format!("avatar={}", value));
+                }
                 _ => {
-                    return Ok(out::profile_unknown_key(&key));
+                    return Ok(ActionOutput::SetProfileFailed {
+                        unknown_key: key,
+                    });
                 }
             }
         }
@@ -509,7 +611,9 @@ fn execute_set_profile(
     alice.privileged = merged.privileged_or_default();
     alice.instance_name = merged.name.clone();
 
-    Ok(out::profile_updated(&update))
+    Ok(ActionOutput::SetProfile {
+        updated: updated_keys.join(", "),
+    })
 }
 
 // ─── Tests ───────────────────────────────────────────────────────
@@ -519,7 +623,7 @@ fn execute_create_instance(
     _tx: &mut Transaction,
     name: &str,
     knowledge: &str,
-) -> Result<String> {
+) -> Result<ActionOutput> {
     // Derive instances_dir from current instance's parent directory
     let instances_dir = alice
         .instance
@@ -546,12 +650,17 @@ fn execute_create_instance(
         knowledge.len()
     );
 
-    Ok(out::instance_created(&instance.id, name, knowledge.len()))
+    Ok(ActionOutput::CreateInstance {
+        instance_id: instance.id,
+        name: name.to_string(),
+        knowledge_bytes: knowledge.len(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::output::{ActionOutput, ReadMsgEntry};
 
     use tempfile::TempDir;
 
@@ -592,7 +701,7 @@ mod tests {
         let (mut alice, mut tx, _tmp) = setup();
         let result =
             execute_action(&Action::Idle { timeout_secs: None }, &mut alice, &mut tx).unwrap();
-        assert!(result.is_empty());
+        assert!(matches!(result, ActionOutput::Empty));
     }
 
     #[test]
@@ -602,7 +711,7 @@ mod tests {
             content: "deep thought".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.is_empty());
+        assert!(matches!(result, ActionOutput::Empty));
     }
 
     #[test]
@@ -612,8 +721,12 @@ mod tests {
             content: "echo hello_rust".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("hello_rust"));
-        assert!(result.contains("exec result"));
+        match result {
+            ActionOutput::Script { ref stdout, .. } => {
+                assert!(stdout.contains("hello_rust"));
+            }
+            _ => panic!("Expected ActionOutput::Script, got {:?}", result),
+        }
     }
 
     #[test]
@@ -625,7 +738,7 @@ mod tests {
             content: "hello from rust".to_string(),
         };
         let result = execute_action(&write_action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("write success"));
+        assert!(matches!(result, ActionOutput::WriteFile { .. }));
 
         let content = std::fs::read_to_string(alice.instance.workspace.join("test.txt")).unwrap();
         assert_eq!(content, "hello from rust");
@@ -642,7 +755,7 @@ mod tests {
             replace: "goodbye".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("replaced"));
+        assert!(matches!(result, ActionOutput::ReplaceInFile { match_count: 1, .. }));
 
         let content = std::fs::read_to_string(alice.instance.workspace.join("test.txt")).unwrap();
         assert_eq!(content, "goodbye world");
@@ -652,7 +765,12 @@ mod tests {
     fn test_execute_read_msg_empty() {
         let (mut alice, mut tx, _tmp) = setup();
         let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("收件箱为空"));
+        match result {
+            ActionOutput::ReadMsg { ref entries } => {
+                assert!(entries.is_empty(), "Expected empty entries for empty inbox");
+            }
+            _ => panic!("Expected ActionOutput::ReadMsg, got {:?}", result),
+        }
     }
 
     #[test]
@@ -674,12 +792,17 @@ mod tests {
             .unwrap();
 
         let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("user"));
-        assert!(result.contains("hello agent"));
-        assert!(result.contains("how are you?"));
-        // Verify MSG timestamp markers
-        assert!(result.contains("[MSG:20260220120000]"));
-        assert!(result.contains("[MSG:20260220120001]"));
+        match result {
+            ActionOutput::ReadMsg { ref entries } => {
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].content, "hello agent");
+                assert_eq!(entries[0].timestamp, "20260220120000");
+                assert_eq!(entries[0].sender, "user");
+                assert_eq!(entries[1].content, "how are you?");
+                assert_eq!(entries[1].timestamp, "20260220120001");
+            }
+            _ => panic!("Expected ActionOutput::ReadMsg, got {:?}", result),
+        }
         assert_eq!(
             alice
                 .instance
@@ -700,9 +823,12 @@ mod tests {
             content: "hello user!".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("send success"));
-        // Verify MSG timestamp marker in result
-        assert!(result.contains("[MSG:"));
+        match result {
+            ActionOutput::SendMsg { ref msg_id } => {
+                assert!(!msg_id.is_empty(), "msg_id should not be empty");
+            }
+            _ => panic!("Expected ActionOutput::SendMsg, got {:?}", result),
+        }
 
         let replies = alice
             .instance
@@ -724,9 +850,12 @@ mod tests {
             content: "hello agent!".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("发送失败"));
-        assert!(result.contains("通讯服务"));
-        assert!(!result.contains("send success"));
+        match result {
+            ActionOutput::SendMsgFailed { ref error } => {
+                assert!(error.contains("通讯服务"), "Error should mention 通讯服务, got: {}", error);
+            }
+            _ => panic!("Expected ActionOutput::SendMsgFailed, got {:?}", result),
+        }
     }
 
     #[test]
@@ -751,7 +880,7 @@ mod tests {
             content: "hello user".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("send success"));
+        assert!(matches!(result, ActionOutput::SendMsg { .. }));
         assert!(!tx.cancel_idle, "cancel_idle should remain false after successful send_msg");
     }
 
@@ -762,7 +891,7 @@ mod tests {
             content: "some summary".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("nothing to summarize"));
+        assert!(matches!(result, ActionOutput::SummaryEmpty));
     }
 
     #[test]
@@ -776,8 +905,16 @@ mod tests {
             "20260223160000",
         ).unwrap();
         alice.instance.memory.complete_action_log(
-            "20260223160000_aaaaaa", "read result with messages",
-            Some("20260223155500"), Some("20260223155500"),
+            "20260223160000_aaaaaa",
+            &ActionOutput::ReadMsg {
+                entries: vec![ReadMsgEntry {
+                    role: "user".into(),
+                    sender: "user".into(),
+                    timestamp: "20260223155500".into(),
+                    content: "hello".into(),
+                    is_known: false,
+                }],
+            },
         ).unwrap();
         alice.instance.memory.insert_action_log(
             "20260223160100_bbbbbb", "send_msg",
@@ -785,16 +922,20 @@ mod tests {
             "20260223160100",
         ).unwrap();
         alice.instance.memory.complete_action_log(
-            "20260223160100_bbbbbb", "send success",
-            Some("20260223160100"), Some("20260223160100"),
+            "20260223160100_bbbbbb",
+            &ActionOutput::SendMsg { msg_id: "20260223160100".into() },
         ).unwrap();
 
         let action = Action::Summary {
             content: "Alice read a greeting and replied".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("小结完成"));
-        assert!(result.contains("2个消息ID"));
+        match result {
+            ActionOutput::Summary { msg_count, .. } => {
+                assert_eq!(msg_count, 2, "Should have 2 message IDs");
+            }
+            _ => panic!("Expected ActionOutput::Summary, got {:?}", result),
+        }
 
         // current should be cleared (DB view: render_current_from_db returns empty after advance_cursor)
         let current = alice.instance.memory.render_current_from_db().unwrap_or_default();
@@ -837,15 +978,15 @@ mod tests {
             "20260223160000",
         ).unwrap();
         alice.instance.memory.complete_action_log(
-            "20260223160000_aaaaaa", "send success",
-            Some("20260223160000"), Some("20260223160000"),
+            "20260223160000_aaaaaa",
+            &ActionOutput::SendMsg { msg_id: "20260223160000".into() },
         ).unwrap();
 
         let action = Action::Summary {
             content: "test summary".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("小结完成"));
+        assert!(matches!(result, ActionOutput::Summary { .. }));
 
         // Should have 2 blocks now (old full one + new one)
         let blocks = alice.instance.memory.list_session_blocks_db().unwrap_or_default();
@@ -856,14 +997,17 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_result() {
+    fn test_truncate_stdout() {
         let short = "hello";
-        assert_eq!(out::truncate_result(short), "hello");
+        let (text, was_truncated) = truncate_stdout(short);
+        assert_eq!(text, "hello");
+        assert!(!was_truncated);
 
         let long = "x".repeat(102_400 + 100);
-        let truncated = out::truncate_result(&long);
-        assert!(truncated.contains("[truncated"));
-        assert!(truncated.len() < long.len());
+        let (text, was_truncated) = truncate_stdout(&long);
+        assert!(text.contains("[truncated"));
+        assert!(text.len() < long.len());
+        assert!(was_truncated);
     }
 
     #[test]
@@ -873,6 +1017,11 @@ mod tests {
             content: "exit 42".to_string(),
         };
         let result = execute_action(&action, &mut alice, &mut tx).unwrap();
-        assert!(result.contains("[exit code: 42]"));
+        match result {
+            ActionOutput::Script { exit_code, .. } => {
+                assert_eq!(exit_code, 42);
+            }
+            _ => panic!("Expected ActionOutput::Script, got {:?}", result),
+        }
     }
 }

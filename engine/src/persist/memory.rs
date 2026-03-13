@@ -15,7 +15,7 @@ use crate::bindings::db::{
     self, HistoryRow, KnowledgeRow, NewSessionBlock, SessionBlockRow,
 };
 
-use crate::policy::action_output as out;
+use crate::inference::output::{ActionOutput, ActionRecord};
 use anyhow::{Context, Result};
 use chrono::Local;
 use diesel::prelude::*;
@@ -33,6 +33,13 @@ pub struct SessionBlockEntry {
 }
 
 
+
+/// Helper struct for sql_query result mapping (msg_id queries).
+#[derive(Debug, QueryableByName)]
+struct MsgIdRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    mid: String,
+}
 
 /// Memory subsystem for an Alice instance.
 #[derive(Clone)]
@@ -228,7 +235,7 @@ impl Memory {
         &self,
         action_id: &str,
         action_type: &str,
-        action_data_json: &str,
+        action_input_json: &str,
         created_at: &str,
     ) -> Result<()> {
         use crate::bindings::db::{action_log, NewActionLog, ACTION_STATUS_EXECUTING};
@@ -237,11 +244,10 @@ impl Memory {
             instance_id: &self.instance_id,
             action_id,
             action_type,
-            action_data: action_data_json,
-            result_text: None,
+            action_input: action_input_json,
+            action_output: None,
             status: ACTION_STATUS_EXECUTING,
-            msg_id_first: None,
-            msg_id_last: None,
+            distill_text: None,
             created_at,
         };
 
@@ -255,8 +261,6 @@ impl Memory {
         Ok(())
     }
 
-    /// Complete an action log entry: update status to done, set result_text and msg_ids.
-    /// Called after action execution finishes.
     /// Insert a completed note directly (for interrupt/reject events).
     /// These are not Action enum variants but control flow markers.
     pub fn insert_done_note(
@@ -273,11 +277,10 @@ impl Memory {
             instance_id: &self.instance_id,
             action_id,
             action_type,
-            action_data: "",
-            result_text: Some(text),
+            action_input: "",
+            action_output: Some(text),
             status: ACTION_STATUS_DONE,
-            msg_id_first: None,
-            msg_id_last: None,
+            distill_text: None,
             created_at,
         };
 
@@ -291,14 +294,17 @@ impl Memory {
         Ok(())
     }
 
+    /// Complete an action log entry: update status to done, set action_output JSON.
+    /// Called after action execution finishes.
     pub fn complete_action_log(
         &self,
         action_id: &str,
-        result_text: &str,
-        msg_id_first: Option<&str>,
-        msg_id_last: Option<&str>,
+        output: &ActionOutput,
     ) -> Result<()> {
         use crate::bindings::db::{action_log, ACTION_STATUS_DONE};
+
+        let output_json = serde_json::to_string(output)
+            .with_context(|| format!("[MEMORY-DB] Failed to serialize ActionOutput for {}", action_id))?;
 
         let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
         let updated = diesel::update(
@@ -308,9 +314,7 @@ impl Memory {
         )
         .set((
             action_log::status.eq(ACTION_STATUS_DONE),
-            action_log::result_text.eq(Some(result_text)),
-            action_log::msg_id_first.eq(msg_id_first),
-            action_log::msg_id_last.eq(msg_id_last),
+            action_log::action_output.eq(Some(&output_json)),
         ))
         .execute(conn)
         .with_context(|| format!("[MEMORY-DB] Failed to complete action_log: {}", action_id))?;
@@ -321,13 +325,14 @@ impl Memory {
         Ok(())
     }
 
-    /// Distill an action log entry: update status to distilled, replace result_text with summary.
+    /// Distill an action log entry: update status to distilled, write distill_text.
+    /// DB preserves original action_output; rendering uses distill_text instead.
     pub fn distill_action_log(&self, action_id: &str, summary: &str) -> Result<(usize, usize)> {
         use crate::bindings::db::{action_log, ActionLogRow, ACTION_STATUS_DISTILLED};
 
         let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
 
-        // Read current result_text length for logging
+        // Read current action_output length for logging
         let row: Option<ActionLogRow> = action_log::table
             .filter(action_log::instance_id.eq(&self.instance_id))
             .filter(action_log::action_id.eq(action_id))
@@ -337,7 +342,7 @@ impl Memory {
 
         let old_len = row
             .as_ref()
-            .and_then(|r| r.result_text.as_ref())
+            .and_then(|r| r.action_output.as_ref())
             .map(|t| t.len())
             .unwrap_or(0);
 
@@ -348,7 +353,7 @@ impl Memory {
         )
         .set((
             action_log::status.eq(ACTION_STATUS_DISTILLED),
-            action_log::result_text.eq(Some(summary)),
+            action_log::distill_text.eq(Some(summary)),
         ))
         .execute(conn)
         .with_context(|| format!("[MEMORY-DB] Failed to distill action_log: {}", action_id))?;
@@ -361,7 +366,7 @@ impl Memory {
     }
 
     /// Render current memory from action_log (all entries after cursor).
-    /// Returns the rendered string in the same format as current.txt.
+    /// Uses ActionRecord for structured rendering.
     pub fn render_current_from_db(&self) -> Result<String> {
         use crate::bindings::db::{action_log, ActionLogRow};
 
@@ -378,46 +383,11 @@ impl Memory {
 
         let mut parts: Vec<String> = Vec::new();
         for row in &rows {
-            parts.push(self.render_action_log_entry(row));
+            let record = ActionRecord::from_db_row(row);
+            parts.push(record.render());
         }
 
         Ok(parts.join("\n"))
-    }
-
-    /// Render a single action_log entry in the current.txt format.
-    fn render_action_log_entry(&self, row: &crate::bindings::db::ActionLogRow) -> String {
-        use crate::bindings::db::{ACTION_STATUS_EXECUTING, ACTION_STATUS_DISTILLED};
-
-        let id = &row.action_id;
-        let start = out::action_block_start(id);
-        let end = out::action_block_end(id);
-
-        if row.status == ACTION_STATUS_DISTILLED {
-            // Distilled: show [已提炼] + summary
-            let summary = row.result_text.as_deref().unwrap_or("");
-            out::distilled_block(id, summary)
-        } else if row.status == ACTION_STATUS_EXECUTING {
-            // Executing: show doing description from action_data
-            let doing_desc = self.doing_description_from_data(&row.action_data, &row.action_type);
-            format!("{}\n{}\n---action executing, result pending---\n{}", start, doing_desc, end)
-        } else {
-            // Done: show result_text (which contains doing+done)
-            let result = row.result_text.as_deref().unwrap_or("");
-            format!("{}\n{}\n{}", start, result, end)
-        }
-    }
-
-    /// Extract doing description from action_data JSON.
-    /// Falls back to action_type if deserialization fails.
-    fn doing_description_from_data(&self, action_data: &str, action_type: &str) -> String {
-        use crate::inference::Action;
-        match serde_json::from_str::<Action>(action_data) {
-            Ok(action) => out::build_doing_description(&action),
-            Err(_) => {
-                tracing::warn!("[MEMORY-DB] Failed to deserialize action_data for doing description, action_type={}", action_type);
-                format!("execute {} (details unavailable)", action_type)
-            }
-        }
     }
 
     /// Advance cursor to the current maximum action_log id.
@@ -441,42 +411,42 @@ impl Memory {
     }
 
     /// Query message ID range from action_log entries after cursor.
-    /// Returns (first_msg_id, last_msg_id) from read_msg and send_msg actions.
+    /// Extracts msg_id from send_msg output JSON and entry timestamps from read_msg output JSON.
     pub fn query_msg_range(&self) -> Result<(Option<String>, Option<String>)> {
-        use crate::bindings::db::action_log;
-
         let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
         let cursor = self.get_cursor_inner(conn)?;
 
-        // Find first non-null msg_id_first (ordered by id asc)
-        let first: Option<String> = action_log::table
-            .filter(action_log::instance_id.eq(&self.instance_id))
-            .filter(action_log::id.gt(cursor))
-            .filter(action_log::msg_id_first.is_not_null())
-            .order(action_log::id.asc())
-            .select(action_log::msg_id_first)
-            .first::<Option<String>>(conn)
-            .optional()
-            .context("[MEMORY-DB] Failed to query first msg_id")?
-            .flatten();
+        // Query all msg_ids: send_msg's $.msg_id and read_msg's entries[*].timestamp
+        let sql = "
+            SELECT mid FROM (
+                SELECT json_extract(action_output, '$.msg_id') as mid
+                FROM action_log
+                WHERE instance_id = ?1 AND id > ?2 AND action_type = 'send_msg'
+                    AND status = 'done' AND action_output IS NOT NULL
+                    AND json_extract(action_output, '$.msg_id') IS NOT NULL
+                UNION ALL
+                SELECT json_extract(je.value, '$.timestamp') as mid
+                FROM action_log, json_each(json_extract(action_output, '$.entries')) as je
+                WHERE action_log.instance_id = ?1 AND action_log.id > ?2 AND action_type = 'read_msg'
+                    AND status = 'done' AND action_output IS NOT NULL
+            )
+            ORDER BY mid
+        ";
 
-        // Find last non-null msg_id_last (ordered by id desc)
-        let last: Option<String> = action_log::table
-            .filter(action_log::instance_id.eq(&self.instance_id))
-            .filter(action_log::id.gt(cursor))
-            .filter(action_log::msg_id_last.is_not_null())
-            .order(action_log::id.desc())
-            .select(action_log::msg_id_last)
-            .first::<Option<String>>(conn)
-            .optional()
-            .context("[MEMORY-DB] Failed to query last msg_id")?
-            .flatten();
+        let rows: Vec<MsgIdRow> = diesel::sql_query(sql)
+            .bind::<diesel::sql_types::Text, _>(&self.instance_id)
+            .bind::<diesel::sql_types::BigInt, _>(cursor)
+            .load(conn)
+            .context("[MEMORY-DB] Failed to query msg_range")?;
+
+        let first = rows.first().map(|r| r.mid.clone());
+        let last = rows.last().map(|r| r.mid.clone());
 
         Ok((first, last))
     }
 
-    /// Count distinct message IDs in action_log entries after cursor.
-    /// Used by summary to report how many messages are covered.
+    /// Count message-related actions in action_log entries after cursor.
+    /// Counts send_msg and read_msg actions that have output.
     pub fn query_msg_count(&self) -> Result<i64> {
         use crate::bindings::db::action_log;
         use diesel::dsl::sql;
@@ -485,14 +455,14 @@ impl Memory {
         let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
         let cursor = self.get_cursor_inner(conn)?;
 
-        // Count rows that have at least one non-null msg_id field
         let count: i64 = action_log::table
             .filter(action_log::instance_id.eq(&self.instance_id))
             .filter(action_log::id.gt(cursor))
-            .filter(action_log::msg_id_first.is_not_null())
+            .filter(action_log::action_type.eq_any(&["send_msg", "read_msg"]))
+            .filter(action_log::action_output.is_not_null())
             .select(sql::<BigInt>("COUNT(*)"))
             .first(conn)
-            .context("[MEMORY-DB] Failed to count msg_ids")?;
+            .context("[MEMORY-DB] Failed to count msg actions")?;
 
         Ok(count)
     }
