@@ -11,14 +11,14 @@ use axum::{
     Json, Router,
 };
 use route_macro::*;
-use mad_hatter::http_service;
+
 use crate::service::*;
 use crate::bindings::http::*;
 use serde::Deserialize;
 
 use super::http_protocol;
 use super::state::EngineState;
-use crate::persist::hooks::RelayRequest;
+
 use crate::persist::Settings;
 
 // Hub API request/response types
@@ -569,38 +569,11 @@ async fn handle_upload(
     Json(serde_json::json!({ "files": uploaded })).into_response()
 }
 
-// ── Hub Hook Callbacks ──
 
-// ── Hub Public API (Mad Hatter) ──
-
-http_service! {
-    service HubPublicApi {
-        GET "api/hub/contacts/{id}" => hub_contacts(id: String) -> Response;
-        POST "api/hub/relay" => hub_relay(body: RelayRequest) -> Response;
-    }
-}
-
-impl HubPublicApiService for EngineState {
-    async fn hub_contacts(&self, id: String) -> mad_hatter::Result<Response> {
-        match self.hub.as_host().await {
-            Some(host) => Ok(crate::hub::hooks::handle_hub_contacts(&host, self, &id).await.into_response()),
-            None => Ok(json_error(StatusCode::NOT_FOUND, "Hub not in host mode")),
-        }
-    }
-
-    async fn hub_relay(&self, body: RelayRequest) -> mad_hatter::Result<Response> {
-        match self.hub.as_host().await {
-            Some(host) => Ok(crate::hub::hooks::handle_hub_relay(&host, self, body).await.into_response()),
-            None => Ok(json_error(StatusCode::NOT_FOUND, "Hub not in host mode")),
-        }
-    }
-}
 
 impl HubService for EngineState {
     async fn enable_hub(&self, body: HubEnableBody) -> Response {
-        let local_port = self.env_config.http_port;
-        let auth_secret = self.env_config.auth_secret.clone();
-        match self.hub.enable_host(body.join_token, local_port, auth_secret, self.instance_store.clone()).await {
+        match self.hub.enable_host(body.join_token, self.instance_store.clone()).await {
             Ok(()) => json_ok(serde_json::json!({"status": "host mode enabled"})),
             Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
         }
@@ -732,7 +705,6 @@ pub fn authenticated_api_routes() -> Router<Arc<EngineState>> {
 pub fn public_api_routes() -> Router<Arc<EngineState>> {
     Router::new()
         .route(ROUTE_HANDLE_PUBLIC_STATIC, get(handle_public_static))
-        .merge(HubPublicApi::router::<EngineState>())
         .route(HUB_WS_PATH, get(handle_hub_ws))
 
 }
@@ -843,8 +815,7 @@ async fn hub_proxy_middleware(
                 .unwrap_or_default();
 
             use base64::Engine as _;
-            let tunnel_req = crate::hub::tunnel::TunnelRequest {
-                request_id: uuid::Uuid::new_v4().to_string(),
+            let proxy_req = crate::service::http_proxy::HttpProxyRequest {
                 method,
                 path: if let Some(q) = &query_str {
                     format!("{}?{}", path_str, q)
@@ -859,7 +830,7 @@ async fn hub_proxy_middleware(
                 },
             };
 
-            match host.proxy_request(instance_id, tunnel_req).await {
+            match host.proxy_request(instance_id, proxy_req).await {
                 Some(resp) => {
                     let status = StatusCode::from_u16(resp.status)
                         .unwrap_or(StatusCode::BAD_GATEWAY);

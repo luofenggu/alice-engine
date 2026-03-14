@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use futures_util::{SinkExt, StreamExt};
 use tracing::{info, warn, error, debug};
@@ -13,6 +13,7 @@ use crate::hub::tunnel::*;
 use crate::hub::extension_impl::SlaveLocalHandler;
 use crate::persist::instance::InstanceStore;
 use crate::service::extension::ExtensionHandlerDispatcher;
+use crate::service::http_proxy::{HttpProxy, HttpProxyRequest, HttpProxyResponse, HttpProxyDispatcher};
 use crate::bindings::http::{
     HUB_WS_PATH,
 };
@@ -22,7 +23,6 @@ type WsSink = futures_util::stream::SplitSink<
     tokio_tungstenite::tungstenite::Message,
 >;
 
-type PendingRequests = Arc<Mutex<HashMap<String, oneshot::Sender<TunnelResponse>>>>;
 
 /// Slave state: maintains WebSocket connection to host (bidirectional tunnel)
 /// Supports automatic reconnection on disconnect with exponential backoff
@@ -30,8 +30,6 @@ pub struct SlaveState {
     pub host_url: String,
     /// WebSocket sender for sending messages to host
     ws_sender: Arc<Mutex<Option<WsSink>>>,
-    /// Pending requests awaiting response from host (slave→host direction)
-    pending: PendingRequests,
     local_port: u16,
     auth_token: String,
     /// Whether the background task should attempt reconnection after disconnect
@@ -53,7 +51,6 @@ impl SlaveState {
         Self {
             host_url,
             ws_sender: Arc::new(Mutex::new(None)),
-            pending: Arc::new(Mutex::new(HashMap::new())),
             local_port,
             auth_token,
             should_reconnect: Arc::new(AtomicBool::new(true)),
@@ -77,43 +74,12 @@ impl SlaveState {
 
     /// Build dispatchers for slave-side TunnelEndpoint (handles host→slave RPC)
     fn build_slave_dispatchers(&self) -> Vec<Box<dyn mad_hatter::tunnel::Dispatch>> {
-        let handler = Arc::new(SlaveLocalHandler::new(self.instance_store.clone()));
-        vec![ExtensionHandlerDispatcher::boxed(handler)]
-    }
-
-    pub async fn proxy_request_to_host(&self, req: TunnelRequest) -> Option<TunnelResponse> {
-        let request_id = req.request_id.clone();
-
-        let (tx, rx) = oneshot::channel::<TunnelResponse>();
-        {
-            let mut pending = self.pending.lock().await;
-            pending.insert(request_id.clone(), tx);
-        }
-
-        let msg = serde_json::to_string(&TunnelMessage::Request(req)).unwrap();
-        {
-            let mut s = self.ws_sender.lock().await;
-            if let Some(ws) = s.as_mut() {
-                if ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await.is_err() {
-                    let mut pending = self.pending.lock().await;
-                    pending.remove(&request_id);
-                    return None;
-                }
-            } else {
-                let mut pending = self.pending.lock().await;
-                pending.remove(&request_id);
-                return None;
-            }
-        }
-
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok(resp)) => Some(resp),
-            _ => {
-                let mut pending = self.pending.lock().await;
-                pending.remove(&request_id);
-                None
-            }
-        }
+        let ext_handler = Arc::new(SlaveLocalHandler::new(self.instance_store.clone()));
+        let http_handler = Arc::new(SlaveHttpProxyHandler::new(self.local_port, self.auth_token.clone()));
+        vec![
+            ExtensionHandlerDispatcher::boxed(ext_handler),
+            HttpProxyDispatcher::boxed(http_handler),
+        ]
     }
 
     async fn establish_connection(&self) -> Result<
@@ -209,9 +175,7 @@ impl SlaveState {
         }
 
         // Spawn message processing + auto-reconnect loop
-        let local_port = self.local_port;
-        let auth_token = self.auth_token.clone();
-        let pending = self.pending.clone();
+
         let ws_sender_shared = self.ws_sender.clone();
         let should_reconnect = self.should_reconnect.clone();
         let host_url = self.host_url.clone();
@@ -232,9 +196,6 @@ impl SlaveState {
                 Self::run_message_loop(
                     &mut current_receiver,
                     &ws_sender_shared,
-                    &pending,
-                    local_port,
-                    &auth_token,
                     &current_ws_to_tunnel_tx,
                     &mut current_tunnel_to_ws_rx,
                 ).await;
@@ -363,9 +324,6 @@ impl SlaveState {
             tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
         >,
         ws_sender_shared: &Arc<Mutex<Option<WsSink>>>,
-        pending: &PendingRequests,
-        local_port: u16,
-        auth_token: &str,
         ws_to_tunnel_tx: &mpsc::UnboundedSender<String>,
         tunnel_to_ws_rx: &mut mpsc::UnboundedReceiver<String>,
     ) {
@@ -375,24 +333,6 @@ impl SlaveState {
                     match msg {
                         Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
                             match serde_json::from_str::<TunnelMessage>(&text) {
-                                Ok(TunnelMessage::Request(req)) => {
-                                    let sender = ws_sender_shared.clone();
-                                    let token = auth_token.to_string();
-                                    tokio::spawn(async move {
-                                        let resp = handle_tunnel_request(req, local_port, &token).await;
-                                        let msg = serde_json::to_string(&TunnelMessage::Response(resp)).unwrap();
-                                        let mut s = sender.lock().await;
-                                        if let Some(ws) = s.as_mut() {
-                                            let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await;
-                                        }
-                                    });
-                                }
-                                Ok(TunnelMessage::Response(resp)) => {
-                                    let mut pending_map = pending.lock().await;
-                                    if let Some(sender) = pending_map.remove(&resp.request_id) {
-                                        let _ = sender.send(resp);
-                                    }
-                                }
                                 Ok(TunnelMessage::Heartbeat) => {
                                     let hb = serde_json::to_string(&TunnelMessage::Heartbeat).unwrap();
                                     let mut s = ws_sender_shared.lock().await;
@@ -479,66 +419,78 @@ impl SlaveState {
     }
 }
 
-/// Handle a tunnel request by making a local HTTP request
-async fn handle_tunnel_request(req: TunnelRequest, local_port: u16, auth_token: &str) -> TunnelResponse {
-    let client = reqwest::Client::new();
-    let url = format!("http://localhost:{}{}", local_port, req.path);
+/// Slave-side HTTP proxy handler — forwards proxied HTTP requests to local instances
+struct SlaveHttpProxyHandler {
+    local_port: u16,
+    auth_token: String,
+}
 
-    debug!("[HUB-SLAVE] Tunnel request: {} {}", req.method, req.path);
-
-    let method = reqwest::Method::from_bytes(req.method.as_bytes())
-        .unwrap_or(reqwest::Method::GET);
-
-    let mut http_req = client.request(method, &url);
-
-    let session_token = crate::hub::compute_session_token(auth_token);
-    http_req = http_req.header("cookie", format!("session_token={}", session_token));
-
-    for (k, v) in &req.headers {
-        let k_lower = k.to_lowercase();
-        if k_lower != "cookie" && k_lower != "host" {
-            http_req = http_req.header(k.as_str(), v.as_str());
-        }
+impl SlaveHttpProxyHandler {
+    fn new(local_port: u16, auth_token: String) -> Self {
+        Self { local_port, auth_token }
     }
+}
 
-    if let Some(body_b64) = &req.body {
-        if let Ok(body_bytes) = base64::engine::general_purpose::STANDARD.decode(body_b64) {
-            http_req = http_req.body(body_bytes);
+#[async_trait::async_trait]
+impl HttpProxy for SlaveHttpProxyHandler {
+    async fn proxy_http(&self, request: HttpProxyRequest) -> Result<HttpProxyResponse, String> {
+        let client = reqwest::Client::new();
+        let url = format!("http://localhost:{}{}", self.local_port, request.path);
+
+        debug!("[HUB-SLAVE] Proxy request: {} {}", request.method, request.path);
+
+        let method = reqwest::Method::from_bytes(request.method.as_bytes())
+            .unwrap_or(reqwest::Method::GET);
+
+        let mut http_req = client.request(method, &url);
+
+        let session_token = crate::hub::compute_session_token(&self.auth_token);
+        http_req = http_req.header("cookie", format!("session_token={}", session_token));
+
+        for (k, v) in &request.headers {
+            let k_lower = k.to_lowercase();
+            if k_lower != "cookie" && k_lower != "host" {
+                http_req = http_req.header(k.as_str(), v.as_str());
+            }
         }
-    }
 
-    match http_req.send().await {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let mut headers = HashMap::new();
-            for (k, v) in resp.headers() {
-                if let Ok(v_str) = v.to_str() {
-                    headers.insert(k.to_string(), v_str.to_string());
+        if let Some(body_b64) = &request.body {
+            if let Ok(body_bytes) = base64::engine::general_purpose::STANDARD.decode(body_b64) {
+                http_req = http_req.body(body_bytes);
+            }
+        }
+
+        match http_req.send().await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let mut headers = HashMap::new();
+                for (k, v) in resp.headers() {
+                    if let Ok(v_str) = v.to_str() {
+                        headers.insert(k.to_string(), v_str.to_string());
+                    }
                 }
-            }
-            let body_bytes = resp.bytes().await.unwrap_or_default();
-            let body = if body_bytes.is_empty() {
-                None
-            } else {
-                Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes))
-            };
+                let body_bytes = resp.bytes().await.unwrap_or_default();
+                let body = if body_bytes.is_empty() {
+                    None
+                } else {
+                    Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes))
+                };
 
-            TunnelResponse {
-                request_id: req.request_id,
-                status,
-                headers,
-                body,
+                Ok(HttpProxyResponse {
+                    status,
+                    headers,
+                    body,
+                })
             }
-        }
-        Err(e) => {
-            error!("[HUB-SLAVE] Local request failed: {}", e);
-            TunnelResponse {
-                request_id: req.request_id,
-                status: 502,
-                headers: HashMap::new(),
-                body: Some(base64::engine::general_purpose::STANDARD.encode(
-                    format!("Tunnel error: {}", e).as_bytes(),
-                )),
+            Err(e) => {
+                error!("[HUB-SLAVE] Local request failed: {}", e);
+                Ok(HttpProxyResponse {
+                    status: 502,
+                    headers: HashMap::new(),
+                    body: Some(base64::engine::general_purpose::STANDARD.encode(
+                        format!("Tunnel error: {}", e).as_bytes(),
+                    )),
+                })
             }
         }
     }

@@ -1,7 +1,6 @@
 pub mod tunnel;
 pub mod host;
 pub mod slave;
-pub mod hooks;
 pub mod extension_impl;
 
 use std::sync::Arc;
@@ -53,14 +52,14 @@ impl HubState {
     }
 
     /// Enable host mode with a join token (room password)
-    pub async fn enable_host(&self, join_token: String, local_port: u16, auth_secret: String, instance_store: crate::persist::instance::InstanceStore) -> Result<(), String> {
+    pub async fn enable_host(&self, join_token: String, instance_store: crate::persist::instance::InstanceStore) -> Result<(), String> {
         if join_token.is_empty() {
             return Err("Join token cannot be empty".to_string());
         }
         let mut mode = self.mode.write().await;
         match &*mode {
             HubMode::Off => {
-                let host = Arc::new(HostState::new(join_token, local_port, auth_secret, instance_store));
+                let host = Arc::new(HostState::new(join_token, instance_store));
                 info!("[HUB] Host mode enabled");
                 *mode = HubMode::Host(host);
                 Ok(())

@@ -71,3 +71,4 @@ pub trait HubService {
 }
 
 pub mod extension;
+pub mod http_proxy;

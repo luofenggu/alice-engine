@@ -90,5 +90,3 @@ bind_http! {
 // Centralizes all Hub-related URL paths that aren't covered by http_service!/bind_http! macros.
 
 pub const HUB_WS_PATH: &str = "/api/hub/ws";
-pub const HUB_CONTACTS_PATH_PREFIX: &str = "/api/hub/contacts/";
-pub const HUB_RELAY_PATH: &str = "/api/hub/relay";

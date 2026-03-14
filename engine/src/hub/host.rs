@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
-use tracing::{info, warn, error, debug};
+use tracing::{info, warn, error};
 
-use base64::Engine;
 use mad_hatter::tunnel::{Dispatch, TunnelEndpoint};
 use crate::hub::tunnel::*;
 use crate::persist::instance::InstanceStore;
+use crate::service::http_proxy::{HttpProxy, HttpProxyProxy, HttpProxyRequest, HttpProxyResponse};
 
 /// A connected slave engine
 struct SlaveConnection {
@@ -18,39 +18,26 @@ struct SlaveConnection {
     #[allow(dead_code)]
     engine_endpoint: String,
     instances: Vec<TunnelInstanceInfo>,
-    sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
     /// Whether this connection is still alive (set to false on disconnect or heartbeat failure)
     connected: Arc<AtomicBool>,
     /// TunnelEndpoint for RPC calls to this slave
     tunnel_endpoint: Option<Arc<TunnelEndpoint>>,
 }
 
-/// Pending request awaiting response from slave
-type PendingRequests = Arc<Mutex<HashMap<String, oneshot::Sender<TunnelResponse>>>>;
-
 /// Host state: manages connected slaves and routes requests
 pub struct HostState {
     pub join_token: String,
-    /// Local engine port
-    local_port: u16,
-    /// Auth secret for local API requests
-    auth_secret: String,
     /// engine_id → SlaveConnection
     connections: RwLock<HashMap<String, SlaveConnection>>,
-    /// request_id → response sender (shared across all connections)
-    pending: PendingRequests,
     /// Instance store for local operations
     instance_store: InstanceStore,
 }
 
 impl HostState {
-    pub fn new(join_token: String, local_port: u16, auth_secret: String, instance_store: InstanceStore) -> Self {
+    pub fn new(join_token: String, instance_store: InstanceStore) -> Self {
         Self {
             join_token,
-            local_port,
-            auth_secret,
             connections: RwLock::new(HashMap::new()),
-            pending: Arc::new(Mutex::new(HashMap::new())),
             instance_store,
         }
     }
@@ -59,7 +46,6 @@ impl HostState {
     pub async fn handle_slave_connection(self: &Arc<Self>, socket: WebSocket, engine_id: String) {
         let (ws_sender, mut ws_receiver) = socket.split();
         let ws_sender = Arc::new(Mutex::new(ws_sender));
-        let pending = self.pending.clone();
 
         // Wait for register message
         let (registered_engine_id, engine_endpoint, instances) = match ws_receiver.next().await {
@@ -106,7 +92,6 @@ impl HostState {
                 engine_id: engine_id.clone(),
                 engine_endpoint: engine_endpoint.clone(),
                 instances,
-                sender: ws_sender.clone(),
                 connected: connected.clone(),
                 tunnel_endpoint: Some(tunnel_endpoint),
             };
@@ -153,24 +138,6 @@ impl HostState {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
                             match serde_json::from_str::<TunnelMessage>(&text) {
-                                Ok(TunnelMessage::Response(resp)) => {
-                                    let mut pending_map = pending.lock().await;
-                                    if let Some(sender) = pending_map.remove(&resp.request_id) {
-                                        let _ = sender.send(resp);
-                                    }
-                                }
-                                Ok(TunnelMessage::Request(req)) => {
-                                    // Slave is requesting something from host — handle locally via HTTP proxy
-                                    let sender = ws_sender.clone();
-                                    let port = self.local_port;
-                                    let auth_secret = self.auth_secret.clone();
-                                    tokio::spawn(async move {
-                                        let resp = handle_host_local_request(req, port, &auth_secret).await;
-                                        let msg = serde_json::to_string(&TunnelMessage::Response(resp)).unwrap();
-                                        let mut s = sender.lock().await;
-                                        let _ = s.send(Message::Text(msg.into())).await;
-                                    });
-                                }
                                 Ok(TunnelMessage::Heartbeat) => {
                                     let hb = serde_json::to_string(&TunnelMessage::Heartbeat).unwrap();
                                     let mut sender = ws_sender.lock().await;
@@ -253,60 +220,14 @@ impl HostState {
     }
 
     /// Send an HTTP request through the tunnel to a slave (by instance_id)
-    pub async fn proxy_request(&self, instance_id: &str, req: TunnelRequest) -> Option<TunnelResponse> {
-        let (engine_id, sender, connected) = {
-            let conns = self.connections.read().await;
-            let mut found = None;
-            for (eid, conn) in conns.iter() {
-                if conn.instances.iter().any(|i| i.id == instance_id) {
-                    found = Some((eid.clone(), conn.sender.clone(), conn.connected.clone()));
-                    break;
-                }
-            }
-            found?
-        };
-
-        // Fast fail: check if connection is still alive
-        if !connected.load(Ordering::Relaxed) {
-            warn!("[HUB-HOST] Connection already dead for instance {}, cleaning up", instance_id);
-            self.connections.write().await.remove(&engine_id);
-            return None;
-        }
-
-        let request_id = req.request_id.clone();
-
-        // Set up response channel
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self.pending.lock().await;
-            pending.insert(request_id.clone(), tx);
-        }
-
-        // Send request through tunnel
-        let msg = serde_json::to_string(&TunnelMessage::Request(req)).unwrap();
-        {
-            let mut ws = sender.lock().await;
-            if ws.send(Message::Text(msg.into())).await.is_err() {
-                error!("[HUB-HOST] Failed to send tunnel request, marking disconnected");
-                connected.store(false, Ordering::Relaxed);
-                self.pending.lock().await.remove(&request_id);
-                self.connections.write().await.remove(&engine_id);
-                return None;
-            }
-        }
-
-        // Wait for response with timeout (10s — fail fast)
-        match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
-            Ok(Ok(resp)) => Some(resp),
-            Ok(Err(_)) => {
-                warn!("[HUB-HOST] Response channel dropped for {}", request_id);
-                None
-            }
-            Err(_) => {
-                warn!("[HUB-HOST] Tunnel request timeout for {} (10s), marking disconnected", request_id);
-                connected.store(false, Ordering::Relaxed);
-                self.pending.lock().await.remove(&request_id);
-                self.connections.write().await.remove(&engine_id);
+    /// Uses HttpProxy RPC via tunnel_service — no manual serialization needed
+    pub async fn proxy_request(&self, instance_id: &str, req: HttpProxyRequest) -> Option<HttpProxyResponse> {
+        let endpoint = self.get_slave_tunnel_endpoint(instance_id).await?;
+        let proxy = HttpProxyProxy::new(endpoint);
+        match proxy.proxy_http(req).await {
+            Ok(resp) => Some(resp),
+            Err(e) => {
+                error!("[HUB-HOST] Proxy request failed for instance {}: {}", instance_id, e);
                 None
             }
         }
@@ -435,73 +356,5 @@ impl ExtensionHandler for HostLocalHandler {
         }
 
         Ok(contacts)
-    }
-}
-
-/// Handle a tunnel request from slave by making a local HTTP request on the host
-async fn handle_host_local_request(req: TunnelRequest, local_port: u16, auth_secret: &str) -> TunnelResponse {
-    let client = reqwest::Client::new();
-    let url = format!("http://localhost:{}{}", local_port, req.path);
-
-    debug!("[HUB-HOST] Tunnel request from slave: {} {}", req.method, req.path);
-
-    let method = reqwest::Method::from_bytes(req.method.as_bytes())
-        .unwrap_or(reqwest::Method::GET);
-
-    let mut http_req = client.request(method, &url);
-
-    // Inject auth cookie (host uses its own auth_secret)
-    let session_token = crate::hub::compute_session_token(auth_secret);
-    http_req = http_req.header("cookie", format!("session_token={}", session_token));
-
-    // Add headers from tunnel request (skip cookie/host)
-    for (k, v) in &req.headers {
-        let k_lower = k.to_lowercase();
-        if k_lower != "cookie" && k_lower != "host" {
-            http_req = http_req.header(k.as_str(), v.as_str());
-        }
-    }
-
-    // Add body if present (base64 decoded)
-    if let Some(body_b64) = &req.body {
-        if let Ok(body_bytes) = base64::engine::general_purpose::STANDARD.decode(body_b64) {
-            http_req = http_req.body(body_bytes);
-        }
-    }
-
-    match http_req.send().await {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let mut headers = HashMap::new();
-            for (k, v) in resp.headers() {
-                if let Ok(v_str) = v.to_str() {
-                    headers.insert(k.to_string(), v_str.to_string());
-                }
-            }
-            let body_bytes = resp.bytes().await.unwrap_or_default();
-            let body = if body_bytes.is_empty() {
-                None
-            } else {
-                Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes))
-            };
-
-            TunnelResponse {
-                request_id: req.request_id,
-                status,
-                headers,
-                body,
-            }
-        }
-        Err(e) => {
-            error!("[HUB-HOST] Local request failed: {}", e);
-            TunnelResponse {
-                request_id: req.request_id,
-                status: 502,
-                headers: HashMap::new(),
-                body: Some(base64::engine::general_purpose::STANDARD.encode(
-                    format!("Host tunnel error: {}", e).as_bytes(),
-                )),
-            }
-        }
     }
 }
