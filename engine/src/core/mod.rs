@@ -679,7 +679,7 @@ impl Alice {
         } else {
             None
         };
-        let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &request, on_text, on_input)
+        let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &request, on_text, on_input, None)
             .map_err(|e| anyhow::anyhow!(e))?;
         let output = results.into_iter().next()
             .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
@@ -911,7 +911,12 @@ impl Alice {
         } else {
             None
         };
-        let stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input)
+        let preamble_holder: std::sync::Arc<std::sync::Mutex<Option<String>>> = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let preamble_clone = preamble_holder.clone();
+        let on_preamble: Option<Box<dyn FnOnce(&str) + '_>> = Some(Box::new(move |text: &str| {
+            *preamble_clone.lock().unwrap() = Some(text.to_string());
+        }));
+        let stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input, on_preamble)
             .map_err(|e| {
                 let (backoff, rotation) = self.set_inference_backoff();
                 anyhow::anyhow!(
@@ -924,6 +929,25 @@ impl Alice {
         self.last_was_idle = false;
         let mut guard = SequenceGuard::new(&self.instance.id);
         let mut inference_error: Option<String> = None;
+
+        // Handle preamble: convert to thinking action if LLM output text before first action
+        if let Some(preamble_text) = preamble_holder.lock().unwrap().take() {
+            info!(
+                "[PREAMBLE-{}] LLM output preamble before first action ({} chars), converting to thinking",
+                self.instance.id, preamble_text.len()
+            );
+            let thinking_content = format!(
+                "⚠️ 你的输出在首个action前包含了多余内容。如果需要记录思考，请使用thinking action。以下内容已自动纳入thinking：\n\n{}",
+                preamble_text
+            );
+            let thinking_action = Action::Thinking { content: thinking_content.clone() };
+            let preamble_action_id = action_output::generate_action_id();
+            let preamble_json = serde_json::to_string(&thinking_action).unwrap_or_default();
+            self.instance.memory.insert_action_log(
+                &preamble_action_id, "thinking", &preamble_json, &preamble_action_id[..14],
+            )?;
+            self.instance.memory.complete_action_log(&preamble_action_id, &ActionOutput::Empty)?;
+        }
 
         for result in stream_iter {
             // Check for interrupt signal between actions
@@ -1169,7 +1193,7 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
     } else {
         None
     };
-    let results = infer_with_on_text::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request, on_text, on_input)
+    let results = infer_with_on_text::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request, on_text, on_input, None)
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no capture output"))?;
@@ -1226,7 +1250,7 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     } else {
         None
     };
-    let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &task.request, on_text, on_input)
+    let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &task.request, on_text, on_input, None)
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
