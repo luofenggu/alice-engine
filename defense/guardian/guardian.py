@@ -238,6 +238,7 @@ def scan_file(filepath, source_bytes, parser):
 
             # 4. Log macros (info!, warn!, error!, debug!, trace!)
             if not exempt:
+                found_log = False
                 macro = get_macro_name(node)
                 if macro:
                     macro_base = macro.rstrip('!')
@@ -245,19 +246,40 @@ def scan_file(filepath, source_bytes, parser):
                     if '::' in macro_base:
                         macro_base = macro_base.rsplit('::', 1)[1]
                     if macro_base in LOG_MACROS:
-                        exempt = True
-                        exempt_reason = 'log'
+                        found_log = True
+                # Fallback: get_macro_name may return outer macro (e.g. tokio::select)
+                # when log macro is nested inside another macro's token_tree.
+                # Check source line text for log macro patterns.
+                if not found_log:
+                    line_text = get_line_text(source_lines, node.start_point[0]).strip()
+                    for log_m in LOG_MACROS:
+                        if log_m + '!(' in line_text or log_m + '! (' in line_text:
+                            found_log = True
+                            break
+                if found_log:
+                    exempt = True
+                    exempt_reason = 'log'
 
             # 6. Error macros (bail!, ensure!, anyhow!)
             if not exempt:
+                found_err = False
                 macro = get_macro_name(node)
                 if macro:
                     macro_base = macro.rstrip('!')
                     if '::' in macro_base:
                         macro_base = macro_base.rsplit('::', 1)[1]
                     if macro_base in ERROR_MACROS:
-                        exempt = True
-                        exempt_reason = 'error'
+                        found_err = True
+                # Fallback: same as log — check line text for error macro patterns
+                if not found_err:
+                    line_text = get_line_text(source_lines, node.start_point[0]).strip()
+                    for err_m in ERROR_MACROS:
+                        if err_m + '!(' in line_text or err_m + '! (' in line_text:
+                            found_err = True
+                            break
+                if found_err:
+                    exempt = True
+                    exempt_reason = 'error'
 
             # 7. Error method chain (.context(), .with_context())
             if not exempt:
