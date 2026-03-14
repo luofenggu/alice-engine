@@ -276,6 +276,7 @@ fn test_stream_infer_on_text_receives_all_chunks() {
         })),
         None,
         None,
+        None,
     ).unwrap();
 
     let results: Vec<Result<StreamAction, String>> = stream.collect();
@@ -317,6 +318,7 @@ fn test_stream_infer_on_text_none_equivalent() {
         None,
         None,
         None,
+        None,
     ).unwrap();
 
     let results: Vec<Result<StreamAction, String>> = stream.collect();
@@ -352,6 +354,7 @@ fn test_stream_infer_preamble_callback_receives_content() {
         Some(Box::new(move |text: &str| {
             *preamble_clone.borrow_mut() = text.to_string();
         })),
+        None,
     ).unwrap();
 
     let results: Vec<Result<StreamAction, String>> = stream.collect();
@@ -382,6 +385,7 @@ fn test_stream_infer_preamble_none_no_error() {
     let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &PreambleNoneChannel,
         &request,
+        None,
         None,
         None,
         None,
@@ -418,10 +422,123 @@ fn test_stream_infer_no_preamble_no_callback() {
         Some(Box::new(move |_text: &str| {
             *was_called_clone.borrow_mut() = true;
         })),
+        None,
     ).unwrap();
 
     let results: Vec<Result<StreamAction, String>> = stream.collect();
     assert_eq!(results.len(), 1);
     assert!(results[0].is_ok());
     assert!(!*was_called.borrow(), "on_preamble should NOT be called when there's no preamble");
+}
+
+// === Cancel tests ===
+
+#[test]
+fn test_stream_infer_cancel_mid_stream() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct SlowChannel;
+    impl LlmChannel for SlowChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            let chunks = vec![
+                format!("StreamAction-{}\n", token),
+                "reply\n".to_string(),
+                "first action\n".to_string(),
+                format!("StreamAction-{}\n", token),
+                "reply\n".to_string(),
+                "second action\n".to_string(),
+                format!("StreamAction-{}\n", token),
+                "reply\n".to_string(),
+                "third action\n".to_string(),
+                format!("StreamAction-end-{}\n", token),
+            ];
+            Ok(Box::new(chunks.into_iter()))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
+
+    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &SlowChannel,
+        &request,
+        None,
+        None,
+        None,
+        Some(cancel_clone),
+    ).unwrap();
+
+    let mut results = Vec::new();
+    for item in stream {
+        results.push(item.unwrap());
+        // Cancel after first action
+        cancel.store(true, Ordering::Relaxed);
+    }
+
+    // Should have gotten first action then stopped
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], StreamAction::Reply { content: "first action".to_string() });
+}
+
+#[test]
+fn test_stream_infer_cancel_none_no_effect() {
+    // Verify that cancel=None doesn't affect normal operation
+    let request = StreamReq { prompt: "test".to_string() };
+
+    struct NormalChannel;
+    impl LlmChannel for NormalChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            Ok(Box::new(vec![
+                format!("StreamAction-{}\nreply\nworks\nStreamAction-end-{}\n", token, token),
+            ].into_iter()))
+        }
+    }
+
+    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &NormalChannel,
+        &request,
+        None,
+        None,
+        None,
+        None,
+    ).unwrap();
+
+    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "works".to_string() });
+}
+
+#[test]
+fn test_stream_infer_cancel_before_start() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    struct AnyChannel;
+    impl LlmChannel for AnyChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            Ok(Box::new(vec![
+                format!("StreamAction-{}\nreply\nshould not see\nStreamAction-end-{}\n", token, token),
+            ].into_iter()))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let cancel = Arc::new(AtomicBool::new(true)); // Already cancelled
+
+    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &AnyChannel,
+        &request,
+        None,
+        None,
+        None,
+        Some(cancel),
+    ).unwrap();
+
+    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    assert_eq!(results.len(), 0); // Nothing parsed
 }

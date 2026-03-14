@@ -225,7 +225,7 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    stream_infer_with_on_text(channel, request, None, None, None)
+    stream_infer_with_on_text(channel, request, None, None, None, None)
 }
 
 /// Stream inference with optional text callback
@@ -243,6 +243,7 @@ pub fn stream_infer_with_on_text<'a, Req, Resp>(
     on_text: Option<Box<dyn FnMut(&str) + 'a>>,
     on_input: Option<Box<dyn FnOnce(&str)>>,
     on_preamble: Option<Box<dyn FnOnce(&str) + 'a>>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<StreamInfer<'a, Resp>, String>
 where
     Req: ToMarkdown + StructInput,
@@ -264,6 +265,7 @@ where
         parsed_count: 0,
         on_text,
         on_preamble,
+        cancel,
         _phantom: std::marker::PhantomData,
     })
 }
@@ -278,6 +280,7 @@ pub struct StreamInfer<'a, T: FromMarkdown> {
     parsed_count: usize,
     on_text: Option<Box<dyn FnMut(&str) + 'a>>,
     on_preamble: Option<Box<dyn FnOnce(&str) + 'a>>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -300,6 +303,14 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
         let end_marker = format!("{}-end-{}", self.type_name, self.token);
 
         loop {
+            // Check cancel signal before processing
+            if let Some(ref cancel) = self.cancel {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    self.done = true;
+                    return None;
+                }
+            }
+
             // Priority 1: Try to extract a complete element between two separators
             // This must be checked BEFORE end_marker, because end_marker substring
             // could be found in buffer while there are still unprocessed elements.
@@ -428,7 +439,7 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    infer_with_on_text(channel, request, None, None, None)
+    infer_with_on_text(channel, request, None, None, None, None)
 }
 
 /// Full inference with optional text callback
@@ -441,12 +452,13 @@ pub fn infer_with_on_text<Req, Resp>(
     on_text: Option<Box<dyn FnMut(&str) + '_>>,
     on_input: Option<Box<dyn FnOnce(&str)>>,
     on_preamble: Option<Box<dyn FnOnce(&str) + '_>>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<Resp>, String>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    let stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text, on_input, on_preamble)?;
+    let stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text, on_input, on_preamble, cancel)?;
     let mut results = Vec::new();
     for item in stream {
         results.push(item?);

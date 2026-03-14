@@ -419,6 +419,7 @@ fn test_infer_with_on_text_receives_chunks() {
         })),
         None,
         None,
+        None,
     ).unwrap();
 
     // Verify parsing works
@@ -459,6 +460,7 @@ fn test_infer_with_on_text_none_equivalent() {
         None,
         None,
         None,
+        None,
     ).unwrap();
 
     assert_eq!(results.len(), 1);
@@ -495,9 +497,42 @@ fn test_infer_with_preamble_callback() {
         Some(Box::new(move |text: &str| {
             *preamble_clone.borrow_mut() = text.to_string();
         })),
+        None,
     ).unwrap();
 
     assert_eq!(results.len(), 1);
     let preamble = preamble_text.borrow();
     assert!(preamble.contains("Let me think about this"), "preamble callback should receive waste text: {}", preamble);
+}
+
+// === Cancel tests ===
+
+#[test]
+fn test_infer_with_cancel() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    struct InferCancelChannel;
+    impl LlmChannel for InferCancelChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token_from_prompt(&prompt, "SimpleAction");
+            Ok(Box::new(vec![
+                format!("SimpleAction-{}\ngreet\nhello\nSimpleAction-{}\ngreet\nworld\nSimpleAction-end-{}\n", token, token, token),
+            ].into_iter()))
+        }
+    }
+
+    let request = SimpleRequest { message: "test".to_string(), context: "ctx".to_string() };
+    let cancel = Arc::new(AtomicBool::new(true)); // Pre-cancelled
+
+    let results = infer_with_on_text::<SimpleRequest, SimpleAction>(
+        &InferCancelChannel,
+        &request,
+        None,
+        None,
+        None,
+        Some(cancel),
+    ).unwrap();
+
+    assert_eq!(results.len(), 0); // Nothing parsed because cancelled immediately
 }
