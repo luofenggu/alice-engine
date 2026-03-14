@@ -177,10 +177,14 @@ impl ActionRecord {
     pub fn from_db_row(row: &ActionLogRow) -> Self {
         use crate::bindings::db::{ACTION_STATUS_DISTILLED, ACTION_STATUS_DONE};
 
-        let input: Action = serde_json::from_str(&row.action_input)
-            .unwrap_or_else(|_| Action::Thinking {
-                content: format!("[deserialization failed] {}", truncate_for_display(&row.action_input, 100)),
-            });
+        let input: Option<Action> = if row.action_input.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_str(&row.action_input)
+                .unwrap_or_else(|_| Action::Thinking {
+                    content: format!("[deserialization failed] {}", truncate_for_display(&row.action_input, 100)),
+                }))
+        };
 
         let status = match row.status.as_str() {
             s if s == ACTION_STATUS_DONE => ActionStatus::Done,
@@ -191,6 +195,19 @@ impl ActionRecord {
         // For distilled records, don't load input or output (only distill_text)
         let (final_input, output) = if status == ActionStatus::Distilled {
             (None, None)
+        } else if input.is_none() {
+            // Empty action_input (e.g. interrupt/reject/inference_error notes)
+            let output = row.action_output.as_deref().and_then(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    serde_json::from_str::<ActionOutput>(s)
+                        .ok()
+                        .or_else(|| Some(ActionOutput::Note { text: s.to_string() }))
+                        .and_then(|o| if matches!(o, ActionOutput::Empty) { None } else { Some(o) })
+                }
+            });
+            (None, output)
         } else {
             let output = row.action_output.as_deref().and_then(|s| {
                 if s.is_empty() {
@@ -202,7 +219,7 @@ impl ActionRecord {
                         .and_then(|o| if matches!(o, ActionOutput::Empty) { None } else { Some(o) })
                 }
             });
-            (Some(input), output)
+            (input, output)
         };
 
         ActionRecord {
