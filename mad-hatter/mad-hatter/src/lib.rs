@@ -40,8 +40,10 @@ pub use mad_hatter_macros::http_service;
 pub use mad_hatter_macros::bind_http;
 pub use mad_hatter_macros::ToMarkdown;
 pub use mad_hatter_macros::FromMarkdown;
+pub use mad_hatter_macros::tunnel_service;
 
 pub mod llm;
+pub mod tunnel;
 pub use llm::{LlmChannel, OpenAiChannel, StructInput, StructOutput, infer, infer_with_on_text, stream_infer, stream_infer_with_on_text, StreamInfer};
 
 // Re-export axum types that generated code needs

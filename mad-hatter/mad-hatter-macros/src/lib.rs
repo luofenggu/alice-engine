@@ -3,6 +3,7 @@ use proc_macro::TokenStream;
 mod parse;
 mod gen;
 mod llm;
+mod tunnel;
 
 /// Define an HTTP service with typed endpoints.
 ///
@@ -104,4 +105,23 @@ pub fn derive_to_markdown(input: TokenStream) -> TokenStream {
 pub fn derive_from_markdown(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     llm::derive_from_markdown(input).into()
+}
+
+/// Mark a trait as a tunnel service for RPC over bidirectional transport.
+///
+/// Generates `{TraitName}Proxy` (remote caller) and `{TraitName}Dispatcher` (local handler).
+///
+/// All methods must have `&self` receiver and return `Result<T, String>`.
+/// Parameters and return types must implement `Serialize + Deserialize`.
+///
+/// ```ignore
+/// #[tunnel_service]
+/// trait InstanceComm: Send + Sync {
+///     fn relay_message(&self, from: String, to: String, content: String) -> Result<(), String>;
+///     fn fetch_contacts(&self) -> Result<Vec<ContactInfo>, String>;
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn tunnel_service(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    tunnel::derive_tunnel_service(input.into()).into()
 }
