@@ -298,10 +298,32 @@ impl<T: FromMarkdown> StreamInfer<T> {
                 }
             }
 
+            // Early preamble detection: check completed lines before first separator
+            // Instead of waiting for separator to appear, check each completed line immediately
+            if self.parsed_count == 0 && !self.buffer.contains(&separator) {
+                if let Some(last_newline) = self.buffer.rfind('\n') {
+                    let completed = &self.buffer[..last_newline];
+                    for line in completed.lines() {
+                        let t = line.trim();
+                        if t.is_empty() || t.starts_with("```") {
+                            continue;
+                        }
+                        // Non-empty, non-exempt line before any separator = preamble
+                        self.done = true;
+                        let display = if t.len() > 200 { &t[..200] } else { t };
+                        return Some(Err(format!(
+                            "Unexpected content before first action separator: {}",
+                            display
+                        )));
+                    }
+                }
+            }
+
             // Priority 1: Try to extract a complete element between two separators
             let first_sep = self.buffer.find(&separator);
             if let Some(first_pos) = first_sep {
                 if self.parsed_count == 0 && first_pos > 0 {
+                    // Fallback preamble check for content on same line as separator (no \n between)
                     let before = self.buffer[..first_pos].trim();
                     if !before.is_empty() && !before.lines().all(|l| {
                         let t = l.trim();
