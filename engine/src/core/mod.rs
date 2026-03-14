@@ -1059,13 +1059,7 @@ impl Alice {
                     "[PREAMBLE-{}] LLM output preamble before first action, recording as inference error",
                     self.instance.id
                 );
-                // Extract the raw preamble content from error message
-                let raw_preamble = e.strip_prefix("Unexpected content before first action separator: ")
-                    .unwrap_or(&e);
-                let note_text = format!(
-                    "⚠️ 你的推理输出格式错误——在首个Action前输出了多余内容：\n\n「{}」\n\n正确做法：如果需要记录思考过程，第一个输出必须是thinking action，例如：\n###ACTION_xxx###-thinking\n你的思考内容",
-                    raw_preamble
-                );
+                let note_text = e.clone();
                 let note_id = action_output::generate_action_id();
                 self.instance.memory.insert_done_note(&note_id, "inference_error", &note_text).ok();
                 // Don't advance channel, don't bail - let beat end normally
