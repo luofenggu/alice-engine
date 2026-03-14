@@ -156,7 +156,6 @@ pub enum ActionStatus {
     Distilled,
 }
 
-/// Complete action record for rendering.
 #[derive(ToMarkdown)]
 pub struct ActionRecord {
     /// action_id
@@ -165,9 +164,9 @@ pub struct ActionRecord {
     pub action_type: String,
     #[markdown(skip)]
     pub status: ActionStatus,
-    /// input
+    #[markdown(flatten)]
     pub input: Option<Action>,
-    /// output
+    #[markdown(flatten)]
     pub output: Option<ActionOutput>,
     /// distill_text
     pub distill_text: Option<String>,
