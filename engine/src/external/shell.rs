@@ -1,10 +1,9 @@
 //! # Shell Command Execution
 //!
-//! Executes shell commands in the agent's workspace directory (synchronous).
+//! Executes shell commands in the agent's workspace directory (async).
 //! Provides timeout protection and output truncation to prevent OOM.
 //!
-//! Uses std::process::Command (blocking) because action execution is sequential.
-//! Async is reserved for LLM inference (Phase 3).
+//! Uses tokio::process::Command for async subprocess execution.
 //!
 //! @TRACE: SHELL — All command executions are traced under SHELL line.
 //!
@@ -17,11 +16,7 @@
 //! The shell layer is the first line of defense. A runaway `cat` on a huge file
 //! will be cut off here before it can bloat the process memory.
 
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
@@ -113,14 +108,19 @@ impl ShellOutput {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Read from `reader` into `buf` until EOF or `limit` bytes accumulated.
+/// Async read from `reader` into `buf` until EOF or `limit` bytes accumulated.
 /// Uses chunked reads to avoid closing the pipe prematurely (SIGPIPE fix).
-fn read_limited(reader: &mut impl Read, limit: usize, buf: &mut Vec<u8>) {
+async fn read_limited_async(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    limit: usize,
+    buf: &mut Vec<u8>,
+) {
+    use tokio::io::AsyncReadExt;
     let mut chunk = [0u8; 8192];
     while buf.len() < limit {
         let remaining = limit - buf.len();
         let to_read = remaining.min(chunk.len());
-        match reader.read(&mut chunk[..to_read]) {
+        match reader.read(&mut chunk[..to_read]).await {
             Ok(0) => break, // EOF
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
             Err(_) => break, // I/O error, stop reading
@@ -191,25 +191,26 @@ impl Shell {
     ///
     /// @TRACE: SHELL — `[SHELL-{id}] Executing script ({n} bytes)`
     #[instrument(skip(self, script), fields(trace = "SHELL"))]
-    pub fn exec(&self, script: &str) -> ShellResult<ShellOutput> {
-        self.exec_in_dir(script, &self.working_dir)
+    pub async fn exec(&self, script: &str) -> ShellResult<ShellOutput> {
+        self.exec_in_dir(script, &self.working_dir).await
     }
 
-    /// Execute a shell script in a specific directory.
+    /// Execute a shell script in a specific directory (async).
     ///
     /// Both paths pipe the script via stdin to bash, ensuring identical I/O behavior.
     /// Sandboxed mode wraps with `su -` for user isolation (紧箍咒).
     ///
     /// @TRACE: SHELL — `[SHELL-{id}] Executing in {dir}`
     #[instrument(skip(self, script), fields(trace = "SHELL"))]
-    pub fn exec_in_dir(&self, script: &str, dir: &Path) -> ShellResult<ShellOutput> {
+    pub async fn exec_in_dir(&self, script: &str, dir: &Path) -> ShellResult<ShellOutput> {
+        use tokio::process::Command;
+        use std::process::Stdio;
+
         let start = std::time::Instant::now();
         let max_output = self.max_output;
         let timeout = self.timeout_duration;
 
         // Both paths use stdin to pipe the script to bash.
-        // This ensures identical I/O behavior (read_limited on stdout/stderr)
-        // regardless of privilege mode, eliminating test coverage blind spots.
         let mut child = if self.sandbox_user.is_some() {
             // 紧箍咒: su降权执行
             let user = self.sandbox_user.as_deref().unwrap_or("nobody");
@@ -224,7 +225,6 @@ impl Shell {
                 .stderr(Stdio::piped());
             cmd.spawn()?
         } else {
-            // Privileged: direct execution (same stdin-based approach)
             let mut cmd = Command::new("/bin/bash");
             cmd.current_dir(dir)
                 .env("ALICE_ENGINE_CHILD", "1")
@@ -234,7 +234,7 @@ impl Shell {
             cmd.spawn()?
         };
 
-        // Unified: write script to stdin for both paths
+        // Write script to stdin
         {
             let script_content = if self.sandbox_user.is_some() {
                 format!("cd {} && {}", dir.display(), script)
@@ -242,43 +242,33 @@ impl Shell {
                 script.to_string()
             };
             if let Some(mut stdin) = child.stdin.take() {
-                use std::io::Write;
-                let _ = stdin.write_all(script_content.as_bytes());
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(script_content.as_bytes()).await;
                 // stdin drops here, closing the pipe — signals EOF to bash
             }
         }
 
-        // Use a channel + thread for timeout
-        let (tx, rx) = mpsc::channel();
-
-        let child_stdout = child.stdout.take();
-        let child_stderr = child.stderr.take();
-
-        let handle = thread::spawn(move || {
+        // Async read with timeout
+        let read_and_wait = async {
             let mut combined = Vec::new();
 
-            // Read stdout fully (loop until EOF), respecting max_output limit.
-            // A single read() call may return partial data, causing the pipe to
-            // close early and SIGPIPE the child process (Broken pipe bug).
-            if let Some(mut stdout) = child_stdout {
-                read_limited(&mut stdout, max_output, &mut combined);
+            if let Some(mut stdout) = child.stdout.take() {
+                read_limited_async(&mut stdout, max_output, &mut combined).await;
             }
 
-            // Read stderr with remaining budget
-            if let Some(mut stderr) = child_stderr {
+            if let Some(mut stderr) = child.stderr.take() {
                 let remaining = max_output.saturating_sub(combined.len());
                 if remaining > 0 {
-                    read_limited(&mut stderr, remaining, &mut combined);
+                    read_limited_async(&mut stderr, remaining, &mut combined).await;
                 }
             }
 
-            let status = child.wait();
-            let _ = tx.send((combined, status));
-        });
+            let status = child.wait().await;
+            (combined, status)
+        };
 
-        match rx.recv_timeout(timeout) {
+        match tokio::time::timeout(timeout, read_and_wait).await {
             Ok((raw_output, status)) => {
-                let _ = handle.join();
                 let truncated = raw_output.len() >= max_output;
                 let output = String::from_utf8_lossy(&raw_output).to_string();
                 let exit_code = status.ok().and_then(|s| s.code());
@@ -296,11 +286,9 @@ impl Shell {
                 })
             }
             Err(_) => {
-                // Timeout — try to kill the process
                 warn!("[SHELL] Command timed out after {:?}", timeout);
-                // The child is owned by the thread, we can't kill it directly.
-                // The thread will eventually finish when the child exits.
-                // For now, return timeout error.
+                // Try to kill the child process
+                let _ = child.kill().await;
                 Err(ShellError::Timeout(timeout))
             }
         }
@@ -308,14 +296,14 @@ impl Shell {
 
     /// Read a file via shell `cat` command.
     /// Useful for sandboxed instances that lack direct filesystem access.
-    pub fn read_file(&self, path: &str) -> ShellResult<ShellOutput> {
+    pub async fn read_file(&self, path: &str) -> ShellResult<ShellOutput> {
         let escaped = path.replace('\'', "'\\''");
-        self.exec(&format!("cat '{}'", escaped))
+        self.exec(&format!("cat '{}'", escaped)).await
     }
 
     /// Write content to a file via shell heredoc.
     /// Creates parent directories if needed.
-    pub fn write_file(&self, path: &str, content: &str) -> ShellResult<ShellOutput> {
+    pub async fn write_file(&self, path: &str, content: &str) -> ShellResult<ShellOutput> {
         let escaped = path.replace('\'', "'\\''");
         let delim = format!(
             "HEREDOC_{}",
@@ -324,7 +312,7 @@ impl Shell {
         self.exec(&format!(
             "mkdir -p \"$(dirname '{}')\" && cat > '{}' << '{}'\n{}\n{}",
             escaped, escaped, delim, content, delim,
-        ))
+        )).await
     }
 }
 
@@ -343,50 +331,50 @@ mod tests {
         (shell, tmp)
     }
 
-    #[test]
-    fn test_echo() {
+    #[tokio::test]
+    async fn test_echo() {
         let (shell, _tmp) = setup();
-        let result = shell.exec("echo hello").unwrap();
+        let result = shell.exec("echo hello").await.unwrap();
         assert_eq!(result.output.trim(), "hello");
         assert_eq!(result.exit_code, Some(0));
         assert!(!result.truncated);
     }
 
-    #[test]
-    fn test_exit_code() {
+    #[tokio::test]
+    async fn test_exit_code() {
         let (shell, _tmp) = setup();
-        let result = shell.exec("exit 42").unwrap();
+        let result = shell.exec("exit 42").await.unwrap();
         assert_eq!(result.exit_code, Some(42));
     }
 
-    #[test]
-    fn test_stderr_captured() {
+    #[tokio::test]
+    async fn test_stderr_captured() {
         let (shell, _tmp) = setup();
-        let result = shell.exec("echo err >&2").unwrap();
+        let result = shell.exec("echo err >&2").await.unwrap();
         assert!(result.output.contains("err"));
     }
 
-    #[test]
-    fn test_working_dir() {
+    #[tokio::test]
+    async fn test_working_dir() {
         let (shell, tmp) = setup();
         std::fs::write(tmp.path().join("test.txt"), "content").unwrap();
-        let result = shell.exec("cat test.txt").unwrap();
+        let result = shell.exec("cat test.txt").await.unwrap();
         assert_eq!(result.output.trim(), "content");
     }
 
-    #[test]
-    fn test_timeout() {
+    #[tokio::test]
+    async fn test_timeout() {
         let tmp = TempDir::new().unwrap();
         let shell =
             Shell::new(tmp.path().to_path_buf(), None).with_timeout(Duration::from_millis(500));
-        let result = shell.exec("sleep 10");
+        let result = shell.exec("sleep 10").await;
         assert!(matches!(result, Err(ShellError::Timeout(_))));
     }
 
-    #[test]
-    fn test_multiline_script() {
+    #[tokio::test]
+    async fn test_multiline_script() {
         let (shell, _tmp) = setup();
-        let result = shell.exec("echo line1\necho line2").unwrap();
+        let result = shell.exec("echo line1\necho line2").await.unwrap();
         assert!(result.output.contains("line1"));
         assert!(result.output.contains("line2"));
     }
@@ -482,12 +470,12 @@ mod truncation_tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_truncation() {
+    #[tokio::test]
+    async fn test_truncation() {
         let tmp = TempDir::new().unwrap();
         let shell = Shell::new(tmp.path().to_path_buf(), None).with_max_output(100);
         // Generate output larger than 100 bytes
-        let result = shell.exec("yes | head -200").unwrap();
+        let result = shell.exec("yes | head -200").await.unwrap();
         assert!(result.truncated);
         assert!(result.output.len() <= 200); // some slack for encoding
     }

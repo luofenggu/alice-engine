@@ -571,15 +571,8 @@ impl AliceEngine {
                 }
             }
 
-            // Move alice into spawn_blocking for LLM calls, get it back after
-            let beat_result = {
-                let (r, a) = tokio::task::spawn_blocking(move || {
-                    let r = alice.beat();
-                    (r, alice)
-                }).await.expect("beat spawn_blocking panicked");
-                alice = a;
-                r
-            };
+            // beat() is now async — call directly
+            let beat_result = alice.beat().await;
             match beat_result {
                 Ok(()) => {
                     alice.beat_count.increment();
@@ -606,8 +599,8 @@ impl AliceEngine {
                                 rolling.store(true, Ordering::Relaxed);
                                 let iid = instance_id.clone();
                                 let chat = alice.instance.chat.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    let notify_msg = match crate::core::execute_roll_task(task) {
+                                tokio::spawn(async move {
+                                    let notify_msg = match crate::core::execute_roll_task(task).await {
                                         Ok(result) => {
                                             info!("[HISTORY-ROLL-{}] Background: {}", iid, result);
                                             result

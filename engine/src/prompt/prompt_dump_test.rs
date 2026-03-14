@@ -388,9 +388,9 @@ fn test_full_beat_prompt_sample() {
         full_prompt.len(), full_prompt.chars().count());
 }
 
-#[test]
+#[tokio::test]
 #[ignore] // Requires network access to LLM endpoint
-fn test_real_inference() {
+async fn test_real_inference() {
     use mad_hatter::llm::{OpenAiChannel, stream_infer};
 
     let request = build_rich_mock_request();
@@ -412,13 +412,15 @@ fn test_real_inference() {
     println!("Starting real LLM inference...");
     let stream = stream_infer::<BeatRequest, Action>(&channel, &request);
 
-    match stream {
-        Ok(stream_iter) => {
+    match stream.await {
+        Ok(mut stream_iter) => {
             let real_token = stream_iter.token().to_string();
             let mut output_parts: Vec<String> = Vec::new();
             let mut action_count = 0;
 
-            for (i, result) in stream_iter.enumerate() {
+            let mut i = 0;
+            while let Some(result) = stream_iter.next().await {
+                i += 1;
                 match result {
                     Ok(action) => {
                         action_count += 1;

@@ -24,11 +24,12 @@ pub trait StructInput {}
 /// Used to enforce struct-only constraint on infer/stream_infer output
 pub trait StructOutput {}
 
-/// LlmChannel: abstraction for LLM text streaming
-/// Engine implements this trait to provide streaming text from any LLM backend.
-/// Framework provides OpenAiChannel as a built-in implementation.
-pub trait LlmChannel {
-    fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String>;
+/// LlmChannel: abstraction for LLM text streaming (async)
+///
+/// Returns an unbounded receiver that yields text chunks from the LLM stream.
+/// Implementations should spawn an async task to read the stream and send chunks.
+pub trait LlmChannel: Send + Sync {
+    fn start_stream(&self, prompt: String) -> Result<tokio::sync::mpsc::UnboundedReceiver<String>, String>;
 }
 
 /// OpenAI-compatible LLM channel configuration
@@ -72,10 +73,10 @@ struct SseDelta {
 }
 
 impl LlmChannel for OpenAiChannel {
-    fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
-        let endpoint = self.endpoint.trim_end_matches('/');
+    fn start_stream(&self, prompt: String) -> Result<tokio::sync::mpsc::UnboundedReceiver<String>, String> {
+        let endpoint = self.endpoint.trim_end_matches('/').to_string();
         let url = if endpoint.ends_with("/v1/chat/completions") {
-            endpoint.to_string()
+            endpoint
         } else {
             format!("{}/v1/chat/completions", endpoint)
         };
@@ -89,84 +90,76 @@ impl LlmChannel for OpenAiChannel {
             body["max_tokens"] = serde_json::json!(max_tokens);
         }
 
-        let client = reqwest::blocking::Client::new();
-        let response = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| format!("HTTP request failed: {}", e))?;
+        let api_key = self.api_key.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body_text = response.text().unwrap_or_default();
-            return Err(format!("HTTP {}: {}", status, body_text));
-        }
-
-        Ok(Box::new(SseIterator::new(response)))
-    }
-}
-
-/// Iterator that reads SSE stream and yields text content chunks
-struct SseIterator {
-    reader: std::io::BufReader<reqwest::blocking::Response>,
-    done: bool,
-}
-
-impl SseIterator {
-    fn new(response: reqwest::blocking::Response) -> Self {
-        Self {
-            reader: std::io::BufReader::new(response),
-            done: false,
-        }
-    }
-}
-
-impl Iterator for SseIterator {
-    type Item = String;
-
-    fn next(&mut self) -> Option<String> {
-        use std::io::BufRead;
-
-        if self.done {
-            return None;
-        }
-
-        loop {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line) {
-                Ok(0) => {
-                    self.done = true;
-                    return None;
+        // Spawn async task to read SSE stream
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let response = match client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let _ = tx.send(format!("\n[ERROR] HTTP request failed: {}", e));
+                    return;
                 }
-                Ok(_) => {
-                    let line = line.trim();
+            };
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body_text = response.text().await.unwrap_or_default();
+                let _ = tx.send(format!("\n[ERROR] HTTP {}: {}", status, body_text));
+                return;
+            }
+
+            // Read SSE stream using bytes streaming
+            use futures_util::StreamExt;
+            let mut byte_stream = response.bytes_stream();
+            let mut line_buf = String::new();
+
+            while let Some(chunk_result) = byte_stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(c) => c,
+                    Err(_) => break,
+                };
+                let text = String::from_utf8_lossy(&chunk);
+                line_buf.push_str(&text);
+
+                // Process complete lines
+                while let Some(newline_pos) = line_buf.find('\n') {
+                    let line = line_buf[..newline_pos].trim().to_string();
+                    line_buf = line_buf[newline_pos + 1..].to_string();
+
                     if line.is_empty() {
                         continue;
                     }
                     if line == "data: [DONE]" {
-                        self.done = true;
-                        return None;
+                        return;
                     }
                     if let Some(data) = line.strip_prefix("data: ") {
                         if let Ok(sse) = serde_json::from_str::<SseResponse>(data) {
                             if let Some(choice) = sse.choices.first() {
                                 if let Some(content) = &choice.delta.content {
                                     if !content.is_empty() {
-                                        return Some(content.clone());
+                                        if tx.send(content.clone()).is_err() {
+                                            return; // receiver dropped
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-                Err(_) => {
-                    self.done = true;
-                    return None;
-                }
             }
-        }
+        });
+
+        Ok(rx)
     }
 }
 
@@ -213,22 +206,22 @@ fn build_prompt<Req: ToMarkdown, Resp: FromMarkdown>(request: &Req, token: &str)
     )
 }
 
-/// Stream inference: yields parsed elements one by one as they arrive
+/// Stream inference: yields parsed elements one by one as they arrive (async)
 ///
 /// Each time a complete element is detected in the stream (delimited by
 /// `{TypeName}-{token}`), it is parsed and yielded immediately.
-pub fn stream_infer<'a, Req, Resp>(
-    channel: &'a dyn LlmChannel,
+pub async fn stream_infer<Req, Resp>(
+    channel: &dyn LlmChannel,
     request: &Req,
-) -> Result<StreamInfer<'a, Resp>, String>
+) -> Result<StreamInfer<Resp>, String>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    stream_infer_with_on_text(channel, request, None, None, None, None)
+    stream_infer_with_on_text(channel, request, None, None, None, None).await
 }
 
-/// Stream inference with optional text callback
+/// Stream inference with optional text callback (async)
 ///
 /// Like `stream_infer()`, but accepts an optional callback that receives
 /// each raw text chunk as it arrives from the LLM stream. This enables
@@ -237,14 +230,14 @@ where
 /// # Arguments
 /// * `on_text` - Optional callback invoked with each raw chunk before parsing.
 ///   Pass `None` for no callback (equivalent to `stream_infer()`).
-pub fn stream_infer_with_on_text<'a, Req, Resp>(
-    channel: &'a dyn LlmChannel,
+pub async fn stream_infer_with_on_text<Req, Resp>(
+    channel: &dyn LlmChannel,
     request: &Req,
-    on_text: Option<Box<dyn FnMut(&str) + 'a>>,
-    on_input: Option<Box<dyn FnOnce(&str)>>,
-    on_preamble: Option<Box<dyn FnOnce(&str) + 'a>>,
+    on_text: Option<Box<dyn FnMut(&str) + Send>>,
+    on_input: Option<Box<dyn FnOnce(&str) + Send>>,
+    on_preamble: Option<Box<dyn FnOnce(&str) + Send>>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-) -> Result<StreamInfer<'a, Resp>, String>
+) -> Result<StreamInfer<Resp>, String>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
@@ -254,10 +247,10 @@ where
     if let Some(cb) = on_input {
         cb(&prompt);
     }
-    let stream = channel.infer_stream(prompt)?;
+    let receiver = channel.start_stream(prompt)?;
 
     Ok(StreamInfer {
-        stream,
+        receiver,
         buffer: String::new(),
         token,
         type_name: Resp::type_name().to_string(),
@@ -270,31 +263,28 @@ where
     })
 }
 
-/// Iterator that yields parsed elements from a streaming LLM response
-pub struct StreamInfer<'a, T: FromMarkdown> {
-    stream: Box<dyn Iterator<Item = String> + 'a>,
+/// Async stream that yields parsed elements from a streaming LLM response
+pub struct StreamInfer<T: FromMarkdown> {
+    receiver: tokio::sync::mpsc::UnboundedReceiver<String>,
     buffer: String,
     token: String,
     type_name: String,
     done: bool,
     parsed_count: usize,
-    on_text: Option<Box<dyn FnMut(&str) + 'a>>,
-    on_preamble: Option<Box<dyn FnOnce(&str) + 'a>>,
+    on_text: Option<Box<dyn FnMut(&str) + Send>>,
+    on_preamble: Option<Box<dyn FnOnce(&str) + Send>>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<'a, T: FromMarkdown> StreamInfer<'a, T> {
+impl<T: FromMarkdown> StreamInfer<T> {
     /// Get the token used for this inference session
     pub fn token(&self) -> &str {
         &self.token
     }
-}
 
-impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
-    type Item = Result<T, String>;
-
-    fn next(&mut self) -> Option<Result<T, String>> {
+    /// Async next: yields the next parsed element from the stream
+    pub async fn next(&mut self) -> Option<Result<T, String>> {
         if self.done {
             return None;
         }
@@ -312,37 +302,28 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
             }
 
             // Priority 1: Try to extract a complete element between two separators
-            // This must be checked BEFORE end_marker, because end_marker substring
-            // could be found in buffer while there are still unprocessed elements.
             let first_sep = self.buffer.find(&separator);
             if let Some(first_pos) = first_sep {
-                // Expect: first element must start at beginning (no preamble allowed)
-                // Exception: code block markers (```) are allowed (consistent with from_markdown's strip_code_block)
                 if self.parsed_count == 0 && first_pos > 0 {
                     let before = self.buffer[..first_pos].trim();
                     if !before.is_empty() && !before.lines().all(|l| {
                         let t = l.trim();
                         t.is_empty() || t.starts_with("```")
                     }) {
-                        // Preamble detected: pass to callback instead of erroring
                         if let Some(cb) = self.on_preamble.take() {
                             cb(before);
                         }
                     }
-                    // Remove preamble from buffer, keep from separator onward
                     self.buffer = self.buffer[first_pos..].to_string();
                     continue;
                 }
 
                 let after_first = first_pos + separator.len();
-                // Look for second separator OR end_marker after the first separator
                 let next_sep = self.buffer[after_first..].find(&separator);
                 let next_end = self.buffer[after_first..].find(&end_marker);
 
-                // Determine the boundary of the current element
                 let boundary = match (next_sep, next_end) {
                     (Some(s), Some(e)) => {
-                        // Both found — use whichever comes first
                         if s <= e {
                             Some(("sep", after_first + s))
                         } else {
@@ -356,7 +337,6 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
 
                 match boundary {
                     Some(("sep", boundary_pos)) => {
-                        // Complete element between two separators
                         let element_text = self.buffer[after_first..boundary_pos].trim();
                         if !element_text.is_empty() {
                             let parse_input = format!("{}\n{}\n{}", separator, element_text, end_marker);
@@ -375,7 +355,6 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
                         }
                     }
                     Some(("end", boundary_pos)) => {
-                        // Last element before end marker
                         let element_text = self.buffer[after_first..boundary_pos].trim();
                         self.done = true;
                         if !element_text.is_empty() {
@@ -397,19 +376,23 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
                 }
             }
 
-            // Need more data - read from stream
-            match self.stream.next() {
+            // Need more data - read from async receiver
+            match self.receiver.recv().await {
                 Some(chunk) => {
+                    // Check for error signals from the spawned task
+                    if chunk.starts_with("\n[ERROR] ") {
+                        self.done = true;
+                        return Some(Err(chunk[9..].to_string()));
+                    }
                     if let Some(ref mut callback) = self.on_text {
                         callback(&chunk);
                     }
                     self.buffer.push_str(&chunk);
                 }
                 None => {
-                    // Stream ended without end marker — truncation error
+                    // Channel closed — stream ended
                     self.done = true;
                     if self.buffer.contains(&end_marker) {
-                        // End marker present but no more elements to extract
                         return None;
                     }
                     let tail: String = if self.buffer.len() > 200 {
@@ -427,11 +410,11 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
     }
 }
 
-/// Full inference: collects all elements from stream
+/// Full inference: collects all elements from stream (async)
 ///
 /// Sends request to LLM and parses the complete response.
 /// For streaming element-by-element processing, use `stream_infer()`.
-pub fn infer<Req, Resp>(
+pub async fn infer<Req, Resp>(
     channel: &dyn LlmChannel,
     request: &Req,
 ) -> Result<Vec<Resp>, String>
@@ -439,29 +422,30 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    infer_with_on_text(channel, request, None, None, None, None)
+    infer_with_on_text(channel, request, None, None, None, None).await
 }
 
-/// Full inference with optional text callback
+/// Full inference with optional text callback (async)
 ///
 /// Like `infer()`, but accepts an optional callback that receives each raw
 /// text chunk as it arrives from the LLM stream.
-pub fn infer_with_on_text<Req, Resp>(
+pub async fn infer_with_on_text<Req, Resp>(
     channel: &dyn LlmChannel,
     request: &Req,
-    on_text: Option<Box<dyn FnMut(&str) + '_>>,
-    on_input: Option<Box<dyn FnOnce(&str)>>,
-    on_preamble: Option<Box<dyn FnOnce(&str) + '_>>,
+    on_text: Option<Box<dyn FnMut(&str) + Send>>,
+    on_input: Option<Box<dyn FnOnce(&str) + Send>>,
+    on_preamble: Option<Box<dyn FnOnce(&str) + Send>>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<Resp>, String>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    let stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text, on_input, on_preamble, cancel)?;
+    let mut stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text, on_input, on_preamble, cancel).await?;
     let mut results = Vec::new();
-    for item in stream {
+    while let Some(item) = stream.next().await {
         results.push(item?);
     }
     Ok(results)
 }
+

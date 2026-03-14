@@ -1,6 +1,6 @@
 use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, infer, infer_with_on_text};
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 
 // ============================================================
@@ -45,34 +45,61 @@ enum SimpleAction {
 }
 
 // ============================================================
+// Helper
+// ============================================================
+
+/// Helper to create an UnboundedReceiver from chunks
+fn mock_channel_rx(chunks: Vec<String>) -> UnboundedReceiver<String> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for chunk in chunks {
+        tx.send(chunk).ok();
+    }
+    rx
+}
+
+/// Extract the token from a prompt by finding "{type_name}-{token}" pattern
+fn extract_token_from_prompt(prompt: &str, type_name: &str) -> String {
+    let prefix = format!("{}-", type_name);
+    // Find the first occurrence that's not "{type_name}-end-"
+    for line in prompt.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+            if !rest.starts_with("end-") && !rest.is_empty() {
+                let token = rest.split_whitespace().next().unwrap_or(rest);
+                return token.to_string();
+            }
+        }
+    }
+    panic!("Could not extract token from prompt for type '{}'", type_name);
+}
+
+// ============================================================
 // Mock LlmChannel
 // ============================================================
 
-
-
 /// Mock channel that captures the prompt for inspection
 struct CapturingChannel {
-    captured_prompt: std::cell::RefCell<String>,
+    captured_prompt: Mutex<String>,
     response: String,
 }
 
 impl CapturingChannel {
     fn new(response: &str) -> Self {
         Self {
-            captured_prompt: std::cell::RefCell::new(String::new()),
+            captured_prompt: Mutex::new(String::new()),
             response: response.to_string(),
         }
     }
 
     fn get_prompt(&self) -> String {
-        self.captured_prompt.borrow().clone()
+        self.captured_prompt.lock().unwrap().clone()
     }
 }
 
 impl LlmChannel for CapturingChannel {
-    fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
-        *self.captured_prompt.borrow_mut() = prompt;
-        Ok(Box::new(std::iter::once(self.response.clone())))
+    fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
+        *self.captured_prompt.lock().unwrap() = prompt;
+        Ok(mock_channel_rx(vec![self.response.clone()]))
     }
 }
 
@@ -80,7 +107,7 @@ impl LlmChannel for CapturingChannel {
 struct ErrorChannel;
 
 impl LlmChannel for ErrorChannel {
-    fn infer_stream(&self, _prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+    fn start_stream(&self, _prompt: String) -> Result<UnboundedReceiver<String>, String> {
         Err("LLM service unavailable".to_string())
     }
 }
@@ -89,29 +116,18 @@ impl LlmChannel for ErrorChannel {
 // Tests
 // ============================================================
 
-#[test]
-fn test_infer_single_action() {
-    // We need to know the token to construct the response, but infer() generates it internally.
-    // Solution: use infer_with_token() or make the response work with any token.
-    // Since we can't predict the token, we need a different approach.
-    //
-    // Actually, the mock channel receives the prompt which contains the token in the schema.
-    // We can extract the token from the prompt and construct the response dynamically.
-    //
-    // Better approach: use a channel that inspects the prompt to find the token.
-
+#[tokio::test]
+async fn test_infer_single_action() {
     struct DynamicMockChannel;
 
     impl LlmChannel for DynamicMockChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
-            // Extract token from the schema in the prompt
-            // Schema contains "SimpleAction-{token}" as element separator
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let response = format!(
                 "SimpleAction-{t}\nreply\n你好！我收到了你的消息。\nSimpleAction-end-{t}",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
@@ -120,25 +136,25 @@ fn test_infer_single_action() {
         context: "测试上下文".to_string(),
     };
 
-    let result: Vec<SimpleAction> = infer(&DynamicMockChannel, &request).unwrap();
+    let result: Vec<SimpleAction> = infer(&DynamicMockChannel, &request).await.unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], SimpleAction::Reply {
         content: "你好！我收到了你的消息。".to_string(),
     });
 }
 
-#[test]
-fn test_infer_multiple_actions() {
+#[tokio::test]
+async fn test_infer_multiple_actions() {
     struct MultiActionChannel;
 
     impl LlmChannel for MultiActionChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let response = format!(
                 "SimpleAction-{t}\nthink\n让我想想...\nSimpleAction-{t}\nreply\n答案是42。\nSimpleAction-{t}\nidle\nSimpleAction-end-{t}",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
@@ -147,25 +163,25 @@ fn test_infer_multiple_actions() {
         context: "".to_string(),
     };
 
-    let result: Vec<SimpleAction> = infer(&MultiActionChannel, &request).unwrap();
+    let result: Vec<SimpleAction> = infer(&MultiActionChannel, &request).await.unwrap();
     assert_eq!(result.len(), 3);
     assert_eq!(result[0], SimpleAction::Think { content: "让我想想...".to_string() });
     assert_eq!(result[1], SimpleAction::Reply { content: "答案是42。".to_string() });
     assert_eq!(result[2], SimpleAction::Idle);
 }
 
-#[test]
-fn test_infer_two_field_variant() {
+#[tokio::test]
+async fn test_infer_two_field_variant() {
     struct TwoFieldChannel;
 
     impl LlmChannel for TwoFieldChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let response = format!(
                 "SimpleAction-{t}\nsend_msg\nrecipient-{t}\nuser\ncontent-{t}\n你好世界！\n第二行。\nSimpleAction-end-{t}",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
@@ -174,7 +190,7 @@ fn test_infer_two_field_variant() {
         context: "".to_string(),
     };
 
-    let result: Vec<SimpleAction> = infer(&TwoFieldChannel, &request).unwrap();
+    let result: Vec<SimpleAction> = infer(&TwoFieldChannel, &request).await.unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], SimpleAction::SendMsg {
         recipient: "user".to_string(),
@@ -182,14 +198,14 @@ fn test_infer_two_field_variant() {
     });
 }
 
-#[test]
-fn test_infer_option_field() {
+#[tokio::test]
+async fn test_infer_option_field() {
     struct OptionChannel {
         with_value: bool,
     }
 
     impl LlmChannel for OptionChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let response = if self.with_value {
                 format!(
@@ -202,7 +218,7 @@ fn test_infer_option_field() {
                     t = token
                 )
             };
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
@@ -212,33 +228,31 @@ fn test_infer_option_field() {
     };
 
     // With value
-    let result: Vec<SimpleAction> = infer(&OptionChannel { with_value: true }, &request).unwrap();
+    let result: Vec<SimpleAction> = infer(&OptionChannel { with_value: true }, &request).await.unwrap();
     assert_eq!(result[0], SimpleAction::Wait { seconds: Some(120) });
 
     // Without value
-    let result: Vec<SimpleAction> = infer(&OptionChannel { with_value: false }, &request).unwrap();
+    let result: Vec<SimpleAction> = infer(&OptionChannel { with_value: false }, &request).await.unwrap();
     assert_eq!(result[0], SimpleAction::Wait { seconds: None });
 }
 
-#[test]
-fn test_infer_streaming_chunks() {
-    // Test that chunked responses are correctly assembled
+#[tokio::test]
+async fn test_infer_streaming_chunks() {
     struct ChunkedChannel;
 
     impl LlmChannel for ChunkedChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let full = format!(
                 "SimpleAction-{t}\nreply\nHello World!\nSimpleAction-end-{t}",
                 t = token
             );
-            // Split into small chunks to simulate streaming
             let chunks: Vec<String> = full.chars()
                 .collect::<Vec<_>>()
                 .chunks(5)
                 .map(|c| c.iter().collect::<String>())
                 .collect();
-            Ok(Box::new(chunks.into_iter()))
+            Ok(mock_channel_rx(chunks))
         }
     }
 
@@ -247,36 +261,35 @@ fn test_infer_streaming_chunks() {
         context: "".to_string(),
     };
 
-    let result: Vec<SimpleAction> = infer(&ChunkedChannel, &request).unwrap();
+    let result: Vec<SimpleAction> = infer(&ChunkedChannel, &request).await.unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], SimpleAction::Reply { content: "Hello World!".to_string() });
 }
 
-#[test]
-fn test_infer_channel_error() {
+#[tokio::test]
+async fn test_infer_channel_error() {
     let request = SimpleRequest {
         message: "test".to_string(),
         context: "".to_string(),
     };
 
-    let result: Result<Vec<SimpleAction>, String> = infer(&ErrorChannel, &request);
+    let result: Result<Vec<SimpleAction>, String> = infer(&ErrorChannel, &request).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("LLM service unavailable"));
 }
 
-#[test]
-fn test_infer_missing_end_marker() {
+#[tokio::test]
+async fn test_infer_missing_end_marker() {
     struct NoEndChannel;
 
     impl LlmChannel for NoEndChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
-            // Missing end marker
             let response = format!(
                 "SimpleAction-{t}\nreply\ncontent-{t}\n截断的响应",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
@@ -285,30 +298,30 @@ fn test_infer_missing_end_marker() {
         context: "".to_string(),
     };
 
-    let result: Result<Vec<SimpleAction>, String> = infer(&NoEndChannel, &request);
+    let result: Result<Vec<SimpleAction>, String> = infer(&NoEndChannel, &request).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.contains("No valid element found") || err.contains("end marker"), "Error should mention missing element or end marker: {}", err);
 }
 
-#[test]
-fn test_infer_prompt_contains_schema() {
-    // Verify that the prompt sent to channel contains both request content and schema
-    let response_holder = std::cell::RefCell::new(String::new());
+#[tokio::test]
+async fn test_infer_prompt_contains_schema() {
+    let captured_prompt = Arc::new(Mutex::new(String::new()));
+    let captured_clone = captured_prompt.clone();
 
-    struct InspectChannel<'a> {
-        prompt_holder: &'a std::cell::RefCell<String>,
+    struct InspectChannel {
+        prompt_holder: Arc<Mutex<String>>,
     }
 
-    impl<'a> LlmChannel for InspectChannel<'a> {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+    impl LlmChannel for InspectChannel {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
-            *self.prompt_holder.borrow_mut() = prompt;
+            *self.prompt_holder.lock().unwrap() = prompt;
             let response = format!(
                 "SimpleAction-{t}\nidle\nSimpleAction-end-{t}",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
@@ -317,10 +330,10 @@ fn test_infer_prompt_contains_schema() {
         context: "测试上下文".to_string(),
     };
 
-    let channel = InspectChannel { prompt_holder: &response_holder };
-    let _result: Vec<SimpleAction> = infer(&channel, &request).unwrap();
+    let channel = InspectChannel { prompt_holder: captured_clone };
+    let _result: Vec<SimpleAction> = infer(&channel, &request).await.unwrap();
 
-    let prompt = response_holder.borrow().clone();
+    let prompt = captured_prompt.lock().unwrap().clone();
 
     // Prompt should contain request content
     assert!(prompt.contains("检查prompt"), "prompt should contain message");
@@ -336,9 +349,8 @@ fn test_infer_prompt_contains_schema() {
     assert!(prompt.contains("输出规范"), "prompt should contain format section");
 }
 
-#[test]
-fn test_infer_prompt_has_no_token_leak() {
-    // The token should only appear in the schema section, not in the request section
+#[tokio::test]
+async fn test_infer_prompt_has_no_token_leak() {
     let captured = CapturingChannel::new("");
 
     let request = SimpleRequest {
@@ -347,7 +359,7 @@ fn test_infer_prompt_has_no_token_leak() {
     };
 
     // This will fail because the response is empty, but we can still inspect the prompt
-    let _ = infer::<SimpleRequest, SimpleAction>(&captured, &request);
+    let _ = infer::<SimpleRequest, SimpleAction>(&captured, &request).await;
 
     let prompt = captured.get_prompt();
 
@@ -368,34 +380,12 @@ fn test_infer_prompt_has_no_token_leak() {
     }
 }
 
-// ============================================================
-// Helper
-// ============================================================
-
-/// Extract the token from a prompt by finding "{type_name}-{token}" pattern
-fn extract_token_from_prompt(prompt: &str, type_name: &str) -> String {
-    let prefix = format!("{}-", type_name);
-    // Find the first occurrence that's not "{type_name}-end-"
-    for line in prompt.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(&prefix) {
-            if !rest.starts_with("end-") && !rest.is_empty() {
-                // The token might have more text after it, take until whitespace or end
-                let token = rest.split_whitespace().next().unwrap_or(rest);
-                return token.to_string();
-            }
-        }
-    }
-    panic!("Could not extract token from prompt for type '{}'", type_name);
-}
-
-
-#[test]
-fn test_infer_with_on_text_receives_chunks() {
+#[tokio::test]
+async fn test_infer_with_on_text_receives_chunks() {
     struct OnTextChannel;
 
     impl LlmChannel for OnTextChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let chunks = vec![
                 format!("SimpleAction-{}\n", token),
@@ -403,24 +393,24 @@ fn test_infer_with_on_text_receives_chunks() {
                 "on_text测试\n".to_string(),
                 format!("SimpleAction-end-{}\n", token),
             ];
-            Ok(Box::new(chunks.into_iter()))
+            Ok(mock_channel_rx(chunks))
         }
     }
 
     let request = SimpleRequest { message: "test".to_string(), context: "ctx".to_string() };
-    let collected = Rc::new(RefCell::new(Vec::<String>::new()));
+    let collected = Arc::new(Mutex::new(Vec::<String>::new()));
     let collected_clone = collected.clone();
 
     let results = infer_with_on_text::<SimpleRequest, SimpleAction>(
         &OnTextChannel,
         &request,
         Some(Box::new(move |chunk: &str| {
-            collected_clone.borrow_mut().push(chunk.to_string());
+            collected_clone.lock().unwrap().push(chunk.to_string());
         })),
         None,
         None,
         None,
-    ).unwrap();
+    ).await.unwrap();
 
     // Verify parsing works
     assert_eq!(results.len(), 1);
@@ -430,7 +420,7 @@ fn test_infer_with_on_text_receives_chunks() {
     }
 
     // Verify callback received all 4 chunks
-    let chunks = collected.borrow();
+    let chunks = collected.lock().unwrap();
     assert_eq!(chunks.len(), 4);
     assert!(chunks[0].starts_with("SimpleAction-"));
     assert_eq!(chunks[1], "reply\n");
@@ -438,18 +428,18 @@ fn test_infer_with_on_text_receives_chunks() {
     assert!(chunks[3].starts_with("SimpleAction-end-"));
 }
 
-#[test]
-fn test_infer_with_on_text_none_equivalent() {
+#[tokio::test]
+async fn test_infer_with_on_text_none_equivalent() {
     struct NoneCallbackChannel;
 
     impl LlmChannel for NoneCallbackChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let response = format!(
                 "SimpleAction-{t}\nreply\n无回调infer\nSimpleAction-end-{t}\n",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
@@ -461,7 +451,7 @@ fn test_infer_with_on_text_none_equivalent() {
         None,
         None,
         None,
-    ).unwrap();
+    ).await.unwrap();
 
     assert_eq!(results.len(), 1);
     match &results[0] {
@@ -472,21 +462,21 @@ fn test_infer_with_on_text_none_equivalent() {
 
 // === on_preamble tests ===
 
-#[test]
-fn test_infer_with_preamble_callback() {
+#[tokio::test]
+async fn test_infer_with_preamble_callback() {
     struct InferPreambleChannel;
 
     impl LlmChannel for InferPreambleChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
-            Ok(Box::new(vec![
+            Ok(mock_channel_rx(vec![
                 format!("Let me think about this...\nSimpleAction-{}\nidle\nSimpleAction-end-{}\n", token, token),
-            ].into_iter()))
+            ]))
         }
     }
 
     let request = SimpleRequest { message: "test".to_string(), context: "ctx".to_string() };
-    let preamble_text = Rc::new(RefCell::new(String::new()));
+    let preamble_text = Arc::new(Mutex::new(String::new()));
     let preamble_clone = preamble_text.clone();
 
     let results = infer_with_on_text::<SimpleRequest, SimpleAction>(
@@ -495,30 +485,29 @@ fn test_infer_with_preamble_callback() {
         None,
         None,
         Some(Box::new(move |text: &str| {
-            *preamble_clone.borrow_mut() = text.to_string();
+            *preamble_clone.lock().unwrap() = text.to_string();
         })),
         None,
-    ).unwrap();
+    ).await.unwrap();
 
     assert_eq!(results.len(), 1);
-    let preamble = preamble_text.borrow();
+    let preamble = preamble_text.lock().unwrap();
     assert!(preamble.contains("Let me think about this"), "preamble callback should receive waste text: {}", preamble);
 }
 
 // === Cancel tests ===
 
-#[test]
-fn test_infer_with_cancel() {
-    use std::sync::Arc;
+#[tokio::test]
+async fn test_infer_with_cancel() {
     use std::sync::atomic::AtomicBool;
 
     struct InferCancelChannel;
     impl LlmChannel for InferCancelChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
-            Ok(Box::new(vec![
+            Ok(mock_channel_rx(vec![
                 format!("SimpleAction-{}\ngreet\nhello\nSimpleAction-{}\ngreet\nworld\nSimpleAction-end-{}\n", token, token, token),
-            ].into_iter()))
+            ]))
         }
     }
 
@@ -532,7 +521,8 @@ fn test_infer_with_cancel() {
         None,
         None,
         Some(cancel),
-    ).unwrap();
+    ).await.unwrap();
 
     assert_eq!(results.len(), 0); // Nothing parsed because cancelled immediately
 }
+

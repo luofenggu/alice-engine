@@ -576,7 +576,7 @@ impl Alice {
     /// it into history via an independent LLM call, then deletes the block.
     ///
     /// @TRACE: MEMORY
-    pub fn check_and_roll_history(&mut self) -> Result<Option<String>> {
+    pub async fn check_and_roll_history(&mut self) -> Result<Option<String>> {
         let blocks = self.instance.memory.list_session_blocks_db()?;
         if (blocks.len() as u32) < self.session_blocks_limit {
             return Ok(None);
@@ -662,14 +662,14 @@ impl Alice {
         let compress_log_path = roll_infer_log_dir.join(crate::policy::log_formats::infer_compress_out_filename(&roll_ts));
         let mut compress_log_file = std::fs::OpenOptions::new()
             .create(true).append(true).open(&compress_log_path).ok();
-        let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
+        let on_text: Option<Box<dyn FnMut(&str) + Send + '_>> = Some(Box::new(move |chunk: &str| {
             if let Some(ref mut f) = compress_log_file {
                 use std::io::Write;
                 let _ = f.write_all(chunk.as_bytes());
                 let _ = f.flush();
             }
         }));
-        let on_input: Option<Box<dyn FnOnce(&str)>> = if self.env_config.infer_log_enabled {
+        let on_input: Option<Box<dyn FnOnce(&str) + Send>> = if self.env_config.infer_log_enabled {
             let in_log_path = roll_infer_log_dir.join(
                 crate::policy::log_formats::infer_in_filename(&roll_ts)
             );
@@ -679,7 +679,7 @@ impl Alice {
         } else {
             None
         };
-        let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &request, on_text, on_input, None, None)
+        let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &request, on_text, on_input, None, None).await
             .map_err(|e| anyhow::anyhow!(e))?;
         let output = results.into_iter().next()
             .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
@@ -787,7 +787,7 @@ impl Alice {
     /// Flow: check messages → build prompt → LLM inference → stream actions → execute
     ///
     /// @TRACE: BEAT
-    pub fn beat(&mut self) -> Result<()> {
+    pub async fn beat(&mut self) -> Result<()> {
         let beat_start = Instant::now();
         info!("[BEAT-{}] Heartbeat start", self.instance.id);
 
@@ -824,7 +824,7 @@ impl Alice {
                 &action_id, Action::ReadMsg.type_name(), &action_data_json, &action_id[..14],
             ).ok();
 
-            let result = execute_action(&Action::ReadMsg, self, &mut tx);
+            let result = execute_action(&Action::ReadMsg, self, &mut tx).await;
             match result {
                 Ok(ref output) => {
                     tx.record_done(&action_id);
@@ -895,14 +895,14 @@ impl Alice {
         let channel = self.create_channel();
         let mut log_file = std::fs::OpenOptions::new()
             .create(true).append(true).open(&log_path).ok();
-        let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
+        let on_text: Option<Box<dyn FnMut(&str) + Send + '_>> = Some(Box::new(move |chunk: &str| {
             if let Some(ref mut f) = log_file {
                 use std::io::Write;
                 let _ = f.write_all(chunk.as_bytes());
                 let _ = f.flush();
             }
         }));
-        let on_input: Option<Box<dyn FnOnce(&str)>> = if self.env_config.infer_log_enabled {
+        let on_input: Option<Box<dyn FnOnce(&str) + Send>> = if self.env_config.infer_log_enabled {
             let in_log_path = log_path.parent().unwrap().join(
                 crate::policy::log_formats::infer_in_filename(&log_timestamp)
             );
@@ -914,10 +914,10 @@ impl Alice {
         };
         let preamble_holder: std::sync::Arc<std::sync::Mutex<Option<String>>> = std::sync::Arc::new(std::sync::Mutex::new(None));
         let preamble_clone = preamble_holder.clone();
-        let on_preamble: Option<Box<dyn FnOnce(&str) + '_>> = Some(Box::new(move |text: &str| {
+        let on_preamble: Option<Box<dyn FnOnce(&str) + Send + '_>> = Some(Box::new(move |text: &str| {
             *preamble_clone.lock().unwrap() = Some(text.to_string());
         }));
-        let stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input, on_preamble, None)
+        let mut stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input, on_preamble, None).await
             .map_err(|e| {
                 let (backoff, rotation) = self.set_inference_backoff();
                 anyhow::anyhow!(
@@ -950,7 +950,7 @@ impl Alice {
             self.instance.memory.complete_action_log(&preamble_action_id, &ActionOutput::Empty)?;
         }
 
-        for result in stream_iter {
+        while let Some(result) = stream_iter.next().await {
             // Check for interrupt signal between actions
             if self.signals.as_ref().map_or(false, |s| s.check_interrupt()) {
                 warn!(
@@ -1013,7 +1013,7 @@ impl Alice {
                     }
 
                     // Execute action
-                    let result = execute_action(&action, self, &mut tx);
+                    let result = execute_action(&action, self, &mut tx).await;
 
                     // Check if this was an idle action
                     if let Action::Idle { timeout_secs } = &action {
@@ -1159,7 +1159,7 @@ pub(crate) fn build_channel(
     channel
 }
 
-pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
+pub async fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
     info!(
         "[CAPTURE-{}] Background: calling LLM for knowledge capture",
         task.instance_id
@@ -1177,14 +1177,14 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
     };
     let mut capture_log_file = std::fs::OpenOptions::new()
         .create(true).append(true).open(&capture_log_path).ok();
-    let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
+    let on_text: Option<Box<dyn FnMut(&str) + Send + '_>> = Some(Box::new(move |chunk: &str| {
         if let Some(ref mut f) = capture_log_file {
             use std::io::Write;
             let _ = f.write_all(chunk.as_bytes());
             let _ = f.flush();
         }
     }));
-    let on_input: Option<Box<dyn FnOnce(&str)>> = if task.infer_log_enabled {
+    let on_input: Option<Box<dyn FnOnce(&str) + Send>> = if task.infer_log_enabled {
         let in_log_path = capture_log_path.parent().unwrap().join(
             crate::policy::log_formats::infer_in_filename(&capture_ts)
         );
@@ -1194,7 +1194,7 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
     } else {
         None
     };
-    let results = infer_with_on_text::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request, on_text, on_input, None, None)
+    let results = infer_with_on_text::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request, on_text, on_input, None, None).await
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no capture output"))?;
@@ -1218,7 +1218,7 @@ pub fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
 
 /// Execute history rolling task (designed for background thread).
 /// Does LLM call + commit history via Memory (atomic write + delete block).
-pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
+pub async fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     info!(
         "[ROLL-{}] Background: calling LLM for history compression",
         task.instance_id
@@ -1234,14 +1234,14 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     };
     let mut compress_log_file = std::fs::OpenOptions::new()
         .create(true).append(true).open(&compress_log_path).ok();
-    let on_text: Option<Box<dyn FnMut(&str) + '_>> = Some(Box::new(move |chunk: &str| {
+    let on_text: Option<Box<dyn FnMut(&str) + Send + '_>> = Some(Box::new(move |chunk: &str| {
         if let Some(ref mut f) = compress_log_file {
             use std::io::Write;
             let _ = f.write_all(chunk.as_bytes());
             let _ = f.flush();
         }
     }));
-    let on_input: Option<Box<dyn FnOnce(&str)>> = if task.infer_log_enabled {
+    let on_input: Option<Box<dyn FnOnce(&str) + Send>> = if task.infer_log_enabled {
         let in_log_path = compress_log_path.parent().unwrap().join(
             crate::policy::log_formats::infer_in_filename(&roll_ts)
         );
@@ -1251,7 +1251,7 @@ pub fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     } else {
         None
     };
-    let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &task.request, on_text, on_input, None, None)
+    let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &task.request, on_text, on_input, None, None).await
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
@@ -1286,8 +1286,8 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
     };
 
     let chat = alice.instance.chat.clone();
-    tokio::task::spawn_blocking(move || {
-        let notify_msg = match execute_capture_task(task) {
+    tokio::spawn(async move {
+        let notify_msg = match execute_capture_task(task).await {
             Ok(msg) => {
                 info!("[CAPTURE] {}", msg);
                 msg

@@ -28,15 +28,15 @@ fn make_shell(alice: &Alice) -> Shell {
 /// Execute a single action against the Alice instance.
 ///
 /// Returns a structured ActionOutput describing the execution result.
-pub fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOutput> {
+pub async fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOutput> {
     match action {
         Action::Idle { timeout_secs } => execute_idle(alice, tx, *timeout_secs),
         Action::ReadMsg => execute_read_msg(alice, tx),
         Action::SendMsg { recipient, content } => execute_send_msg(alice, tx, recipient, content),
         Action::Thinking { content } => execute_thinking(alice, tx, content),
-        Action::Script { content } => execute_script(alice, tx, content),
-        Action::WriteFile { path, content } => execute_write_file(alice, tx, path, content),
-        Action::ReplaceInFile { path, search, replace } => execute_replace_in_file(alice, tx, path, search, replace),
+        Action::Script { content } => execute_script(alice, tx, content).await,
+        Action::WriteFile { path, content } => execute_write_file(alice, tx, path, content).await,
+        Action::ReplaceInFile { path, search, replace } => execute_replace_in_file(alice, tx, path, search, replace).await,
         Action::Summary { content } => execute_summary(alice, tx, content),
 
         Action::SetProfile { content } => execute_set_profile(alice, tx, &content),
@@ -247,14 +247,14 @@ fn execute_thinking(_alice: &mut Alice, tx: &mut Transaction, content: &str) -> 
     Ok(ActionOutput::Empty)
 }
 
-fn execute_script(alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<ActionOutput> {
+async fn execute_script(alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<ActionOutput> {
     info!(
         "[ACTION-{}] script ({} chars)",
         tx.instance_id,
         content.len()
     );
     let shell = make_shell(alice);
-    let result = shell.exec(content)?;
+    let result = shell.exec(content).await?;
 
     let (stdout, truncated) = truncate_stdout(&result.output);
     Ok(ActionOutput::Script {
@@ -314,7 +314,7 @@ fn format_preview(lines: &[&str]) -> String {
     preview.join("\n")
 }
 
-fn execute_write_file(
+async fn execute_write_file(
     alice: &mut Alice,
     tx: &mut Transaction,
     path: &str,
@@ -333,7 +333,7 @@ fn execute_write_file(
             .with_context(|| format!("Failed to write file: {}", path))?;
     } else {
         let shell = make_shell(alice);
-        let result = shell.write_file(&abs_path.to_string_lossy(), content)?;
+        let result = shell.write_file(&abs_path.to_string_lossy(), content).await?;
         if !result.success() {
             bail!(
                 "write_file failed (exit {}): {}",
@@ -351,7 +351,7 @@ fn execute_write_file(
 /// Max chars for search/replace preview in output.
 const REPLACE_PREVIEW_LIMIT: usize = 40;
 
-fn execute_replace_in_file(
+async fn execute_replace_in_file(
     alice: &mut Alice,
     tx: &mut Transaction,
     path: &str,
@@ -400,7 +400,7 @@ fn execute_replace_in_file(
         }
     } else {
         let shell = make_shell(alice);
-        let read_result = shell.read_file(&abs_path.to_string_lossy())?;
+        let read_result = shell.read_file(&abs_path.to_string_lossy()).await?;
         if !read_result.success() {
             bail!(
                 "replace_in_file: failed to read {} (exit {}): {}",
@@ -416,7 +416,7 @@ fn execute_replace_in_file(
             Ok(output) => {
                 let new_content = crate::util::replace_once(&content, search, replace).unwrap();
                 let shell = make_shell(alice);
-                let write_result = shell.write_file(&abs_path.to_string_lossy(), &new_content)?;
+                let write_result = shell.write_file(&abs_path.to_string_lossy(), &new_content).await?;
                 if !write_result.success() {
                     bail!(
                         "replace_in_file: failed to write {} (exit {}): {}",
@@ -672,31 +672,31 @@ mod tests {
         (alice, tx, tmp)
     }
 
-    #[test]
-    fn test_execute_idle() {
+    #[tokio::test]
+    async fn test_execute_idle() {
         let (mut alice, mut tx, _tmp) = setup();
         let result =
-            execute_action(&Action::Idle { timeout_secs: None }, &mut alice, &mut tx).unwrap();
+            execute_action(&Action::Idle { timeout_secs: None }, &mut alice, &mut tx).await.unwrap();
         assert!(matches!(result, ActionOutput::Empty));
     }
 
-    #[test]
-    fn test_execute_thinking() {
+    #[tokio::test]
+    async fn test_execute_thinking() {
         let (mut alice, mut tx, _tmp) = setup();
         let action = Action::Thinking {
             content: "deep thought".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         assert!(matches!(result, ActionOutput::Empty));
     }
 
-    #[test]
-    fn test_execute_script() {
+    #[tokio::test]
+    async fn test_execute_script() {
         let (mut alice, mut tx, _tmp) = setup();
         let action = Action::Script {
             content: "echo hello_rust".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         match result {
             ActionOutput::Script { ref stdout, .. } => {
                 assert!(stdout.contains("hello_rust"));
@@ -705,23 +705,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_execute_write_and_read_file() {
+    #[tokio::test]
+    async fn test_execute_write_and_read_file() {
         let (mut alice, mut tx, _tmp) = setup();
 
         let write_action = Action::WriteFile {
             path: "test.txt".to_string(),
             content: "hello from rust".to_string(),
         };
-        let result = execute_action(&write_action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&write_action, &mut alice, &mut tx).await.unwrap();
         assert!(matches!(result, ActionOutput::WriteFile { .. }));
 
         let content = std::fs::read_to_string(alice.instance.workspace.join("test.txt")).unwrap();
         assert_eq!(content, "hello from rust");
     }
 
-    #[test]
-    fn test_execute_replace_in_file() {
+    #[tokio::test]
+    async fn test_execute_replace_in_file() {
         let (mut alice, mut tx, _tmp) = setup();
         std::fs::write(alice.instance.workspace.join("test.txt"), "hello world").unwrap();
 
@@ -730,17 +730,17 @@ mod tests {
             search: "hello".to_string(),
             replace: "goodbye".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         assert!(matches!(result, ActionOutput::ReplaceInFile { match_count: 1, .. }));
 
         let content = std::fs::read_to_string(alice.instance.workspace.join("test.txt")).unwrap();
         assert_eq!(content, "goodbye world");
     }
 
-    #[test]
-    fn test_execute_read_msg_empty() {
+    #[tokio::test]
+    async fn test_execute_read_msg_empty() {
         let (mut alice, mut tx, _tmp) = setup();
-        let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).await.unwrap();
         match result {
             ActionOutput::ReadMsg { ref entries } => {
                 assert!(entries.is_empty(), "Expected empty entries for empty inbox");
@@ -749,8 +749,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_execute_read_msg_with_messages() {
+    #[tokio::test]
+    async fn test_execute_read_msg_with_messages() {
         let (mut alice, mut tx, _tmp) = setup();
         alice
             .instance
@@ -767,7 +767,7 @@ mod tests {
             .write_user_message("how are you?", "20260220120001")
             .unwrap();
 
-        let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&Action::ReadMsg, &mut alice, &mut tx).await.unwrap();
         match result {
             ActionOutput::ReadMsg { ref entries } => {
                 assert_eq!(entries.len(), 2);
@@ -791,14 +791,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_execute_send_msg_to_user() {
+    #[tokio::test]
+    async fn test_execute_send_msg_to_user() {
         let (mut alice, mut tx, _tmp) = setup();
         let action = Action::SendMsg {
             recipient: "user".to_string(),
             content: "hello user!".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         match result {
             ActionOutput::SendMsg { ref msg_id } => {
                 assert!(!msg_id.is_empty(), "msg_id should not be empty");
@@ -817,15 +817,15 @@ mod tests {
         assert_eq!(replies[0].1, "hello user!");
     }
 
-    #[test]
-    fn test_execute_send_msg_no_extension_fails() {
+    #[tokio::test]
+    async fn test_execute_send_msg_no_extension_fails() {
         let (mut alice, mut tx, _tmp) = setup();
         // alice.extension is None by default in test setup
         let action = Action::SendMsg {
             recipient: "some_agent".to_string(),
             content: "hello agent!".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         match result {
             ActionOutput::SendMsgFailed { ref error } => {
                 assert!(error.contains("通讯服务"), "Error should mention 通讯服务, got: {}", error);
@@ -834,8 +834,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_send_msg_failure_sets_cancel_idle() {
+    #[tokio::test]
+    async fn test_send_msg_failure_sets_cancel_idle() {
         let (mut alice, mut tx, _tmp) = setup();
         assert!(!tx.cancel_idle);
         // alice.extension is None by default → send to non-user recipient will fail
@@ -843,35 +843,35 @@ mod tests {
             recipient: "nonexistent_agent".to_string(),
             content: "hello".to_string(),
         };
-        let _result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let _result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         assert!(tx.cancel_idle, "cancel_idle should be true after send_msg failure");
     }
 
-    #[test]
-    fn test_send_msg_to_user_does_not_set_cancel_idle() {
+    #[tokio::test]
+    async fn test_send_msg_to_user_does_not_set_cancel_idle() {
         let (mut alice, mut tx, _tmp) = setup();
         assert!(!tx.cancel_idle);
         let action = Action::SendMsg {
             recipient: "user".to_string(),
             content: "hello user".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         assert!(matches!(result, ActionOutput::SendMsg { .. }));
         assert!(!tx.cancel_idle, "cancel_idle should remain false after successful send_msg");
     }
 
-    #[test]
-    fn test_execute_summary_empty_current() {
+    #[tokio::test]
+    async fn test_execute_summary_empty_current() {
         let (mut alice, mut tx, _tmp) = setup();
         let action = Action::Summary {
             content: "some summary".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         assert!(matches!(result, ActionOutput::SummaryEmpty));
     }
 
-    #[test]
-    fn test_execute_summary() {
+    #[tokio::test]
+    async fn test_execute_summary() {
         let (mut alice, mut tx, _tmp) = setup();
 
         // Insert action_log records so render_current_from_db() has content
@@ -905,7 +905,7 @@ mod tests {
         let action = Action::Summary {
             content: "Alice read a greeting and replied".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         match result {
             ActionOutput::Summary { msg_count, .. } => {
                 assert_eq!(msg_count, 2, "Should have 2 message IDs");
@@ -931,8 +931,8 @@ mod tests {
         assert!(entries[0].summary.contains("Alice read a greeting and replied"));
     }
 
-    #[test]
-    fn test_summary_creates_new_block_when_full() {
+    #[tokio::test]
+    async fn test_summary_creates_new_block_when_full() {
         let (mut alice, mut tx, _tmp) = setup();
 
         // Pre-fill a session block to exceed the size limit
@@ -961,7 +961,7 @@ mod tests {
         let action = Action::Summary {
             content: "test summary".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         assert!(matches!(result, ActionOutput::Summary { .. }));
 
         // Should have 2 blocks now (old full one + new one)
@@ -972,8 +972,8 @@ mod tests {
         assert_ne!(blocks[1], "20260223100000");
     }
 
-    #[test]
-    fn test_truncate_stdout() {
+    #[tokio::test]
+    async fn test_truncate_stdout() {
         let short = "hello";
         let (text, was_truncated) = truncate_stdout(short);
         assert_eq!(text, "hello");
@@ -986,13 +986,13 @@ mod tests {
         assert!(was_truncated);
     }
 
-    #[test]
-    fn test_execute_script_exit_code() {
+    #[tokio::test]
+    async fn test_execute_script_exit_code() {
         let (mut alice, mut tx, _tmp) = setup();
         let action = Action::Script {
             content: "exit 42".to_string(),
         };
-        let result = execute_action(&action, &mut alice, &mut tx).unwrap();
+        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
         match result {
             ActionOutput::Script { exit_code, .. } => {
                 assert_eq!(exit_code, 42);

@@ -1,6 +1,6 @@
 use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, stream_infer, stream_infer_with_on_text};
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 // --- Test types ---
 
@@ -43,16 +43,25 @@ fn extract_token(prompt: &str, type_name: &str) -> String {
     panic!("Token not found in prompt for type {}", type_name);
 }
 
+// Helper: create a mock channel that sends chunks via unbounded_channel
+fn mock_channel_rx(chunks: Vec<String>) -> UnboundedReceiver<String> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for chunk in chunks {
+        tx.send(chunk).ok();
+    }
+    // tx dropped here → channel closed
+    rx
+}
+
 // --- Tests ---
 
-#[test]
-fn test_stream_infer_yields_elements_one_by_one() {
+#[tokio::test]
+async fn test_stream_infer_yields_elements_one_by_one() {
     struct ChunkedChannel;
 
     impl LlmChannel for ChunkedChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
-            // Simulate streaming: each chunk arrives separately
             let chunks = vec![
                 format!("StreamAction-{}\n", token),
                 "think\n".to_string(),
@@ -64,65 +73,71 @@ fn test_stream_infer_yields_elements_one_by_one() {
                 "idle\n".to_string(),
                 format!("StreamAction-end-{}\n", token),
             ];
-            Ok(Box::new(chunks.into_iter()))
+            Ok(mock_channel_rx(chunks))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let stream = stream_infer::<StreamReq, StreamAction>(&ChunkedChannel, &request).unwrap();
+    let mut stream = stream_infer::<StreamReq, StreamAction>(&ChunkedChannel, &request).await.unwrap();
 
-    let results: Vec<StreamAction> = stream.map(|r| r.unwrap()).collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result.unwrap());
+    }
     assert_eq!(results.len(), 3);
     assert_eq!(results[0], StreamAction::Think { content: "正在思考...".to_string() });
     assert_eq!(results[1], StreamAction::Reply { content: "回答完毕。".to_string() });
     assert_eq!(results[2], StreamAction::Idle);
 }
 
-#[test]
-fn test_stream_infer_single_chunk() {
+#[tokio::test]
+async fn test_stream_infer_single_chunk() {
     // All data arrives in one chunk (like mock channel)
     struct OneChunkChannel;
 
     impl LlmChannel for OneChunkChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!(
                 "StreamAction-{t}\nthink\n深度思考中\nStreamAction-{t}\nreply\n最终答案\nStreamAction-end-{t}",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let stream = stream_infer::<StreamReq, StreamAction>(&OneChunkChannel, &request).unwrap();
+    let mut stream = stream_infer::<StreamReq, StreamAction>(&OneChunkChannel, &request).await.unwrap();
 
-    let results: Vec<StreamAction> = stream.map(|r| r.unwrap()).collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result.unwrap());
+    }
     assert_eq!(results.len(), 2);
     assert_eq!(results[0], StreamAction::Think { content: "深度思考中".to_string() });
     assert_eq!(results[1], StreamAction::Reply { content: "最终答案".to_string() });
 }
 
-#[test]
-fn test_stream_infer_missing_end_marker() {
+#[tokio::test]
+async fn test_stream_infer_missing_end_marker() {
     struct TruncatedChannel;
 
     impl LlmChannel for TruncatedChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!(
                 "StreamAction-{t}\nthink\n被截断了",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let mut stream = stream_infer::<StreamReq, StreamAction>(&TruncatedChannel, &request).unwrap();
+    let mut stream = stream_infer::<StreamReq, StreamAction>(&TruncatedChannel, &request).await.unwrap();
 
     // First next() should return the truncation error
-    let result = stream.next();
+    let result = stream.next().await;
     assert!(result.is_some());
     let err = result.unwrap();
     assert!(err.is_err());
@@ -130,18 +145,18 @@ fn test_stream_infer_missing_end_marker() {
     assert!(err_msg.contains("No valid element found") || err_msg.contains("end marker"), "Error should mention missing element or end marker: {}", err_msg);
 }
 
-#[test]
-fn test_stream_infer_channel_error() {
+#[tokio::test]
+async fn test_stream_infer_channel_error() {
     struct FailChannel;
 
     impl LlmChannel for FailChannel {
-        fn infer_stream(&self, _prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, _prompt: String) -> Result<UnboundedReceiver<String>, String> {
             Err("Connection refused".to_string())
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let result = stream_infer::<StreamReq, StreamAction>(&FailChannel, &request);
+    let result = stream_infer::<StreamReq, StreamAction>(&FailChannel, &request).await;
     assert!(result.is_err());
     match result {
         Err(e) => assert!(e.contains("Connection refused"), "unexpected error: {}", e),
@@ -149,20 +164,20 @@ fn test_stream_infer_channel_error() {
     }
 }
 
-#[test]
-fn test_stream_infer_token_accessible() {
+#[tokio::test]
+async fn test_stream_infer_token_accessible() {
     struct TokenChannel;
 
     impl LlmChannel for TokenChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!("StreamAction-{t}\nidle\nStreamAction-end-{t}", t = token);
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let stream = stream_infer::<StreamReq, StreamAction>(&TokenChannel, &request).unwrap();
+    let stream = stream_infer::<StreamReq, StreamAction>(&TokenChannel, &request).await.unwrap();
 
     // Token should be accessible
     let token = stream.token().to_string();
@@ -170,13 +185,13 @@ fn test_stream_infer_token_accessible() {
     assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
 }
 
-#[test]
-fn test_stream_infer_gradual_chunks() {
+#[tokio::test]
+async fn test_stream_infer_gradual_chunks() {
     // Simulate very small chunks (like real SSE streaming)
     struct GradualChannel;
 
     impl LlmChannel for GradualChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let full = format!(
                 "StreamAction-{t}\nreply\nHello World\nStreamAction-end-{t}",
@@ -187,72 +202,79 @@ fn test_stream_infer_gradual_chunks() {
                 .chunks(2)
                 .map(|c| String::from_utf8_lossy(c).to_string())
                 .collect();
-            Ok(Box::new(chunks.into_iter()))
+            Ok(mock_channel_rx(chunks))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let stream = stream_infer::<StreamReq, StreamAction>(&GradualChannel, &request).unwrap();
+    let mut stream = stream_infer::<StreamReq, StreamAction>(&GradualChannel, &request).await.unwrap();
 
-    let results: Vec<StreamAction> = stream.map(|r| r.unwrap()).collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result.unwrap());
+    }
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], StreamAction::Reply { content: "Hello World".to_string() });
 }
 
-#[test]
-fn test_stream_infer_empty_response() {
+#[tokio::test]
+async fn test_stream_infer_empty_response() {
     // Only separator + end marker, no actual elements
     struct EmptyChannel;
 
     impl LlmChannel for EmptyChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!("StreamAction-end-{t}", t = token);
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let stream = stream_infer::<StreamReq, StreamAction>(&EmptyChannel, &request).unwrap();
+    let mut stream = stream_infer::<StreamReq, StreamAction>(&EmptyChannel, &request).await.unwrap();
 
-    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
     assert_eq!(results.len(), 0);
 }
 
-#[test]
-fn test_stream_infer_with_code_block_wrapper() {
+#[tokio::test]
+async fn test_stream_infer_with_code_block_wrapper() {
     // LLM wraps output in ```
     struct CodeBlockChannel;
 
     impl LlmChannel for CodeBlockChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!(
                 "```\nStreamAction-{t}\nreply\n代码块内的回复\nStreamAction-end-{t}\n```",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    // Note: stream_infer doesn't strip code blocks (that's from_markdown's job via strip_code_block)
-    // But from_markdown is called per-element with synthetic input, so code block stripping
-    // happens at a different level. This test verifies the behavior.
-    let stream = stream_infer::<StreamReq, StreamAction>(&CodeBlockChannel, &request).unwrap();
-    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    let mut stream = stream_infer::<StreamReq, StreamAction>(&CodeBlockChannel, &request).await.unwrap();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
     // The ``` lines don't match separator format, so they're ignored as noise
     assert_eq!(results.len(), 1);
     assert!(results[0].is_ok());
     assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "代码块内的回复".to_string() });
 }
-#[test]
-fn test_stream_infer_on_text_receives_all_chunks() {
+
+#[tokio::test]
+async fn test_stream_infer_on_text_receives_all_chunks() {
     // Channel that returns response in multiple chunks
     struct ChunkedCallbackChannel;
 
     impl LlmChannel for ChunkedCallbackChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let chunks = vec![
                 format!("StreamAction-{}\n", token),
@@ -260,26 +282,29 @@ fn test_stream_infer_on_text_receives_all_chunks() {
                 "回调测试内容\n".to_string(),
                 format!("StreamAction-end-{}\n", token),
             ];
-            Ok(Box::new(chunks.into_iter()))
+            Ok(mock_channel_rx(chunks))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let collected = Rc::new(RefCell::new(Vec::<String>::new()));
+    let collected = Arc::new(Mutex::new(Vec::<String>::new()));
     let collected_clone = collected.clone();
 
-    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &ChunkedCallbackChannel,
         &request,
         Some(Box::new(move |chunk: &str| {
-            collected_clone.borrow_mut().push(chunk.to_string());
+            collected_clone.lock().unwrap().push(chunk.to_string());
         })),
         None,
         None,
         None,
-    ).unwrap();
+    ).await.unwrap();
 
-    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
 
     // Verify parsing works
     assert_eq!(results.len(), 1);
@@ -287,7 +312,7 @@ fn test_stream_infer_on_text_receives_all_chunks() {
     assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "回调测试内容".to_string() });
 
     // Verify callback received all 4 chunks
-    let chunks = collected.borrow();
+    let chunks = collected.lock().unwrap();
     assert_eq!(chunks.len(), 4);
     assert!(chunks[0].starts_with("StreamAction-"));
     assert_eq!(chunks[1], "reply\n");
@@ -295,33 +320,36 @@ fn test_stream_infer_on_text_receives_all_chunks() {
     assert!(chunks[3].starts_with("StreamAction-end-"));
 }
 
-#[test]
-fn test_stream_infer_on_text_none_equivalent() {
+#[tokio::test]
+async fn test_stream_infer_on_text_none_equivalent() {
     // Same as regular stream_infer
     struct SimpleCallbackChannel;
 
     impl LlmChannel for SimpleCallbackChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!(
                 "StreamAction-{t}\nreply\n无回调\nStreamAction-end-{t}\n",
                 t = token
             );
-            Ok(Box::new(std::iter::once(response)))
+            Ok(mock_channel_rx(vec![response]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &SimpleCallbackChannel,
         &request,
         None,
         None,
         None,
         None,
-    ).unwrap();
+    ).await.unwrap();
 
-    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
     assert_eq!(results.len(), 1);
     assert!(results[0].is_ok());
     assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "无回调".to_string() });
@@ -329,118 +357,126 @@ fn test_stream_infer_on_text_none_equivalent() {
 
 // === on_preamble tests ===
 
-#[test]
-fn test_stream_infer_preamble_callback_receives_content() {
+#[tokio::test]
+async fn test_stream_infer_preamble_callback_receives_content() {
     struct PreambleChannel;
 
     impl LlmChannel for PreambleChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
-            Ok(Box::new(vec![
+            Ok(mock_channel_rx(vec![
                 format!("I need to think about this carefully.\nLet me analyze the situation.\nStreamAction-{}\nidle\nStreamAction-end-{}\n", token, token),
-            ].into_iter()))
+            ]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let preamble_text = Rc::new(RefCell::new(String::new()));
+    let preamble_text = Arc::new(Mutex::new(String::new()));
     let preamble_clone = preamble_text.clone();
 
-    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &PreambleChannel,
         &request,
         None,
         None,
         Some(Box::new(move |text: &str| {
-            *preamble_clone.borrow_mut() = text.to_string();
+            *preamble_clone.lock().unwrap() = text.to_string();
         })),
         None,
-    ).unwrap();
+    ).await.unwrap();
 
-    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
     assert_eq!(results.len(), 1);
     assert!(results[0].is_ok());
 
-    let preamble = preamble_text.borrow();
+    let preamble = preamble_text.lock().unwrap();
     assert!(preamble.contains("I need to think about this carefully"), "preamble should contain LLM waste text: {}", preamble);
     assert!(preamble.contains("Let me analyze the situation"), "preamble should contain all waste lines: {}", preamble);
 }
 
-#[test]
-fn test_stream_infer_preamble_none_no_error() {
+#[tokio::test]
+async fn test_stream_infer_preamble_none_no_error() {
     // When on_preamble is None and there's preamble text, should still not error
     // (preamble is silently discarded)
     struct PreambleNoneChannel;
 
     impl LlmChannel for PreambleNoneChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
-            Ok(Box::new(vec![
+            Ok(mock_channel_rx(vec![
                 format!("Some thinking here\nStreamAction-{}\nidle\nStreamAction-end-{}\n", token, token),
-            ].into_iter()))
+            ]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &PreambleNoneChannel,
         &request,
         None,
         None,
         None,
         None,
-    ).unwrap();
+    ).await.unwrap();
 
-    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
     assert_eq!(results.len(), 1, "should parse 1 action despite preamble: {:?}", results);
     assert!(results[0].is_ok(), "should succeed: {:?}", results[0]);
 }
 
-#[test]
-fn test_stream_infer_no_preamble_no_callback() {
+#[tokio::test]
+async fn test_stream_infer_no_preamble_no_callback() {
     // When there's no preamble, on_preamble callback should not be called
     struct NoPreambleChannel;
 
     impl LlmChannel for NoPreambleChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
-            Ok(Box::new(vec![
+            Ok(mock_channel_rx(vec![
                 format!("StreamAction-{}\nidle\nStreamAction-end-{}\n", token, token),
-            ].into_iter()))
+            ]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let was_called = Rc::new(RefCell::new(false));
+    let was_called = Arc::new(Mutex::new(false));
     let was_called_clone = was_called.clone();
 
-    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &NoPreambleChannel,
         &request,
         None,
         None,
         Some(Box::new(move |_text: &str| {
-            *was_called_clone.borrow_mut() = true;
+            *was_called_clone.lock().unwrap() = true;
         })),
         None,
-    ).unwrap();
+    ).await.unwrap();
 
-    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
     assert_eq!(results.len(), 1);
     assert!(results[0].is_ok());
-    assert!(!*was_called.borrow(), "on_preamble should NOT be called when there's no preamble");
+    assert!(!*was_called.lock().unwrap(), "on_preamble should NOT be called when there's no preamble");
 }
 
 // === Cancel tests ===
 
-#[test]
-fn test_stream_infer_cancel_mid_stream() {
-    use std::sync::Arc;
+#[tokio::test]
+async fn test_stream_infer_cancel_mid_stream() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct SlowChannel;
     impl LlmChannel for SlowChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let chunks = vec![
                 format!("StreamAction-{}\n", token),
@@ -454,7 +490,7 @@ fn test_stream_infer_cancel_mid_stream() {
                 "third action\n".to_string(),
                 format!("StreamAction-end-{}\n", token),
             ];
-            Ok(Box::new(chunks.into_iter()))
+            Ok(mock_channel_rx(chunks))
         }
     }
 
@@ -462,17 +498,17 @@ fn test_stream_infer_cancel_mid_stream() {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = cancel.clone();
 
-    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &SlowChannel,
         &request,
         None,
         None,
         None,
         Some(cancel_clone),
-    ).unwrap();
+    ).await.unwrap();
 
     let mut results = Vec::new();
-    for item in stream {
+    while let Some(item) = stream.next().await {
         results.push(item.unwrap());
         // Cancel after first action
         cancel.store(true, Ordering::Relaxed);
@@ -483,62 +519,68 @@ fn test_stream_infer_cancel_mid_stream() {
     assert_eq!(results[0], StreamAction::Reply { content: "first action".to_string() });
 }
 
-#[test]
-fn test_stream_infer_cancel_none_no_effect() {
+#[tokio::test]
+async fn test_stream_infer_cancel_none_no_effect() {
     // Verify that cancel=None doesn't affect normal operation
     let request = StreamReq { prompt: "test".to_string() };
 
     struct NormalChannel;
     impl LlmChannel for NormalChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
-            Ok(Box::new(vec![
+            Ok(mock_channel_rx(vec![
                 format!("StreamAction-{}\nreply\nworks\nStreamAction-end-{}\n", token, token),
-            ].into_iter()))
+            ]))
         }
     }
 
-    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &NormalChannel,
         &request,
         None,
         None,
         None,
         None,
-    ).unwrap();
+    ).await.unwrap();
 
-    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "works".to_string() });
 }
 
-#[test]
-fn test_stream_infer_cancel_before_start() {
-    use std::sync::Arc;
+#[tokio::test]
+async fn test_stream_infer_cancel_before_start() {
     use std::sync::atomic::AtomicBool;
 
     struct AnyChannel;
     impl LlmChannel for AnyChannel {
-        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
-            Ok(Box::new(vec![
+            Ok(mock_channel_rx(vec![
                 format!("StreamAction-{}\nreply\nshould not see\nStreamAction-end-{}\n", token, token),
-            ].into_iter()))
+            ]))
         }
     }
 
     let request = StreamReq { prompt: "test".to_string() };
     let cancel = Arc::new(AtomicBool::new(true)); // Already cancelled
 
-    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &AnyChannel,
         &request,
         None,
         None,
         None,
         Some(cancel),
-    ).unwrap();
+    ).await.unwrap();
 
-    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
     assert_eq!(results.len(), 0); // Nothing parsed
 }
+
