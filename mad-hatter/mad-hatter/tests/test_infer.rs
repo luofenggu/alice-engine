@@ -418,6 +418,7 @@ fn test_infer_with_on_text_receives_chunks() {
             collected_clone.borrow_mut().push(chunk.to_string());
         })),
         None,
+        None,
     ).unwrap();
 
     // Verify parsing works
@@ -457,6 +458,7 @@ fn test_infer_with_on_text_none_equivalent() {
         &request,
         None,
         None,
+        None,
     ).unwrap();
 
     assert_eq!(results.len(), 1);
@@ -464,4 +466,38 @@ fn test_infer_with_on_text_none_equivalent() {
         SimpleAction::Reply { content } => assert_eq!(content, "无回调infer"),
         other => panic!("Expected Reply, got {:?}", other),
     }
+}
+
+// === on_preamble tests ===
+
+#[test]
+fn test_infer_with_preamble_callback() {
+    struct InferPreambleChannel;
+
+    impl LlmChannel for InferPreambleChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token_from_prompt(&prompt, "SimpleAction");
+            Ok(Box::new(vec![
+                format!("Let me think about this...\nSimpleAction-{}\nidle\nSimpleAction-end-{}\n", token, token),
+            ].into_iter()))
+        }
+    }
+
+    let request = SimpleRequest { message: "test".to_string(), context: "ctx".to_string() };
+    let preamble_text = Rc::new(RefCell::new(String::new()));
+    let preamble_clone = preamble_text.clone();
+
+    let results = infer_with_on_text::<SimpleRequest, SimpleAction>(
+        &InferPreambleChannel,
+        &request,
+        None,
+        None,
+        Some(Box::new(move |text: &str| {
+            *preamble_clone.borrow_mut() = text.to_string();
+        })),
+    ).unwrap();
+
+    assert_eq!(results.len(), 1);
+    let preamble = preamble_text.borrow();
+    assert!(preamble.contains("Let me think about this"), "preamble callback should receive waste text: {}", preamble);
 }

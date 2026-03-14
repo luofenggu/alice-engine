@@ -225,7 +225,7 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    stream_infer_with_on_text(channel, request, None, None)
+    stream_infer_with_on_text(channel, request, None, None, None)
 }
 
 /// Stream inference with optional text callback
@@ -242,6 +242,7 @@ pub fn stream_infer_with_on_text<'a, Req, Resp>(
     request: &Req,
     on_text: Option<Box<dyn FnMut(&str) + 'a>>,
     on_input: Option<Box<dyn FnOnce(&str)>>,
+    on_preamble: Option<Box<dyn FnOnce(&str) + 'a>>,
 ) -> Result<StreamInfer<'a, Resp>, String>
 where
     Req: ToMarkdown + StructInput,
@@ -262,6 +263,7 @@ where
         done: false,
         parsed_count: 0,
         on_text,
+        on_preamble,
         _phantom: std::marker::PhantomData,
     })
 }
@@ -275,6 +277,7 @@ pub struct StreamInfer<'a, T: FromMarkdown> {
     done: bool,
     parsed_count: usize,
     on_text: Option<Box<dyn FnMut(&str) + 'a>>,
+    on_preamble: Option<Box<dyn FnOnce(&str) + 'a>>,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -310,12 +313,14 @@ impl<T: FromMarkdown> Iterator for StreamInfer<'_, T> {
                         let t = l.trim();
                         t.is_empty() || t.starts_with("```")
                     }) {
-                        self.done = true;
-                        return Some(Err(format!(
-                            "[{}] Unexpected content before first element separator '{}': {}",
-                            self.type_name, separator, before
-                        )));
+                        // Preamble detected: pass to callback instead of erroring
+                        if let Some(cb) = self.on_preamble.take() {
+                            cb(before);
+                        }
                     }
+                    // Remove preamble from buffer, keep from separator onward
+                    self.buffer = self.buffer[first_pos..].to_string();
+                    continue;
                 }
 
                 let after_first = first_pos + separator.len();
@@ -423,7 +428,7 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    infer_with_on_text(channel, request, None, None)
+    infer_with_on_text(channel, request, None, None, None)
 }
 
 /// Full inference with optional text callback
@@ -435,12 +440,13 @@ pub fn infer_with_on_text<Req, Resp>(
     request: &Req,
     on_text: Option<Box<dyn FnMut(&str) + '_>>,
     on_input: Option<Box<dyn FnOnce(&str)>>,
+    on_preamble: Option<Box<dyn FnOnce(&str) + '_>>,
 ) -> Result<Vec<Resp>, String>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    let stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text, on_input)?;
+    let stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text, on_input, on_preamble)?;
     let mut results = Vec::new();
     for item in stream {
         results.push(item?);

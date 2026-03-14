@@ -275,6 +275,7 @@ fn test_stream_infer_on_text_receives_all_chunks() {
             collected_clone.borrow_mut().push(chunk.to_string());
         })),
         None,
+        None,
     ).unwrap();
 
     let results: Vec<Result<StreamAction, String>> = stream.collect();
@@ -315,10 +316,112 @@ fn test_stream_infer_on_text_none_equivalent() {
         &request,
         None,
         None,
+        None,
     ).unwrap();
 
     let results: Vec<Result<StreamAction, String>> = stream.collect();
     assert_eq!(results.len(), 1);
     assert!(results[0].is_ok());
     assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "无回调".to_string() });
+}
+
+// === on_preamble tests ===
+
+#[test]
+fn test_stream_infer_preamble_callback_receives_content() {
+    struct PreambleChannel;
+
+    impl LlmChannel for PreambleChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            Ok(Box::new(vec![
+                format!("I need to think about this carefully.\nLet me analyze the situation.\nStreamAction-{}\nidle\nStreamAction-end-{}\n", token, token),
+            ].into_iter()))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let preamble_text = Rc::new(RefCell::new(String::new()));
+    let preamble_clone = preamble_text.clone();
+
+    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &PreambleChannel,
+        &request,
+        None,
+        None,
+        Some(Box::new(move |text: &str| {
+            *preamble_clone.borrow_mut() = text.to_string();
+        })),
+    ).unwrap();
+
+    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_ok());
+
+    let preamble = preamble_text.borrow();
+    assert!(preamble.contains("I need to think about this carefully"), "preamble should contain LLM waste text: {}", preamble);
+    assert!(preamble.contains("Let me analyze the situation"), "preamble should contain all waste lines: {}", preamble);
+}
+
+#[test]
+fn test_stream_infer_preamble_none_no_error() {
+    // When on_preamble is None and there's preamble text, should still not error
+    // (preamble is silently discarded)
+    struct PreambleNoneChannel;
+
+    impl LlmChannel for PreambleNoneChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            Ok(Box::new(vec![
+                format!("Some thinking here\nStreamAction-{}\nidle\nStreamAction-end-{}\n", token, token),
+            ].into_iter()))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &PreambleNoneChannel,
+        &request,
+        None,
+        None,
+        None,
+    ).unwrap();
+
+    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    assert_eq!(results.len(), 1, "should parse 1 action despite preamble: {:?}", results);
+    assert!(results[0].is_ok(), "should succeed: {:?}", results[0]);
+}
+
+#[test]
+fn test_stream_infer_no_preamble_no_callback() {
+    // When there's no preamble, on_preamble callback should not be called
+    struct NoPreambleChannel;
+
+    impl LlmChannel for NoPreambleChannel {
+        fn infer_stream(&self, prompt: String) -> Result<Box<dyn Iterator<Item = String> + '_>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            Ok(Box::new(vec![
+                format!("StreamAction-{}\nidle\nStreamAction-end-{}\n", token, token),
+            ].into_iter()))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let was_called = Rc::new(RefCell::new(false));
+    let was_called_clone = was_called.clone();
+
+    let stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &NoPreambleChannel,
+        &request,
+        None,
+        None,
+        Some(Box::new(move |_text: &str| {
+            *was_called_clone.borrow_mut() = true;
+        })),
+    ).unwrap();
+
+    let results: Vec<Result<StreamAction, String>> = stream.collect();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_ok());
+    assert!(!*was_called.borrow(), "on_preamble should NOT be called when there's no preamble");
 }
