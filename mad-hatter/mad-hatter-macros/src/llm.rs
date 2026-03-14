@@ -86,19 +86,20 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
         }
     };
 
-    // Extract struct-level doc comment as header
-    let struct_docs = extract_doc_comments(&input.attrs);
-    let struct_header = join_as_comment(&struct_docs);
+    // Extract struct-level doc comment as header (use @render docs for ToMarkdown)
+    let struct_classified = extract_classified_docs(&input.attrs);
+    let struct_header = join_as_comment(struct_classified.for_render());
 
     let mut tm_fields: Vec<ToMarkdownField> = Vec::new();
     for field in fields.iter() {
         let ident = field.ident.clone().unwrap();
         let skip = has_markdown_skip(&field.attrs);
-        let docs = extract_doc_comments(&field.attrs);
-        let section_title = if docs.is_empty() {
+        let classified = extract_classified_docs(&field.attrs);
+        let render_docs = classified.for_render();
+        let section_title = if render_docs.is_empty() {
             ident.to_string()
         } else {
-            docs.join(" ")
+            render_docs.join(" ")
         };
         let kind = classify_field_type(&field.ty);
         tm_fields.push(ToMarkdownField { ident, kind, section_title, skip });
@@ -211,11 +212,12 @@ fn derive_to_markdown_enum(input: DeriveInput) -> TokenStream {
                     let fident = f.ident.as_ref().unwrap();
                     let skip = has_markdown_skip(&f.attrs);
                     if skip { return quote! {}; }
-                    let docs = extract_doc_comments(&f.attrs);
-                    let title = if docs.is_empty() {
+                    let classified = extract_classified_docs(&f.attrs);
+                    let render_docs = classified.for_render();
+                    let title = if render_docs.is_empty() {
                         fident.to_string()
                     } else {
-                        docs.join(" ")
+                        render_docs.join(" ")
                     };
                     let kind = classify_field_type(&f.ty);
                     gen_enum_field_depth_render(fident, &title, &kind)
@@ -807,16 +809,17 @@ fn derive_from_markdown_enum(input: DeriveInput) -> TokenStream {
 
     let mut variants: Vec<VariantInfo> = Vec::new();
     for v in variants_data {
-        let docs = extract_doc_comments(&v.attrs);
-        let doc = join_as_comment(&docs);
+        let classified = extract_classified_docs(&v.attrs);
+        let doc = join_as_comment(classified.for_parse());
         let snake_name = to_snake_case(&v.ident.to_string());
 
         let fields = match &v.fields {
             Fields::Named(named) => {
                 named.named.iter().map(|f| {
                     let fname = f.ident.as_ref().unwrap().to_string();
-                    let fdocs = extract_doc_comments(&f.attrs);
-                    let fdoc = if fdocs.is_empty() { fname.clone() } else { join_as_comment(&fdocs) };
+                    let classified = extract_classified_docs(&f.attrs);
+                    let parse_docs = classified.for_parse();
+                    let fdoc = if parse_docs.is_empty() { fname.clone() } else { join_as_comment(parse_docs) };
                     let (is_option, inner_type) = check_option_type(&f.ty);
                     let (is_vec, vec_inner_type, vec_inner_syn_type) = check_vec_type(&f.ty);
                     let is_required = has_markdown_required(&f.attrs);
@@ -1302,8 +1305,9 @@ fn derive_from_markdown_struct(input: DeriveInput) -> TokenStream {
     let mut field_infos: Vec<FromFieldInfo> = Vec::new();
     for f in fields.iter() {
         let fname = f.ident.as_ref().unwrap().to_string();
-        let fdocs = extract_doc_comments(&f.attrs);
-        let fdoc = if fdocs.is_empty() { fname.clone() } else { join_as_comment(&fdocs) };
+        let classified = extract_classified_docs(&f.attrs);
+        let parse_docs = classified.for_parse();
+        let fdoc = if parse_docs.is_empty() { fname.clone() } else { join_as_comment(parse_docs) };
         let (is_option, inner_type) = check_option_type(&f.ty);
         let (is_vec, vec_inner_type, vec_inner_syn_type) = check_vec_type(&f.ty);
         let is_required = has_markdown_required(&f.attrs);
@@ -1630,6 +1634,25 @@ fn is_numeric_inner_type(inner: &str) -> bool {
 }
 
 /// Extract doc comments from attributes.
+/// Classified doc comments by prefix.
+struct ClassifiedDocs {
+    parse: Vec<String>,
+    render: Vec<String>,
+    all: Vec<String>,
+}
+
+impl ClassifiedDocs {
+    /// Get docs for FromMarkdown (parse direction). Falls back to all if no @parse lines.
+    fn for_parse(&self) -> &[String] {
+        if self.parse.is_empty() { &self.all } else { &self.parse }
+    }
+
+    /// Get docs for ToMarkdown (render direction). Falls back to all if no @render lines.
+    fn for_render(&self) -> &[String] {
+        if self.render.is_empty() { &self.all } else { &self.render }
+    }
+}
+
 fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
     let mut docs = Vec::new();
     for attr in attrs {
@@ -1646,6 +1669,23 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
     docs
 }
 
+/// Extract doc comments classified by @parse/@render prefix.
+fn extract_classified_docs(attrs: &[syn::Attribute]) -> ClassifiedDocs {
+    let raw = extract_doc_comments(attrs);
+    let mut parse = Vec::new();
+    let mut render = Vec::new();
+    let mut all = Vec::new();
+    for line in &raw {
+        if let Some(rest) = line.strip_prefix("@parse ") {
+            parse.push(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("@render ") {
+            render.push(rest.to_string());
+        } else {
+            all.push(line.clone());
+        }
+    }
+    ClassifiedDocs { parse, render, all }
+}
 
 /// Join doc comments as comment lines with "// " prefix, preserving original line breaks.
 fn join_as_comment(docs: &[String]) -> String {
