@@ -62,60 +62,67 @@ use std::fmt;
 
 #[derive(Debug, Clone, FromMarkdown, ToMarkdown, Serialize, Deserialize)]
 pub enum Action {
-    /// Action：什么都不做（继续等待）
-    /// idle是终结动作，输出idle后本轮推理结束，不能再输出任何action
-    /// 礼貌规则: 用户只能看到信件，看不到你的其它行为，因此，进入idle之前需检查已读信件，如有未回复消息，优先回复（寄出信件）
-    /// ⚠️ sleep vs idle：shell脚本里的sleep是同步阻塞——等待期间你无法响应任何消息；idle是异步等待——来信会立刻唤醒你。需要等待时永远用idle，不要用sleep
-    /// ⚠️ 默认不加参数：等用户消息时直接idle不带秒数，来信自动唤醒。只有"启动了后台任务、需要过一会儿检查结果"这种场景才加秒数
-    /// 💡 idle可以紧跟在其他action后面连续输出。比如你send_msg回复了用户后需要等待确认，直接跟一个idle，不用浪费一次推理
-    /// 💡 idle 120：等待120秒后自动醒来检查状态（期间有来信也会提前醒）。适合异步运维场景
+    /// @parse Action：什么都不做（继续等待）
+    /// @parse idle是终结动作，输出idle后本轮推理结束，不能再输出任何action
+    /// @parse 礼貌规则: 用户只能看到信件，看不到你的其它行为，因此，进入idle之前需检查已读信件，如有未回复消息，优先回复（寄出信件）
+    /// @parse ⚠️ sleep vs idle：shell脚本里的sleep是同步阻塞——等待期间你无法响应任何消息；idle是异步等待——来信会立刻唤醒你。需要等待时永远用idle，不要用sleep
+    /// @parse ⚠️ 默认不加参数：等用户消息时直接idle不带秒数，来信自动唤醒。只有"启动了后台任务、需要过一会儿检查结果"这种场景才加秒数
+    /// @parse 💡 idle可以紧跟在其他action后面连续输出。比如你send_msg回复了用户后需要等待确认，直接跟一个idle，不用浪费一次推理
+    /// @parse 💡 idle 120：等待120秒后自动醒来检查状态（期间有来信也会提前醒）。适合异步运维场景
+    /// @render 空闲等待
     Idle {
         /// 秒数（如120，表示等待120秒后自动醒来）
         timeout_secs: Option<u64>,
     },
-    /// Action：阅读收件箱（未读来信=0时无效）
-    /// 来信中sender为"user"代表已鉴权的你的专属用户
+    /// @parse Action：阅读收件箱（未读来信=0时无效）
+    /// @parse 来信中sender为"user"代表已鉴权的你的专属用户
+    /// @render 阅读收件箱
     ReadMsg,
-    /// Action：寄出信件
-    /// 收件人填"user"代表发给你的专属用户
-    /// 信件中引用文件路径时使用 [[file:相对路径]] 格式，前端会渲染为可点击的文件链接
-    /// 信件中的URL会自动识别为可点击链接，无需特殊格式
-    /// 信件内容支持markdown格式（标题、列表、代码块、表格等），前端会自动渲染
+    /// @parse Action：寄出信件
+    /// @parse 收件人填"user"代表发给你的专属用户
+    /// @parse 信件中引用文件路径时使用 [[file:相对路径]] 格式，前端会渲染为可点击的文件链接
+    /// @parse 信件中的URL会自动识别为可点击链接，无需特殊格式
+    /// @parse 信件内容支持markdown格式（标题、列表、代码块、表格等），前端会自动渲染
+    /// @render 寄出信件
     SendMsg {
         /// 收件人
         recipient: String,
         /// 信件内容
         content: String,
     },
-    /// Action：记录思考
-    /// 可以在实施action之前先记录planning-thinking（思考计划）
-    /// 也可以在关键action之后记录reflection-thinking（观察结果）
+    /// @parse Action：记录思考
+    /// @parse 可以在实施action之前先记录planning-thinking（思考计划）
+    /// @parse 也可以在关键action之后记录reflection-thinking（观察结果）
+    /// @render 记录思考
     Thinking {
         /// thinking内容
         content: String,
     },
-    /// Action：执行本地脚本
-    /// 脚本执行时cwd已经是工作目录(workspace)，脚本中的相对路径基于workspace
-    /// 使用绝对路径可以访问工作目录之外的文件（需要开启privilege权限，可以跟用户商量）
+    /// @parse Action：执行本地脚本
+    /// @parse 脚本执行时cwd已经是工作目录(workspace)，脚本中的相对路径基于workspace
+    /// @parse 使用绝对路径可以访问工作目录之外的文件（需要开启privilege权限，可以跟用户商量）
+    /// @render 执行脚本
     Script {
         /// 脚本内容
         content: String,
     },
-    /// Action：写入文件
-    /// 路径是工作目录中的相对路径。如果需要操作工作目录之外的文件，可以使用绝对路径（需要开启privileged权限，可以跟用户商量）
-    /// 写入后系统自动提取文件骨架（接口+注释）记入 `current`，不记全文
-    /// 如果需要记住写入的关键细节，在thinking中提前记录
+    /// @parse Action：写入文件
+    /// @parse 路径是工作目录中的相对路径。如果需要操作工作目录之外的文件，可以使用绝对路径（需要开启privileged权限，可以跟用户商量）
+    /// @parse 写入后系统自动提取文件骨架（接口+注释）记入 `current`，不记全文
+    /// @parse 如果需要记住写入的关键细节，在thinking中提前记录
+    /// @render 写入文件
     WriteFile {
         /// file_path
         path: String,
         /// 文件完整内容
         content: String,
     },
-    /// Action：搜索替换文件内容（增量修改）
-    /// 搜索文本必须在文件中唯一匹配，匹配0次或多次都会报错
-    /// 比write_file省token：只需输出变更区域，不用全量输出文件
-    /// 比script中的sed更可靠：引擎内置实现，不依赖系统命令
-    /// 路径是工作目录中的相对路径。如果需要操作工作目录之外的文件，可以使用绝对路径（需要开启privileged权限，可以跟用户商量）
+    /// @parse Action：搜索替换文件内容（增量修改）
+    /// @parse 搜索文本必须在文件中唯一匹配，匹配0次或多次都会报错
+    /// @parse 比write_file省token：只需输出变更区域，不用全量输出文件
+    /// @parse 比script中的sed更可靠：引擎内置实现，不依赖系统命令
+    /// @parse 路径是工作目录中的相对路径。如果需要操作工作目录之外的文件，可以使用绝对路径（需要开启privileged权限，可以跟用户商量）
+    /// @render 搜索替换
     ReplaceInFile {
         /// file_path
         path: String,
@@ -124,40 +131,44 @@ pub enum Action {
         /// 要替换成的文本（多行）
         replace: String,
     },
-    /// Action：小结（回顾对话）
-    /// 当current变得很长时，用这个action释放空间
-    /// 执行后current清空、小结合入近况
-    /// 对话小结按过程顺序记录：关键思考、决策和结论；重要操作及其结果；进行中尚未完成的工作的上下文和指引；新出现的知识术语；读到用户信件时的感受和温度
+    /// @parse Action：小结（回顾对话）
+    /// @parse 当current变得很长时，用这个action释放空间
+    /// @parse 执行后current清空、小结合入近况
+    /// @parse 对话小结按过程顺序记录：关键思考、决策和结论；重要操作及其结果；进行中尚未完成的工作的上下文和指引；新出现的知识术语；读到用户信件时的感受和温度
+    /// @render 对话小结
     Summary {
         /// 对话小结
         content: String,
     },
-    /// Action：设置个人资料
-    /// 已知key: name（显示名称）, color（主题色，如#FF6B6B）, avatar（头像emoji）
+    /// @parse Action：设置个人资料
+    /// @parse 已知key: name（显示名称）, color（主题色，如#FF6B6B）, avatar（头像emoji）
+    /// @render 设置个人资料
     SetProfile {
         /// 设置项（每行一个 key:value）
         content: String,
     },
-    /// Action：创建新实例（裂变）
-    /// 创建一个新的agent实例，引擎会自动发现并启动
-    /// 用于裂变场景：将部分职责和知识委托给新实例
-    /// 新实例会继承当前用户，获得随机ID和颜色
-    /// ⚠️ 未经用户授权不得执行裂变
-    /// knowledge内容与自己当前的知识保持结构基本一致，按用户要求提炼局部内容
+    /// @parse Action：创建新实例（裂变）
+    /// @parse 创建一个新的agent实例，引擎会自动发现并启动
+    /// @parse 用于裂变场景：将部分职责和知识委托给新实例
+    /// @parse 新实例会继承当前用户，获得随机ID和颜色
+    /// @parse ⚠️ 未经用户授权不得执行裂变
+    /// @parse knowledge内容与自己当前的知识保持结构基本一致，按用户要求提炼局部内容
+    /// @render 创建新实例
     CreateInstance {
         /// 实例显示名称
         name: String,
         /// knowledge内容（新实例的初始知识）
         knowledge: String,
     },
-    /// Action：提炼（压缩action块）
-    /// 将current中指定action的内容替换为你的提炼总结，释放空间
-    /// 总结直接写入原action位置，前面会自动加[已提炼]标记
-    /// 💡 时机：脚本执行结果确认后立刻提炼——编译输出、文件列表、curl响应等一次性验证内容，确认结论后就不需要保留原文
-    /// 💡 效果：信息不丢失，只是从原文压缩为结论。比如100行find输出提炼为"日志在xxx目录，最新文件是xxx"
-    /// 适用场景：大段脚本输出、重复代码阅读、冗长的中间过程
-    /// 不能提炼自身action，不能提炼不存在的编号
-    /// ⚠️ 提炼不可逆，确保总结保留了关键信息再执行
+    /// @parse Action：提炼（压缩action块）
+    /// @parse 将current中指定action的内容替换为你的提炼总结，释放空间
+    /// @parse 总结直接写入原action位置，前面会自动加[已提炼]标记
+    /// @parse 💡 时机：脚本执行结果确认后立刻提炼——编译输出、文件列表、curl响应等一次性验证内容，确认结论后就不需要保留原文
+    /// @parse 💡 效果：信息不丢失，只是从原文压缩为结论。比如100行find输出提炼为"日志在xxx目录，最新文件是xxx"
+    /// @parse 适用场景：大段脚本输出、重复代码阅读、冗长的中间过程
+    /// @parse 不能提炼自身action，不能提炼不存在的编号
+    /// @parse ⚠️ 提炼不可逆，确保总结保留了关键信息再执行
+    /// @render 提炼压缩
     Distill {
         /// 要提炼的action编号（从行为编号标记中获取）
         target_action_id: String,
