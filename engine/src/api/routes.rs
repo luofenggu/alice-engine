@@ -600,7 +600,7 @@ impl HubService for EngineState {
     async fn enable_hub(&self, body: HubEnableBody) -> Response {
         let local_port = self.env_config.http_port;
         let auth_secret = self.env_config.auth_secret.clone();
-        match self.hub.enable_host(body.join_token, local_port, auth_secret).await {
+        match self.hub.enable_host(body.join_token, local_port, auth_secret, self.instance_store.clone()).await {
             Ok(()) => json_ok(serde_json::json!({"status": "host mode enabled"})),
             Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
         }
@@ -633,7 +633,7 @@ impl HubService for EngineState {
 
         let local_port = self.env_config.http_port;
         let auth_token = self.env_config.auth_secret.clone();
-        match self.hub.join_host(body.host_url, body.join_token, tunnel_instances, &engine_id, local_port, auth_token).await {
+        match self.hub.join_host(body.host_url, body.join_token, tunnel_instances, &engine_id, local_port, auth_token, self.instance_store.clone()).await {
             Ok(()) => json_ok(serde_json::json!({"status": "joined host"})),
             Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
         }

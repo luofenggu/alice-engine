@@ -84,7 +84,8 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOut
         .extension
         .as_ref()
         .map(|ext| {
-            ext.fetch_contacts(&alice.instance.id)
+            ext.fetch_contacts(alice.instance.id.clone())
+                .unwrap_or_default()
                 .into_iter()
                 .map(|c| c.id)
                 .collect()
@@ -169,7 +170,7 @@ fn execute_send_msg(
     };
 
     // Fetch contacts list
-    let contacts = extension.fetch_contacts(&alice.instance.id);
+    let contacts = extension.fetch_contacts(alice.instance.id.clone()).unwrap_or_default();
 
     // Resolve recipient ID from contacts
     let resolved = match resolve_recipient_id(recipient, &contacts) {
@@ -208,7 +209,7 @@ fn execute_send_msg(
     }
 
     // Relay message
-    match extension.relay_message(&alice.instance.id, &resolved, content) {
+    match extension.relay_message(alice.instance.id.clone(), resolved.clone(), content.to_string()) {
         Ok(()) => {
             info!(
                 "[ACTION-{}] send_msg relayed to '{}' via extension",

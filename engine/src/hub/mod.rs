@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use sha2::{Sha256, Digest};
 use tracing::info;
+use crate::persist::instance::InstanceStore;
 
 use crate::hub::host::HostState;
 use crate::hub::slave::SlaveState;
@@ -52,14 +53,14 @@ impl HubState {
     }
 
     /// Enable host mode with a join token (room password)
-    pub async fn enable_host(&self, join_token: String, local_port: u16, auth_secret: String) -> Result<(), String> {
+    pub async fn enable_host(&self, join_token: String, local_port: u16, auth_secret: String, instance_store: crate::persist::instance::InstanceStore) -> Result<(), String> {
         if join_token.is_empty() {
             return Err("Join token cannot be empty".to_string());
         }
         let mut mode = self.mode.write().await;
         match &*mode {
             HubMode::Off => {
-                let host = Arc::new(HostState::new(join_token, local_port, auth_secret));
+                let host = Arc::new(HostState::new(join_token, local_port, auth_secret, instance_store));
                 info!("[HUB] Host mode enabled");
                 *mode = HubMode::Host(host);
                 Ok(())
@@ -92,6 +93,7 @@ impl HubState {
         engine_id: &str,
         local_port: u16,
         auth_token: String,
+        instance_store: InstanceStore,
     ) -> Result<(), String> {
         // 1. Check current mode (read lock, released immediately)
         {
@@ -110,6 +112,7 @@ impl HubState {
             auth_token,
             join_token.clone(),
             engine_id.to_string(),
+            instance_store,
         ));
         slave.connect(instances, engine_id, &join_token).await?;
 
