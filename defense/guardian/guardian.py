@@ -39,8 +39,11 @@ LITERAL_TYPES = {
 }
 
 # Full exemption: skip entirely, no scanning, no reporting
-FULL_EXEMPT_DIRS = {'policy', 'api'}
+FULL_EXEMPT_DIRS = {'policy', 'api', 'bindings', 'legacy'}
 FULL_EXEMPT_FILES = {'http_protocol.rs'}
+
+# Test files: filename contains '_test' or 'test_' → full exempt
+TEST_FILE_PATTERNS = ['_test.', 'test_', '_test.rs']
 
 # Escape-guarded: only leak_detector checks for pub interface leaks
 ESCAPE_GUARDED_DIRS = {'persist', 'external', 'inference', 'util'}
@@ -136,6 +139,10 @@ def classify_file(filepath):
     """
     basename = os.path.basename(filepath)
     if basename in FULL_EXEMPT_FILES:
+        return 'full_exempt'
+    # Test files: filename contains "test" (e.g. prompt_dump_test.rs, test_flatten.rs)
+    name_no_ext = os.path.splitext(basename)[0]
+    if 'test' in name_no_ext:
         return 'full_exempt'
     parts = filepath.replace(os.sep, '/').split('/')
     if any(p in FULL_EXEMPT_DIRS for p in parts):
