@@ -298,7 +298,6 @@ async fn test_stream_infer_on_text_receives_all_chunks() {
         })),
         None,
         None,
-        None,
     ).await.unwrap();
 
     let mut results = Vec::new();
@@ -343,7 +342,6 @@ async fn test_stream_infer_on_text_none_equivalent() {
         None,
         None,
         None,
-        None,
     ).await.unwrap();
 
     let mut results = Vec::new();
@@ -355,10 +353,11 @@ async fn test_stream_infer_on_text_none_equivalent() {
     assert_eq!(results[0].as_ref().unwrap(), &StreamAction::Reply { content: "无回调".to_string() });
 }
 
-// === on_preamble tests ===
+// === preamble rejection tests ===
 
 #[tokio::test]
-async fn test_stream_infer_preamble_callback_receives_content() {
+async fn test_stream_infer_preamble_returns_error() {
+    // Preamble before first action should cause an error (zero tolerance)
     struct PreambleChannel;
 
     impl LlmChannel for PreambleChannel {
@@ -371,68 +370,27 @@ async fn test_stream_infer_preamble_callback_receives_content() {
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let preamble_text = Arc::new(Mutex::new(String::new()));
-    let preamble_clone = preamble_text.clone();
-
     let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &PreambleChannel,
         &request,
         None,
         None,
-        Some(Box::new(move |text: &str| {
-            *preamble_clone.lock().unwrap() = text.to_string();
-        })),
         None,
     ).await.unwrap();
 
-    let mut results = Vec::new();
-    while let Some(result) = stream.next().await {
-        results.push(result);
-    }
-    assert_eq!(results.len(), 1);
-    assert!(results[0].is_ok());
+    let result = stream.next().await;
+    assert!(result.is_some(), "should return an error result");
+    let err = result.unwrap();
+    assert!(err.is_err(), "preamble should cause error");
+    assert!(err.unwrap_err().contains("Unexpected content before first"), "error should mention unexpected content");
 
-    let preamble = preamble_text.lock().unwrap();
-    assert!(preamble.contains("I need to think about this carefully"), "preamble should contain LLM waste text: {}", preamble);
-    assert!(preamble.contains("Let me analyze the situation"), "preamble should contain all waste lines: {}", preamble);
+    // Stream should be done after preamble error
+    assert!(stream.next().await.is_none(), "stream should be done after preamble error");
 }
 
 #[tokio::test]
-async fn test_stream_infer_preamble_none_no_error() {
-    // When on_preamble is None and there's preamble text, should still not error
-    // (preamble is silently discarded)
-    struct PreambleNoneChannel;
-
-    impl LlmChannel for PreambleNoneChannel {
-        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
-            let token = extract_token(&prompt, "StreamAction");
-            Ok(mock_channel_rx(vec![
-                format!("Some thinking here\nStreamAction-{}\nidle\nStreamAction-end-{}\n", token, token),
-            ]))
-        }
-    }
-
-    let request = StreamReq { prompt: "test".to_string() };
-    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
-        &PreambleNoneChannel,
-        &request,
-        None,
-        None,
-        None,
-        None,
-    ).await.unwrap();
-
-    let mut results = Vec::new();
-    while let Some(result) = stream.next().await {
-        results.push(result);
-    }
-    assert_eq!(results.len(), 1, "should parse 1 action despite preamble: {:?}", results);
-    assert!(results[0].is_ok(), "should succeed: {:?}", results[0]);
-}
-
-#[tokio::test]
-async fn test_stream_infer_no_preamble_no_callback() {
-    // When there's no preamble, on_preamble callback should not be called
+async fn test_stream_infer_no_preamble_works_normally() {
+    // When there's no preamble, everything works normally
     struct NoPreambleChannel;
 
     impl LlmChannel for NoPreambleChannel {
@@ -445,17 +403,11 @@ async fn test_stream_infer_no_preamble_no_callback() {
     }
 
     let request = StreamReq { prompt: "test".to_string() };
-    let was_called = Arc::new(Mutex::new(false));
-    let was_called_clone = was_called.clone();
-
     let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &NoPreambleChannel,
         &request,
         None,
         None,
-        Some(Box::new(move |_text: &str| {
-            *was_called_clone.lock().unwrap() = true;
-        })),
         None,
     ).await.unwrap();
 
@@ -465,7 +417,37 @@ async fn test_stream_infer_no_preamble_no_callback() {
     }
     assert_eq!(results.len(), 1);
     assert!(results[0].is_ok());
-    assert!(!*was_called.lock().unwrap(), "on_preamble should NOT be called when there's no preamble");
+}
+
+#[tokio::test]
+async fn test_stream_infer_whitespace_only_preamble_ok() {
+    // Whitespace-only content before first separator should be silently ignored (not an error)
+    struct WhitespacePreambleChannel;
+
+    impl LlmChannel for WhitespacePreambleChannel {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            Ok(mock_channel_rx(vec![
+                format!("\n  \n```\nStreamAction-{}\nidle\nStreamAction-end-{}\n", token, token),
+            ]))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &WhitespacePreambleChannel,
+        &request,
+        None,
+        None,
+        None,
+    ).await.unwrap();
+
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result);
+    }
+    assert_eq!(results.len(), 1, "whitespace/backtick-only preamble should be ignored");
+    assert!(results[0].is_ok());
 }
 
 // === Cancel tests ===
@@ -501,7 +483,6 @@ async fn test_stream_infer_cancel_mid_stream() {
     let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &SlowChannel,
         &request,
-        None,
         None,
         None,
         Some(cancel_clone),
@@ -540,7 +521,6 @@ async fn test_stream_infer_cancel_none_no_effect() {
         None,
         None,
         None,
-        None,
     ).await.unwrap();
 
     let mut results = Vec::new();
@@ -571,7 +551,6 @@ async fn test_stream_infer_cancel_before_start() {
     let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &AnyChannel,
         &request,
-        None,
         None,
         None,
         Some(cancel),

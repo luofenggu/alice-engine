@@ -409,7 +409,6 @@ async fn test_infer_with_on_text_receives_chunks() {
         })),
         None,
         None,
-        None,
     ).await.unwrap();
 
     // Verify parsing works
@@ -450,7 +449,6 @@ async fn test_infer_with_on_text_none_equivalent() {
         None,
         None,
         None,
-        None,
     ).await.unwrap();
 
     assert_eq!(results.len(), 1);
@@ -460,10 +458,10 @@ async fn test_infer_with_on_text_none_equivalent() {
     }
 }
 
-// === on_preamble tests ===
+// === Preamble rejection tests ===
 
 #[tokio::test]
-async fn test_infer_with_preamble_callback() {
+async fn test_infer_with_preamble_returns_error() {
     struct InferPreambleChannel;
 
     impl LlmChannel for InferPreambleChannel {
@@ -476,23 +474,18 @@ async fn test_infer_with_preamble_callback() {
     }
 
     let request = SimpleRequest { message: "test".to_string(), context: "ctx".to_string() };
-    let preamble_text = Arc::new(Mutex::new(String::new()));
-    let preamble_clone = preamble_text.clone();
 
-    let results = infer_with_on_text::<SimpleRequest, SimpleAction>(
+    let result = infer_with_on_text::<SimpleRequest, SimpleAction>(
         &InferPreambleChannel,
         &request,
         None,
         None,
-        Some(Box::new(move |text: &str| {
-            *preamble_clone.lock().unwrap() = text.to_string();
-        })),
         None,
-    ).await.unwrap();
+    ).await;
 
-    assert_eq!(results.len(), 1);
-    let preamble = preamble_text.lock().unwrap();
-    assert!(preamble.contains("Let me think about this"), "preamble callback should receive waste text: {}", preamble);
+    assert!(result.is_err(), "preamble should cause error");
+    let err = result.unwrap_err();
+    assert!(err.contains("Unexpected content before first"), "error should mention preamble: {}", err);
 }
 
 // === Cancel tests ===
@@ -517,7 +510,6 @@ async fn test_infer_with_cancel() {
     let results = infer_with_on_text::<SimpleRequest, SimpleAction>(
         &InferCancelChannel,
         &request,
-        None,
         None,
         None,
         Some(cancel),
