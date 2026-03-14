@@ -917,7 +917,8 @@ impl Alice {
         let on_preamble: Option<Box<dyn FnOnce(&str) + Send + '_>> = Some(Box::new(move |text: &str| {
             *preamble_clone.lock().unwrap() = Some(text.to_string());
         }));
-        let mut stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input, on_preamble, None).await
+        let cancel_signal = self.signals.as_ref().map(|s| s.interrupt.clone());
+        let mut stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input, on_preamble, cancel_signal).await
             .map_err(|e| {
                 let (backoff, rotation) = self.set_inference_backoff();
                 anyhow::anyhow!(
@@ -1060,6 +1061,18 @@ impl Alice {
                     break;
                 }
             }
+        }
+
+        // Check if inference was cancelled by interrupt (cancel signal ended the stream,
+        // but the interrupt flag wasn't consumed by the in-loop check_interrupt)
+        if self.signals.as_ref().map_or(false, |s| s.check_interrupt()) {
+            warn!(
+                "[INTERRUPT-{}] Inference cancelled by interrupt signal during streaming",
+                self.instance.id
+            );
+            let interrupt_text = action_output::inference_interrupted().to_string();
+            let note_id = action_output::generate_action_id();
+            self.instance.memory.insert_done_note(&note_id, "interrupt", &interrupt_text).ok();
         }
 
         // Handle inference result
