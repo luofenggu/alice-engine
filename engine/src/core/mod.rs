@@ -1286,7 +1286,7 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
     };
 
     let chat = alice.instance.chat.clone();
-    std::thread::spawn(move || {
+    tokio::task::spawn_blocking(move || {
         let notify_msg = match execute_capture_task(task) {
             Ok(msg) => {
                 info!("[CAPTURE] {}", msg);

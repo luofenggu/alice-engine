@@ -34,7 +34,7 @@ fn env_or_arg(env_val: Option<&str>, arg: Option<&String>) -> Option<String> {
     env_val.map(|s| s.to_string()).or_else(|| arg.cloned())
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing with local timestamps
     alice_engine::logging::init_tracing();
@@ -170,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Start Engine in a dedicated OS thread
+    // Start Engine as async task
     let engine_instances_dir = instances_dir.clone();
     let engine_logs_dir = logs_dir.clone();
     let engine_env_config = env_config.clone();
@@ -178,7 +178,7 @@ async fn main() -> anyhow::Result<()> {
     let extension: Arc<dyn ExtensionHandler> = Arc::new(
         HubExtensionHandler::new(hub_state.clone(), engine_state.instance_store.clone(), tokio::runtime::Handle::current())
     );
-    let engine_handle = std::thread::spawn(move || {
+    let engine_handle = tokio::spawn(async move {
         let mut engine = AliceEngine::new(
             engine_instances_dir,
             engine_logs_dir,
@@ -187,15 +187,15 @@ async fn main() -> anyhow::Result<()> {
             engine_gs_store,
             extension,
         );
-        if let Err(e) = engine.run() {
+        if let Err(e) = engine.run().await {
             tracing::error!("Engine error: {}", e);
         }
-        tracing::info!("Engine thread exited, terminating process.");
+        tracing::info!("Engine task exited, terminating process.");
         std::process::exit(0);
     });
 
-    // Wait for engine thread (HTTP server runs in background)
-    engine_handle.join().ok();
+    // Wait for engine task (HTTP server runs in background)
+    engine_handle.await.ok();
 
     // Cancel HTTP server if engine exits
     http_handle.abort();

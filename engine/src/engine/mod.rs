@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::JoinHandle;
+use tokio::task::JoinHandle;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -242,7 +242,7 @@ impl AliceEngine {
     /// - Safety valve, beat limit, idle polling
     ///
     /// @TRACE: BEAT, RESTART
-    pub fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         info!("Alice Engine (Rust) starting...");
         info!("Instances dir: {}", self.instances_base.display());
         info!("Logs dir: {}", self.logs_dir.display());
@@ -274,12 +274,9 @@ impl AliceEngine {
         let instances: Vec<(String, Alice)> = self.instances.drain(..).collect();
         for (name, alice) in instances {
             let shutdown_clone = Arc::clone(&shutdown);
-            let handle = std::thread::Builder::new()
-                .name(crate::policy::log_formats::thread_name(&name))
-                .spawn(move || {
-                    Self::instance_thread(alice, shutdown_clone);
-                })
-                .with_context(|| format!("Failed to spawn thread for instance {}", name))?;
+            let handle = tokio::spawn(async move {
+                    Self::instance_thread(alice, shutdown_clone).await;
+                });
             info!("[THREAD] Spawned thread for instance: {}", name);
             threads.insert(name, handle);
         }
@@ -287,7 +284,7 @@ impl AliceEngine {
         // 5. Main loop: hot-scan, cold-clean, shutdown signal
         loop {
             let engine_policy = &crate::policy::EngineConfig::get().engine;
-            std::thread::sleep(Duration::from_secs(engine_policy.main_loop_interval_secs));
+            tokio::time::sleep(Duration::from_secs(engine_policy.main_loop_interval_secs)).await;
 
             // Clean up finished threads (instance self-exited, e.g. settings deleted)
             threads.retain(|name, handle| {
@@ -313,23 +310,11 @@ impl AliceEngine {
                             // Pop the instance we just pushed to self.instances
                             if let Some((inst_name, alice)) = self.instances.pop() {
                                 let shutdown_clone = Arc::clone(&shutdown);
-                                let handle = std::thread::Builder::new()
-                                    .name(crate::policy::log_formats::thread_name(&inst_name))
-                                    .spawn(move || {
-                                        Self::instance_thread(alice, shutdown_clone);
-                                    });
-                                match handle {
-                                    Ok(h) => {
-                                        info!("[HOT-SCAN] New instance discovered and thread spawned: {}", inst_name);
-                                        threads.insert(inst_name, h);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "[HOT-SCAN] Failed to spawn thread for {}: {}",
-                                            inst_name, e
-                                        );
-                                    }
-                                }
+                                let handle = tokio::spawn(async move {
+                                    Self::instance_thread(alice, shutdown_clone).await;
+                                });
+                                info!("[HOT-SCAN] New instance discovered and task spawned: {}", inst_name);
+                                threads.insert(inst_name, handle);
                             }
                         }
                         Err(e) => {
@@ -346,7 +331,7 @@ impl AliceEngine {
     /// - shutdown signal is set (engine restart)
     /// - settings.json is missing (instance deleted)
     /// - beat limit reached
-    fn instance_thread(mut alice: Alice, shutdown: Arc<AtomicBool>) {
+    async fn instance_thread(mut alice: Alice, shutdown: Arc<AtomicBool>) {
         let instance_id = alice.instance.id.clone();
         let rolling_in_progress = Arc::new(AtomicBool::new(false));
         let instance_dir = alice.instance.instance_dir.clone();
@@ -455,7 +440,7 @@ impl AliceEngine {
                 }
 
                 consecutive_beats.reset();
-                std::thread::sleep(Duration::from_secs(engine_policy.beat_interval_secs));
+                tokio::time::sleep(Duration::from_secs(engine_policy.beat_interval_secs)).await;
 
                 // Re-check after sleep
                 if shutdown.load(Ordering::Relaxed) {
@@ -525,7 +510,7 @@ impl AliceEngine {
                     alice.safety_cooldown_secs,
                 ));
                 consecutive_beats.reset();
-                std::thread::sleep(Duration::from_secs(alice.safety_cooldown_secs));
+                tokio::time::sleep(Duration::from_secs(alice.safety_cooldown_secs)).await;
                 // After cooldown, resume normal operation (don't enter idle polling)
                 alice.last_was_idle = false;
                 continue;
@@ -548,7 +533,7 @@ impl AliceEngine {
                         alice.last_was_idle = true;
                     }
                     // Sleep and check shutdown, but don't beat
-                    std::thread::sleep(Duration::from_secs(engine_policy.beat_interval_secs));
+                    tokio::time::sleep(Duration::from_secs(engine_policy.beat_interval_secs)).await;
                     continue;
                 }
             }
@@ -560,7 +545,7 @@ impl AliceEngine {
             if let Some(remaining) = alice.backoff_remaining() {
                 let sleep_time =
                     remaining.min(Duration::from_secs(engine_policy.beat_interval_secs));
-                std::thread::sleep(sleep_time);
+                tokio::time::sleep(sleep_time).await;
                 continue;
             }
 
@@ -586,7 +571,16 @@ impl AliceEngine {
                 }
             }
 
-            match alice.beat() {
+            // Move alice into spawn_blocking for LLM calls, get it back after
+            let beat_result = {
+                let (r, a) = tokio::task::spawn_blocking(move || {
+                    let r = alice.beat();
+                    (r, alice)
+                }).await.expect("beat spawn_blocking panicked");
+                alice = a;
+                r
+            };
+            match beat_result {
                 Ok(()) => {
                     alice.beat_count.increment();
                     if alice.last_was_idle {
@@ -612,7 +606,7 @@ impl AliceEngine {
                                 rolling.store(true, Ordering::Relaxed);
                                 let iid = instance_id.clone();
                                 let chat = alice.instance.chat.clone();
-                                std::thread::spawn(move || {
+                                tokio::task::spawn_blocking(move || {
                                     let notify_msg = match crate::core::execute_roll_task(task) {
                                         Ok(result) => {
                                             info!("[HISTORY-ROLL-{}] Background: {}", iid, result);
@@ -660,7 +654,7 @@ impl AliceEngine {
                     alice.notify_anomaly(&crate::policy::messages::beat_error(&e));
                     alice.last_was_idle = false;
                     consecutive_beats.reset();
-                    std::thread::sleep(Duration::from_secs(error_backoff_secs));
+                    tokio::time::sleep(Duration::from_secs(error_backoff_secs)).await;
                 }
             }
         }
