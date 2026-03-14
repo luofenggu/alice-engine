@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, oneshot};
+use tokio::sync::mpsc;
 use futures_util::{SinkExt, StreamExt};
 use tracing::{info, warn, error, debug};
 use base64::Engine as _;
@@ -174,6 +175,20 @@ impl SlaveState {
         Ok(ws_receiver)
     }
 
+    /// Create channel pair and TunnelEndpoint for RPC communication
+    fn create_tunnel_endpoint(&self) -> (mpsc::UnboundedSender<String>, mpsc::UnboundedReceiver<String>, Arc<TunnelEndpoint>) {
+        let (ws_to_tunnel_tx, ws_to_tunnel_rx) = mpsc::unbounded_channel::<String>();
+        let (tunnel_to_ws_tx, tunnel_to_ws_rx) = mpsc::unbounded_channel::<String>();
+        let dispatchers = self.build_slave_dispatchers();
+        let endpoint = TunnelEndpoint::new(
+            ws_to_tunnel_rx,
+            tunnel_to_ws_tx,
+            dispatchers,
+            Duration::from_secs(30),
+        );
+        (ws_to_tunnel_tx, tunnel_to_ws_rx, endpoint)
+    }
+
     /// Connect to host and start processing tunnel messages (bidirectional)
     /// Spawns a background task that auto-reconnects on disconnect
     pub async fn connect(&self, instances: Vec<TunnelInstanceInfo>, _engine_id: &str, _join_token: &str) -> Result<(), String> {
@@ -186,15 +201,8 @@ impl SlaveState {
         // Initial connection
         let ws_receiver = self.establish_connection().await?;
 
-        // Create WsBridge + TunnelEndpoint for initial connection
-        let (reader, writer, bridge_sender, tunnel_to_ws_rx) = create_ws_bridge();
-        let dispatchers = self.build_slave_dispatchers();
-        let endpoint = TunnelEndpoint::new(
-            Box::new(reader),
-            Box::new(writer),
-            dispatchers,
-            Duration::from_secs(30),
-        );
+        // Create channel pair + TunnelEndpoint for initial connection
+        let (ws_to_tunnel_tx, tunnel_to_ws_rx, endpoint) = self.create_tunnel_endpoint();
         {
             let mut ep = self.tunnel_endpoint.lock().unwrap();
             *ep = Some(endpoint);
@@ -216,8 +224,8 @@ impl SlaveState {
 
         tokio::spawn(async move {
             let mut current_receiver = ws_receiver;
-            let mut current_bridge_sender = bridge_sender;
-            let mut current_tunnel_rx = tunnel_to_ws_rx;
+            let mut current_ws_to_tunnel_tx = ws_to_tunnel_tx;
+            let mut current_tunnel_to_ws_rx = tunnel_to_ws_rx;
 
             loop {
                 // Process messages until disconnect
@@ -227,8 +235,8 @@ impl SlaveState {
                     &pending,
                     local_port,
                     &auth_token,
-                    current_bridge_sender,
-                    &mut current_tunnel_rx,
+                    &current_ws_to_tunnel_tx,
+                    &mut current_tunnel_to_ws_rx,
                 ).await;
 
                 // Disconnected — clear ws_sender and tunnel_endpoint immediately
@@ -240,6 +248,8 @@ impl SlaveState {
                     let mut ep = tunnel_endpoint_shared.lock().unwrap();
                     *ep = None;
                 }
+                // Drop the old channel sender to signal TunnelEndpoint reader to stop
+                drop(current_ws_to_tunnel_tx);
                 info!("[HUB-SLAVE] Disconnected from host, ws_sender and tunnel_endpoint cleared");
 
                 // Check if we should reconnect
@@ -309,13 +319,14 @@ impl SlaveState {
 
                             info!("[HUB-SLAVE] Reconnected to host successfully");
 
-                            // Create new WsBridge + TunnelEndpoint for reconnection
-                            let (reader, writer, bridge_sender, tunnel_to_ws_rx) = create_ws_bridge();
+                            // Create new channel pair + TunnelEndpoint for reconnection
+                            let (ws_to_tunnel_tx, tunnel_to_ws_rx) = mpsc::unbounded_channel::<String>();
+                            let (tunnel_to_ws_tx_new, tunnel_to_ws_rx_new) = mpsc::unbounded_channel::<String>();
                             let slave_handler = Arc::new(SlaveLocalHandler::new(instance_store_clone.clone()));
-                            let dispatchers = vec![ExtensionHandlerDispatcher::boxed(slave_handler)];
+                            let dispatchers: Vec<Box<dyn mad_hatter::tunnel::Dispatch>> = vec![ExtensionHandlerDispatcher::boxed(slave_handler)];
                             let endpoint = TunnelEndpoint::new(
-                                Box::new(reader),
-                                Box::new(writer),
+                                tunnel_to_ws_rx,
+                                tunnel_to_ws_tx_new,
                                 dispatchers,
                                 Duration::from_secs(30),
                             );
@@ -325,8 +336,8 @@ impl SlaveState {
                             }
 
                             current_receiver = ws_receiver;
-                            current_bridge_sender = bridge_sender;
-                            current_tunnel_rx = tunnel_to_ws_rx;
+                            current_ws_to_tunnel_tx = ws_to_tunnel_tx;
+                            current_tunnel_to_ws_rx = tunnel_to_ws_rx_new;
                             break;
                         }
                         Ok(Err(e)) => {
@@ -355,8 +366,8 @@ impl SlaveState {
         pending: &PendingRequests,
         local_port: u16,
         auth_token: &str,
-        bridge_sender: std::sync::mpsc::Sender<String>,
-        tunnel_to_ws_rx: &mut tokio::sync::mpsc::Receiver<String>,
+        ws_to_tunnel_tx: &mpsc::UnboundedSender<String>,
+        tunnel_to_ws_rx: &mut mpsc::UnboundedReceiver<String>,
     ) {
         loop {
             tokio::select! {
@@ -390,9 +401,9 @@ impl SlaveState {
                                     }
                                 }
                                 Ok(TunnelMessage::Rpc { payload }) => {
-                                    // Forward RPC message to TunnelEndpoint via bridge
-                                    if bridge_sender.send(payload).is_err() {
-                                        warn!("[HUB-SLAVE] Bridge channel closed, cannot forward RPC");
+                                    // Forward RPC message to TunnelEndpoint via channel
+                                    if ws_to_tunnel_tx.send(payload).is_err() {
+                                        warn!("[HUB-SLAVE] Tunnel channel closed, cannot forward RPC");
                                     }
                                 }
                                 _ => {}
@@ -427,7 +438,6 @@ impl SlaveState {
                 }
             }
         }
-        // bridge_sender is dropped here when function exits → TunnelEndpoint reader thread exits
     }
 
     /// Gracefully disconnect from host by sending Leave message

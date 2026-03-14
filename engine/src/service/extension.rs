@@ -8,13 +8,13 @@ use crate::persist::hooks::ContactInfo;
 
 /// Extension handler for cross-instance operations.
 ///
-/// All methods are synchronous. Implementations that need async
-/// should use `tokio::task::block_in_place` + `Handle::current().block_on()`.
+/// All methods are async. The `#[tunnel_service]` macro automatically
+/// generates Proxy (for tunnel RPC) and Dispatcher (for local dispatch).
 #[tunnel_service]
 pub trait ExtensionHandler: Send + Sync {
     /// Relay a message from one instance to another.
     /// Returns Ok(()) on success, Err with description on failure.
-    fn relay_message(
+    async fn relay_message(
         &self,
         from_instance_id: String,
         to_instance_id: String,
@@ -23,14 +23,15 @@ pub trait ExtensionHandler: Send + Sync {
 
     /// Fetch the list of contactable instances for the given instance.
     /// Returns contacts excluding the requesting instance itself.
-    fn fetch_contacts(&self, instance_id: String) -> Result<Vec<ContactInfo>, String>;
+    async fn fetch_contacts(&self, instance_id: String) -> Result<Vec<ContactInfo>, String>;
 }
 
 /// No-op implementation for testing and when no extension is configured.
 pub struct NoopExtensionHandler;
 
+#[async_trait::async_trait]
 impl ExtensionHandler for NoopExtensionHandler {
-    fn relay_message(
+    async fn relay_message(
         &self,
         _from_instance_id: String,
         _to_instance_id: String,
@@ -39,7 +40,7 @@ impl ExtensionHandler for NoopExtensionHandler {
         Err("No extension handler configured".to_string())
     }
 
-    fn fetch_contacts(&self, _instance_id: String) -> Result<Vec<ContactInfo>, String> {
+    async fn fetch_contacts(&self, _instance_id: String) -> Result<Vec<ContactInfo>, String> {
         Ok(Vec::new())
     }
 }

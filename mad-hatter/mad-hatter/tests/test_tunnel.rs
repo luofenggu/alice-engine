@@ -1,8 +1,9 @@
 use mad_hatter::tunnel_service;
-use mad_hatter::tunnel::{TunnelEndpoint, channel_transport_pair, Dispatch};
+use mad_hatter::tunnel::{TunnelEndpoint, channel_pair, Dispatch};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use std::time::Duration;
+use async_trait::async_trait;
 
 // ─── Test Service Definition ───
 
@@ -14,33 +15,34 @@ struct ContactInfo {
 
 #[tunnel_service]
 trait TestService: Send + Sync {
-    fn greet(&self, name: String) -> Result<String, String>;
-    fn add(&self, a: i32, b: i32) -> Result<i32, String>;
-    fn get_contacts(&self) -> Result<Vec<ContactInfo>, String>;
-    fn fail_always(&self) -> Result<(), String>;
+    async fn greet(&self, name: String) -> Result<String, String>;
+    async fn add(&self, a: i32, b: i32) -> Result<i32, String>;
+    async fn get_contacts(&self) -> Result<Vec<ContactInfo>, String>;
+    async fn fail_always(&self) -> Result<(), String>;
 }
 
 // ─── Local Implementation ───
 
 struct MyHandler;
 
+#[async_trait]
 impl TestService for MyHandler {
-    fn greet(&self, name: String) -> Result<String, String> {
+    async fn greet(&self, name: String) -> Result<String, String> {
         Ok(format!("Hello, {}!", name))
     }
 
-    fn add(&self, a: i32, b: i32) -> Result<i32, String> {
+    async fn add(&self, a: i32, b: i32) -> Result<i32, String> {
         Ok(a + b)
     }
 
-    fn get_contacts(&self) -> Result<Vec<ContactInfo>, String> {
+    async fn get_contacts(&self) -> Result<Vec<ContactInfo>, String> {
         Ok(vec![
             ContactInfo { name: "Alice".into(), id: "a1".into() },
             ContactInfo { name: "Bob".into(), id: "b2".into() },
         ])
     }
 
-    fn fail_always(&self) -> Result<(), String> {
+    async fn fail_always(&self) -> Result<(), String> {
         Err("intentional error".to_string())
     }
 }
@@ -51,19 +53,19 @@ fn create_endpoints(
     dispatchers_a: Vec<Box<dyn Dispatch>>,
     dispatchers_b: Vec<Box<dyn Dispatch>>,
 ) -> (Arc<TunnelEndpoint>, Arc<TunnelEndpoint>) {
-    let ((reader_a, writer_a), (reader_b, writer_b)) = channel_transport_pair();
+    let ((incoming_a, outgoing_a), (incoming_b, outgoing_b)) = channel_pair();
     let timeout = Duration::from_secs(5);
 
     let endpoint_a = TunnelEndpoint::new(
-        Box::new(reader_a),
-        Box::new(writer_a),
+        incoming_a,
+        outgoing_a,
         dispatchers_a,
         timeout,
     );
 
     let endpoint_b = TunnelEndpoint::new(
-        Box::new(reader_b),
-        Box::new(writer_b),
+        incoming_b,
+        outgoing_b,
         dispatchers_b,
         timeout,
     );
@@ -73,8 +75,8 @@ fn create_endpoints(
 
 // ─── Tests ───
 
-#[test]
-fn test_basic_rpc_single_param() {
+#[tokio::test]
+async fn test_basic_rpc_single_param() {
     let handler = Arc::new(MyHandler);
     let (endpoint_a, _endpoint_b) = create_endpoints(
         vec![],
@@ -82,12 +84,12 @@ fn test_basic_rpc_single_param() {
     );
 
     let proxy = TestServiceProxy::new(endpoint_a);
-    let result = proxy.greet("World".to_string());
+    let result = proxy.greet("World".to_string()).await;
     assert_eq!(result.unwrap(), "Hello, World!");
 }
 
-#[test]
-fn test_basic_rpc_multi_param() {
+#[tokio::test]
+async fn test_basic_rpc_multi_param() {
     let handler = Arc::new(MyHandler);
     let (endpoint_a, _endpoint_b) = create_endpoints(
         vec![],
@@ -95,12 +97,12 @@ fn test_basic_rpc_multi_param() {
     );
 
     let proxy = TestServiceProxy::new(endpoint_a);
-    let result = proxy.add(3, 4);
+    let result = proxy.add(3, 4).await;
     assert_eq!(result.unwrap(), 7);
 }
 
-#[test]
-fn test_rpc_no_param_complex_return() {
+#[tokio::test]
+async fn test_rpc_no_param_complex_return() {
     let handler = Arc::new(MyHandler);
     let (endpoint_a, _endpoint_b) = create_endpoints(
         vec![],
@@ -108,14 +110,14 @@ fn test_rpc_no_param_complex_return() {
     );
 
     let proxy = TestServiceProxy::new(endpoint_a);
-    let contacts = proxy.get_contacts().unwrap();
+    let contacts = proxy.get_contacts().await.unwrap();
     assert_eq!(contacts.len(), 2);
     assert_eq!(contacts[0].name, "Alice");
     assert_eq!(contacts[1].id, "b2");
 }
 
-#[test]
-fn test_rpc_error_propagation() {
+#[tokio::test]
+async fn test_rpc_error_propagation() {
     let handler = Arc::new(MyHandler);
     let (endpoint_a, _endpoint_b) = create_endpoints(
         vec![],
@@ -123,14 +125,13 @@ fn test_rpc_error_propagation() {
     );
 
     let proxy = TestServiceProxy::new(endpoint_a);
-    let result = proxy.fail_always();
+    let result = proxy.fail_always().await;
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), "intentional error");
 }
 
-#[test]
-fn test_bidirectional_rpc() {
-    // Both sides register handlers, both sides can call each other
+#[tokio::test]
+async fn test_bidirectional_rpc() {
     let handler_a = Arc::new(MyHandler);
     let handler_b = Arc::new(MyHandler);
 
@@ -141,15 +142,15 @@ fn test_bidirectional_rpc() {
 
     // A calls B
     let proxy_a = TestServiceProxy::new(endpoint_a.clone());
-    assert_eq!(proxy_a.greet("from A".to_string()).unwrap(), "Hello, from A!");
+    assert_eq!(proxy_a.greet("from A".to_string()).await.unwrap(), "Hello, from A!");
 
     // B calls A
     let proxy_b = TestServiceProxy::new(endpoint_b.clone());
-    assert_eq!(proxy_b.greet("from B".to_string()).unwrap(), "Hello, from B!");
+    assert_eq!(proxy_b.greet("from B".to_string()).await.unwrap(), "Hello, from B!");
 }
 
-#[test]
-fn test_multiple_sequential_calls() {
+#[tokio::test]
+async fn test_multiple_sequential_calls() {
     let handler = Arc::new(MyHandler);
     let (endpoint_a, _endpoint_b) = create_endpoints(
         vec![],
@@ -158,13 +159,13 @@ fn test_multiple_sequential_calls() {
 
     let proxy = TestServiceProxy::new(endpoint_a);
     for i in 0..10 {
-        let result = proxy.add(i, i * 2);
+        let result = proxy.add(i, i * 2).await;
         assert_eq!(result.unwrap(), i + i * 2);
     }
 }
 
-#[test]
-fn test_concurrent_calls() {
+#[tokio::test]
+async fn test_concurrent_calls() {
     let handler = Arc::new(MyHandler);
     let (endpoint_a, _endpoint_b) = create_endpoints(
         vec![],
@@ -172,15 +173,18 @@ fn test_concurrent_calls() {
     );
 
     let mut handles = vec![];
-    for i in 0..5 {
+    for i in 0..5i32 {
         let ep = endpoint_a.clone();
-        handles.push(std::thread::spawn(move || {
+        handles.push(tokio::spawn(async move {
             let proxy = TestServiceProxy::new(ep);
-            proxy.add(i, i + 1).unwrap()
+            proxy.add(i, i + 1).await.unwrap()
         }));
     }
 
-    let results: Vec<i32> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let mut results = vec![];
+    for h in handles {
+        results.push(h.await.unwrap());
+    }
     for (i, result) in results.into_iter().enumerate() {
         let i = i as i32;
         assert_eq!(result, i + i + 1);
@@ -191,19 +195,20 @@ fn test_concurrent_calls() {
 
 #[tunnel_service]
 trait MathService: Send + Sync {
-    fn multiply(&self, a: i32, b: i32) -> Result<i32, String>;
+    async fn multiply(&self, a: i32, b: i32) -> Result<i32, String>;
 }
 
 struct MathHandler;
 
+#[async_trait]
 impl MathService for MathHandler {
-    fn multiply(&self, a: i32, b: i32) -> Result<i32, String> {
+    async fn multiply(&self, a: i32, b: i32) -> Result<i32, String> {
         Ok(a * b)
     }
 }
 
-#[test]
-fn test_multi_trait_dispatch() {
+#[tokio::test]
+async fn test_multi_trait_dispatch() {
     let test_handler = Arc::new(MyHandler);
     let math_handler = Arc::new(MathHandler);
 
@@ -218,6 +223,7 @@ fn test_multi_trait_dispatch() {
     let test_proxy = TestServiceProxy::new(endpoint_a.clone());
     let math_proxy = MathServiceProxy::new(endpoint_a.clone());
 
-    assert_eq!(test_proxy.greet("multi".to_string()).unwrap(), "Hello, multi!");
-    assert_eq!(math_proxy.multiply(6, 7).unwrap(), 42);
+    assert_eq!(test_proxy.greet("multi".to_string()).await.unwrap(), "Hello, multi!");
+    assert_eq!(math_proxy.multiply(6, 7).await.unwrap(), 42);
 }
+

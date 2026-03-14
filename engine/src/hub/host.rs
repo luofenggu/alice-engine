@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, oneshot};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tracing::{info, warn, error, debug};
@@ -89,12 +89,13 @@ impl HostState {
         // Connection health flag
         let connected = Arc::new(AtomicBool::new(true));
 
-        // Create WsBridge + TunnelEndpoint for RPC
-        let (bridge_reader, bridge_writer, bridge_sender, mut tunnel_to_ws_rx) = create_ws_bridge();
+        // Create channel pair + TunnelEndpoint for RPC (replaces WsBridge)
+        let (ws_to_tunnel_tx, ws_to_tunnel_rx) = mpsc::unbounded_channel::<String>();
+        let (tunnel_to_ws_tx, mut tunnel_to_ws_rx) = mpsc::unbounded_channel::<String>();
         let dispatchers = self.build_host_dispatchers();
         let tunnel_endpoint = TunnelEndpoint::new(
-            Box::new(bridge_reader),
-            Box::new(bridge_writer),
+            ws_to_tunnel_rx,
+            tunnel_to_ws_tx,
             dispatchers,
             Duration::from_secs(10),
         );
@@ -189,9 +190,9 @@ impl HostState {
                                     break;
                                 }
                                 Ok(TunnelMessage::Rpc { payload }) => {
-                                    // Forward RPC message to TunnelEndpoint via bridge
-                                    if bridge_sender.send(payload).is_err() {
-                                        warn!("[HUB-HOST] Bridge channel closed, cannot forward RPC");
+                                    // Forward RPC message to TunnelEndpoint via channel
+                                    if ws_to_tunnel_tx.send(payload).is_err() {
+                                        warn!("[HUB-HOST] Tunnel channel closed, cannot forward RPC");
                                     }
                                 }
                                 _ => {}
@@ -222,7 +223,7 @@ impl HostState {
         // Cleanup on disconnect
         connected.store(false, Ordering::Relaxed);
         heartbeat_task.abort();
-        // bridge_sender is dropped here → TunnelEndpoint reader thread exits
+        // ws_to_tunnel_tx is dropped here → TunnelEndpoint reader task exits
         info!("[HUB-HOST] Slave disconnected: {}", engine_id_clone);
         self.connections.write().await.remove(&engine_id_clone);
     }
@@ -233,7 +234,6 @@ impl HostState {
         let handler = HostLocalHandler {
             instance_store: self.instance_store.clone(),
             host: Arc::downgrade(self),
-            handle: tokio::runtime::Handle::current(),
         };
         vec![ExtensionHandlerDispatcher::boxed(Arc::new(handler))]
     }
@@ -358,14 +358,14 @@ impl HostState {
 struct HostLocalHandler {
     instance_store: InstanceStore,
     host: Weak<HostState>,
-    handle: tokio::runtime::Handle,
 }
 
 use crate::service::extension::ExtensionHandler;
 use crate::persist::hooks::ContactInfo;
 
+#[async_trait::async_trait]
 impl ExtensionHandler for HostLocalHandler {
-    fn relay_message(
+    async fn relay_message(
         &self,
         from_instance_id: String,
         to_instance_id: String,
@@ -386,27 +386,25 @@ impl ExtensionHandler for HostLocalHandler {
             let host = self.host.upgrade()
                 .ok_or_else(|| "Host state no longer available".to_string())?;
 
-            self.handle.block_on(async {
-                if let Some(endpoint) = host.get_slave_tunnel_endpoint(&to_instance_id).await {
-                    let proxy = crate::service::extension::ExtensionHandlerProxy::new(endpoint);
-                    proxy.relay_message(from_instance_id.clone(), to_instance_id.clone(), content.clone())
-                        .map(|_| {
-                            info!("[HUB-HOST-RPC] Relayed message from {} to {} via slave RPC", from_instance_id, to_instance_id);
-                        })
-                } else {
-                    Err(format!("Instance {} not found on any connected engine", to_instance_id))
-                }
-            })
+            if let Some(endpoint) = host.get_slave_tunnel_endpoint(&to_instance_id).await {
+                let proxy = crate::service::extension::ExtensionHandlerProxy::new(endpoint);
+                proxy.relay_message(from_instance_id.clone(), to_instance_id.clone(), content.clone()).await
+                    .map(|_| {
+                        info!("[HUB-HOST-RPC] Relayed message from {} to {} via slave RPC", from_instance_id, to_instance_id);
+                    })
+            } else {
+                Err(format!("Instance {} not found on any connected engine", to_instance_id))
+            }
         }
     }
 
-    fn fetch_contacts(&self, instance_id: String) -> Result<Vec<ContactInfo>, String> {
+    async fn fetch_contacts(&self, instance_id: String) -> Result<Vec<ContactInfo>, String> {
         let mut seen = std::collections::HashSet::new();
         let mut contacts: Vec<ContactInfo> = Vec::new();
 
         // Collect remote contacts from all slaves
         if let Some(host) = self.host.upgrade() {
-            let remote = self.handle.block_on(host.get_all_remote_instances());
+            let remote = host.get_all_remote_instances().await;
             for (_engine_id, instances) in &remote {
                 for inst in instances {
                     if inst.id != instance_id && seen.insert(inst.id.clone()) {

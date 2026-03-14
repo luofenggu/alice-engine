@@ -855,7 +855,7 @@ impl Alice {
         // Fetch contacts from extension handler (silent degradation on failure)
         let (contacts_info, extra_skills) = match &self.extension {
             Some(ext) => {
-                let contacts_list = ext.fetch_contacts(self.instance.id.clone())
+                let contacts_list = ext.fetch_contacts(self.instance.id.clone()).await
                     .unwrap_or_default();
                 let contacts = crate::persist::hooks::format_contacts_list(&contacts_list);
                 (contacts, String::new())

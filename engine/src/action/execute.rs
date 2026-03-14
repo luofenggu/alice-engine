@@ -31,8 +31,8 @@ fn make_shell(alice: &Alice) -> Shell {
 pub async fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOutput> {
     match action {
         Action::Idle { timeout_secs } => execute_idle(alice, tx, *timeout_secs),
-        Action::ReadMsg => execute_read_msg(alice, tx),
-        Action::SendMsg { recipient, content } => execute_send_msg(alice, tx, recipient, content),
+        Action::ReadMsg => execute_read_msg(alice, tx).await,
+        Action::SendMsg { recipient, content } => execute_send_msg(alice, tx, recipient, content).await,
         Action::Thinking { content } => execute_thinking(alice, tx, content),
         Action::Script { content } => execute_script(alice, tx, content).await,
         Action::WriteFile { path, content } => execute_write_file(alice, tx, path, content).await,
@@ -64,7 +64,7 @@ fn execute_idle(
     Ok(ActionOutput::Empty)
 }
 
-fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOutput> {
+async fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOutput> {
     info!("[ACTION-{}] read_msg", tx.instance_id);
 
     let messages = alice
@@ -80,17 +80,16 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOut
     }
 
     // Build known sender set: "user" (owner) + contacts IDs
-    let contact_ids: Vec<String> = alice
-        .extension
-        .as_ref()
-        .map(|ext| {
-            ext.fetch_contacts(alice.instance.id.clone())
+    let contact_ids: Vec<String> = match &alice.extension {
+        Some(ext) => {
+            ext.fetch_contacts(alice.instance.id.clone()).await
                 .unwrap_or_default()
                 .into_iter()
                 .map(|c| c.id)
                 .collect()
-        })
-        .unwrap_or_default();
+        }
+        None => vec![],
+    };
 
     let entries: Vec<ReadMsgEntry> = messages
         .iter()
@@ -133,7 +132,7 @@ fn resolve_recipient_id(recipient: &str, contacts: &[ContactInfo]) -> Option<Str
     None
 }
 
-fn execute_send_msg(
+async fn execute_send_msg(
     alice: &mut Alice,
     tx: &mut Transaction,
     recipient: &str,
@@ -170,7 +169,7 @@ fn execute_send_msg(
     };
 
     // Fetch contacts list
-    let contacts = extension.fetch_contacts(alice.instance.id.clone()).unwrap_or_default();
+    let contacts = extension.fetch_contacts(alice.instance.id.clone()).await.unwrap_or_default();
 
     // Resolve recipient ID from contacts
     let resolved = match resolve_recipient_id(recipient, &contacts) {
@@ -209,7 +208,7 @@ fn execute_send_msg(
     }
 
     // Relay message
-    match extension.relay_message(alice.instance.id.clone(), resolved.clone(), content.to_string()) {
+    match extension.relay_message(alice.instance.id.clone(), resolved.clone(), content.to_string()).await {
         Ok(()) => {
             info!(
                 "[ACTION-{}] send_msg relayed to '{}' via extension",

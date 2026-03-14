@@ -1,294 +1,252 @@
-//! Tunnel — RPC over bidirectional transport (e.g. WebSocket).
+//! Tunnel RPC framework - async implementation
 //!
-//! Provides typed remote procedure calls over any bidirectional message transport.
-//! Business code defines pure traits, `#[tunnel_service]` macro generates proxy and dispatcher.
+//! Provides bidirectional RPC over any async channel pair.
+//! Used with `#[tunnel_service]` proc macro to generate Proxy and Dispatcher.
 
-use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use tokio::sync::{mpsc, oneshot};
 
-// ─── Message Protocol ───
+// ── Message protocol ──────────────────────────────────────────
 
-/// Request message.
-#[derive(Debug, Serialize, Deserialize)]
-struct RequestMessage {
-    id: String,
-    method: String,
-    params: serde_json::Value,
+pub struct RequestMessage {
+    pub id: String,
+    pub method: String,
+    pub params: Value,
 }
 
-/// Response message.
-#[derive(Debug, Serialize, Deserialize)]
-struct ResponseMessage {
-    id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+pub struct ResponseMessage {
+    pub id: String,
+    pub result: Result<Value, String>,
 }
 
-/// Parsed message — either request or response.
-enum ParsedMessage {
-    Request { id: String, method: String, params: serde_json::Value },
-    Response { id: String, result: Result<serde_json::Value, String> },
+pub enum ParsedMessage {
+    Request(RequestMessage),
+    Response(ResponseMessage),
 }
 
-fn parse_message(text: &str) -> Result<ParsedMessage, String> {
-    let v: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| format!("JSON parse error: {}", e))?;
+pub fn make_request(msg: &RequestMessage) -> String {
+    serde_json::to_string(&serde_json::json!({
+        "type": "request",
+        "id": msg.id,
+        "method": msg.method,
+        "params": msg.params,
+    })).unwrap()
+}
 
-    if v.get("method").is_some() {
-        let req: RequestMessage = serde_json::from_value(v)
-            .map_err(|e| format!("request parse error: {}", e))?;
-        Ok(ParsedMessage::Request { id: req.id, method: req.method, params: req.params })
-    } else {
-        let resp: ResponseMessage = serde_json::from_value(v)
-            .map_err(|e| format!("response parse error: {}", e))?;
-        let result = if let Some(err) = resp.error {
-            Err(err)
-        } else {
-            Ok(resp.result.unwrap_or(serde_json::Value::Null))
-        };
-        Ok(ParsedMessage::Response { id: resp.id, result })
+pub fn make_response(msg: &ResponseMessage) -> String {
+    let value = match &msg.result {
+        Ok(v) => serde_json::json!({"type": "response", "id": msg.id, "result": v}),
+        Err(e) => serde_json::json!({"type": "response", "id": msg.id, "error": e}),
+    };
+    serde_json::to_string(&value).unwrap()
+}
+
+pub fn parse_message(text: &str) -> Option<ParsedMessage> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let msg_type = v.get("type")?.as_str()?;
+    match msg_type {
+        "request" => {
+            let id = v.get("id")?.as_str()?.to_string();
+            let method = v.get("method")?.as_str()?.to_string();
+            let params = v.get("params")?.clone();
+            Some(ParsedMessage::Request(RequestMessage { id, method, params }))
+        }
+        "response" => {
+            let id = v.get("id")?.as_str()?.to_string();
+            if let Some(error) = v.get("error") {
+                let error_str = error.as_str().unwrap_or("unknown error").to_string();
+                Some(ParsedMessage::Response(ResponseMessage {
+                    id,
+                    result: Err(error_str),
+                }))
+            } else {
+                let result = v.get("result")?.clone();
+                Some(ParsedMessage::Response(ResponseMessage {
+                    id,
+                    result: Ok(result),
+                }))
+            }
+        }
+        _ => None,
     }
 }
 
-fn make_request(id: &str, method: &str, params: serde_json::Value) -> String {
-    serde_json::to_string(&RequestMessage {
-        id: id.to_string(),
-        method: method.to_string(),
-        params,
-    }).unwrap()
-}
+// ── Dispatch trait ─────────────────────────────────────────────
 
-fn make_response_ok(id: &str, result: serde_json::Value) -> String {
-    serde_json::to_string(&ResponseMessage {
-        id: id.to_string(),
-        result: Some(result),
-        error: None,
-    }).unwrap()
-}
-
-fn make_response_err(id: &str, error: String) -> String {
-    serde_json::to_string(&ResponseMessage {
-        id: id.to_string(),
-        result: None,
-        error: Some(error),
-    }).unwrap()
-}
-
-// ─── Transport Trait ───
-
-/// Abstraction over bidirectional message transport (WebSocket, channel, etc.).
-pub trait Transport: Send {
-    /// Send a text message.
-    fn send(&mut self, text: &str) -> Result<(), String>;
-    /// Receive next text message. Blocks until available. Returns None on close.
-    fn recv(&mut self) -> Result<Option<String>, String>;
-}
-
-// ─── Dispatch Trait ───
-
-/// Server-side method dispatcher. Generated by `#[tunnel_service]` macro.
+/// Trait for dispatching incoming RPC requests to local handlers.
+/// Implementations are generated by `#[tunnel_service]` macro.
+#[async_trait::async_trait]
 pub trait Dispatch: Send + Sync {
-    /// Dispatch a method call. Returns serialized result or error string.
-    /// Returns Err("unknown method: ...") if method is not handled by this dispatcher.
-    fn dispatch(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String>;
+    /// Returns the service prefix this dispatcher handles (e.g., "MyService")
+    fn service_name(&self) -> &str;
+
+    /// Dispatch a method call. method is the full "ServiceName.method_name" string.
+    async fn dispatch(&self, method: &str, params: Value) -> Result<Value, String>;
 }
 
-// ─── Tunnel Endpoint ───
+// ── TunnelEndpoint ─────────────────────────────────────────────
 
-type PendingMap = HashMap<String, std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>>;
+type PendingMap = HashMap<String, oneshot::Sender<Result<Value, String>>>;
 
-/// A bidirectional RPC endpoint over a Transport.
+/// Async bidirectional RPC endpoint over channel pairs.
 ///
-/// - Registers dispatchers for incoming requests
-/// - Provides `call()` for outgoing requests (blocks until response)
-/// - Runs a reader thread that routes incoming messages
+/// Create with `TunnelEndpoint::new()`, which spawns an async reader task.
+/// Use `call()` to make RPC requests to the remote side.
 pub struct TunnelEndpoint {
-    writer: Arc<Mutex<Box<dyn Transport>>>,
+    outgoing_tx: mpsc::UnboundedSender<String>,
     pending: Arc<Mutex<PendingMap>>,
     timeout: Duration,
 }
 
 impl TunnelEndpoint {
-    /// Create a new endpoint with separate read/write transports.
+    /// Create a new TunnelEndpoint and spawn the reader loop.
     ///
-    /// - `reader`: transport for receiving (moved to reader thread)
-    /// - `writer`: transport for sending (shared between proxy and reader thread)
-    /// - `dispatchers`: service dispatchers for incoming requests
-    /// - `timeout`: request timeout duration
+    /// - `incoming_rx`: receives messages from the remote side
+    /// - `outgoing_tx`: sends messages to the remote side
+    /// - `dispatchers`: local RPC handlers for incoming requests
+    /// - `timeout`: how long `call()` waits for a response
     pub fn new(
-        reader: Box<dyn Transport>,
-        writer: Box<dyn Transport>,
+        incoming_rx: mpsc::UnboundedReceiver<String>,
+        outgoing_tx: mpsc::UnboundedSender<String>,
         dispatchers: Vec<Box<dyn Dispatch>>,
         timeout: Duration,
     ) -> Arc<Self> {
-        let writer = Arc::new(Mutex::new(writer));
         let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
-        let dispatchers = Arc::new(dispatchers);
 
         let endpoint = Arc::new(Self {
-            writer: writer.clone(),
+            outgoing_tx: outgoing_tx.clone(),
             pending: pending.clone(),
             timeout,
         });
 
-        // Spawn reader thread
-        let reader_writer = writer;
-        let reader_pending = pending;
-        let reader_dispatchers = dispatchers;
-        std::thread::spawn(move || {
-            reader_loop(reader, reader_writer, reader_pending, reader_dispatchers);
-        });
+        // Spawn async reader loop
+        tokio::spawn(reader_loop(incoming_rx, outgoing_tx, dispatchers, pending));
 
         endpoint
     }
 
-    /// Make a remote procedure call. Blocks until response or timeout.
-    pub fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    /// Make an RPC call to the remote side.
+    ///
+    /// Sends a request and waits for the response (with timeout).
+    pub async fn call(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
         let id = generate_id();
-        let text = make_request(&id, method, params);
+
+        let (tx, rx) = oneshot::channel();
 
         // Register pending request
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
         {
-            self.pending.lock().unwrap().insert(id.clone(), tx);
+            let mut map = self.pending.lock().unwrap();
+            map.insert(id.clone(), tx);
         }
 
         // Send request
-        {
-            let mut w = self.writer.lock().unwrap();
-            w.send(&text).map_err(|e| {
-                self.pending.lock().unwrap().remove(&id);
-                e
-            })?;
+        let msg = make_request(&RequestMessage {
+            id: id.clone(),
+            method: method.to_string(),
+            params,
+        });
+
+        if self.outgoing_tx.send(msg).is_err() {
+            // Clean up pending
+            let mut map = self.pending.lock().unwrap();
+            map.remove(&id);
+            return Err("tunnel disconnected".to_string());
         }
 
-        // Wait for response
-        match rx.recv_timeout(self.timeout) {
-            Ok(result) => result,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                self.pending.lock().unwrap().remove(&id);
-                Err(format!("[TUNNEL] call '{}' timed out after {:?}", method, self.timeout))
+        // Wait for response with timeout
+        match tokio::time::timeout(self.timeout, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                // oneshot sender dropped — endpoint shutting down
+                Err("tunnel endpoint closed".to_string())
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                self.pending.lock().unwrap().remove(&id);
-                Err(format!("[TUNNEL] call '{}': channel disconnected", method))
+            Err(_) => {
+                // Timeout — clean up pending
+                let mut map = self.pending.lock().unwrap();
+                map.remove(&id);
+                Err(format!("tunnel call timeout: {}", method))
             }
         }
     }
 }
 
-fn reader_loop(
-    mut reader: Box<dyn Transport>,
-    writer: Arc<Mutex<Box<dyn Transport>>>,
+/// Async reader loop — processes incoming messages from the remote side.
+async fn reader_loop(
+    mut incoming_rx: mpsc::UnboundedReceiver<String>,
+    outgoing_tx: mpsc::UnboundedSender<String>,
+    dispatchers: Vec<Box<dyn Dispatch>>,
     pending: Arc<Mutex<PendingMap>>,
-    dispatchers: Arc<Vec<Box<dyn Dispatch>>>,
 ) {
-    loop {
-        let msg_text = match reader.recv() {
-            Ok(Some(text)) => text,
-            Ok(None) => break,
-            Err(e) => {
-                eprintln!("[TUNNEL] Reader error: {}", e);
-                break;
-            }
+    while let Some(text) = incoming_rx.recv().await {
+        let parsed = match parse_message(&text) {
+            Some(p) => p,
+            None => continue,
         };
 
-        match parse_message(&msg_text) {
-            Ok(ParsedMessage::Request { id, method, params }) => {
-                let result = dispatch_request(&method, params, &dispatchers);
-                let response_text = match result {
-                    Ok(value) => make_response_ok(&id, value),
-                    Err(error) => make_response_err(&id, error),
+        match parsed {
+            ParsedMessage::Request(req) => {
+                // Find matching dispatcher
+                let mut result = Err(format!("no handler for method: {}", req.method));
+                for dispatcher in &dispatchers {
+                    if req.method.starts_with(dispatcher.service_name()) {
+                        result = dispatcher.dispatch(&req.method, req.params.clone()).await;
+                        break;
+                    }
+                }
+
+                // Send response
+                let response = make_response(&ResponseMessage {
+                    id: req.id,
+                    result,
+                });
+                let _ = outgoing_tx.send(response);
+            }
+            ParsedMessage::Response(resp) => {
+                // Find and notify pending caller
+                let sender = {
+                    let mut map = pending.lock().unwrap();
+                    map.remove(&resp.id)
                 };
-                let mut w = writer.lock().unwrap();
-                if let Err(e) = w.send(&response_text) {
-                    eprintln!("[TUNNEL] Failed to send response: {}", e);
+                if let Some(sender) = sender {
+                    let _ = sender.send(resp.result);
                 }
-            }
-            Ok(ParsedMessage::Response { id, result }) => {
-                let sender = pending.lock().unwrap().remove(&id);
-                if let Some(tx) = sender {
-                    let _ = tx.send(result);
-                }
-            }
-            Err(e) => {
-                eprintln!("[TUNNEL] Failed to parse message: {} — raw: {}", e, &msg_text[..200.min(msg_text.len())]);
             }
         }
+    }
+
+    // Channel closed — clean up all pending requests
+    let mut map = pending.lock().unwrap();
+    for (_, sender) in map.drain() {
+        let _ = sender.send(Err("tunnel disconnected".to_string()));
     }
 }
 
-fn dispatch_request(
-    method: &str,
-    params: serde_json::Value,
-    dispatchers: &[Box<dyn Dispatch>],
-) -> Result<serde_json::Value, String> {
-    for dispatcher in dispatchers {
-        match dispatcher.dispatch(method, params.clone()) {
-            Err(ref e) if e.starts_with("unknown method:") => continue,
-            other => return other,
-        }
-    }
-    Err(format!("unknown method: {}", method))
-}
+// ── Utilities ──────────────────────────────────────────────────
 
 fn generate_id() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{:06x}", nanos % 0x1000000)
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("rpc_{}", n)
 }
 
-// ─── Channel Transport (for testing) ───
-
-/// Writer half of a channel transport.
-pub struct ChannelWriter {
-    tx: std::sync::mpsc::Sender<String>,
-}
-
-/// Reader half of a channel transport.
-pub struct ChannelReader {
-    rx: std::sync::mpsc::Receiver<String>,
-}
-
-/// Create two pairs of (reader, writer) for bidirectional channel communication.
+/// Create a pair of connected channel pairs for testing.
 ///
-/// Returns ((reader_a, writer_a), (reader_b, writer_b)) where:
-/// - writer_a sends to reader_b
-/// - writer_b sends to reader_a
-pub fn channel_transport_pair() -> ((ChannelReader, ChannelWriter), (ChannelReader, ChannelWriter)) {
-    let (tx1, rx1) = std::sync::mpsc::channel();
-    let (tx2, rx2) = std::sync::mpsc::channel();
-    (
-        (ChannelReader { rx: rx2 }, ChannelWriter { tx: tx1 }),
-        (ChannelReader { rx: rx1 }, ChannelWriter { tx: tx2 }),
-    )
-}
-
-impl Transport for ChannelWriter {
-    fn send(&mut self, text: &str) -> Result<(), String> {
-        self.tx.send(text.to_string()).map_err(|e| format!("channel send error: {}", e))
-    }
-
-    fn recv(&mut self) -> Result<Option<String>, String> {
-        Err("ChannelWriter does not support recv".to_string())
-    }
-}
-
-impl Transport for ChannelReader {
-    fn send(&mut self, _text: &str) -> Result<(), String> {
-        Err("ChannelReader does not support send".to_string())
-    }
-
-    fn recv(&mut self) -> Result<Option<String>, String> {
-        match self.rx.recv() {
-            Ok(text) => Ok(Some(text)),
-            Err(_) => Ok(None),
-        }
-    }
+/// Returns ((incoming_rx_a, outgoing_tx_a), (incoming_rx_b, outgoing_tx_b))
+/// where A's outgoing connects to B's incoming and vice versa.
+pub fn channel_pair() -> (
+    (mpsc::UnboundedReceiver<String>, mpsc::UnboundedSender<String>),
+    (mpsc::UnboundedReceiver<String>, mpsc::UnboundedSender<String>),
+) {
+    let (a_to_b_tx, a_to_b_rx) = mpsc::unbounded_channel();
+    let (b_to_a_tx, b_to_a_rx) = mpsc::unbounded_channel();
+    // A's outgoing → B's incoming, B's outgoing → A's incoming
+    ((b_to_a_rx, a_to_b_tx), (a_to_b_rx, b_to_a_tx))
 }

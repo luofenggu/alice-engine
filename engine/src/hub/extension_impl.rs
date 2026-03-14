@@ -8,7 +8,6 @@
 use std::sync::Arc;
 use std::collections::HashSet;
 use tracing::{info, warn};
-use tokio::runtime::Handle;
 
 use crate::persist::hooks::ContactInfo;
 use crate::persist::instance::InstanceStore;
@@ -20,12 +19,11 @@ use super::HubState;
 pub struct HubExtensionHandler {
     hub: Arc<HubState>,
     instance_store: InstanceStore,
-    handle: Handle,
 }
 
 impl HubExtensionHandler {
-    pub fn new(hub: Arc<HubState>, instance_store: InstanceStore, handle: Handle) -> Self {
-        Self { hub, instance_store, handle }
+    pub fn new(hub: Arc<HubState>, instance_store: InstanceStore) -> Self {
+        Self { hub, instance_store }
     }
 
     /// Collect local instance contacts (id + name), excluding the requester.
@@ -67,38 +65,37 @@ impl HubExtensionHandler {
     }
 }
 
+#[async_trait::async_trait]
 impl ExtensionHandler for HubExtensionHandler {
-    fn relay_message(&self, from: String, to: String, content: String) -> Result<(), String> {
-        let mode = self.handle.block_on(self.hub.mode.read());
+    async fn relay_message(&self, from: String, to: String, content: String) -> Result<(), String> {
+        let mode = self.hub.mode.read().await;
 
         match &*mode {
             super::HubMode::Host(host) => {
                 let host = host.clone();
                 drop(mode);
 
-                self.handle.block_on(async {
-                    // Check if target is on a remote slave
-                    if let Some(_engine_id) = host.find_instance_engine(&to).await {
-                        // Remote: use tunnel proxy via slave's TunnelEndpoint
-                        if let Some(ep) = host.get_slave_tunnel_endpoint(&to).await {
-                            let proxy = ExtensionHandlerProxy::new(ep);
-                            match proxy.relay_message(from.clone(), to.clone(), content) {
-                                Ok(()) => {
-                                    info!("[EXT] Relayed message from {} to {} via tunnel proxy", from, to);
-                                    Ok(())
-                                }
-                                Err(e) => Err(format!("Tunnel relay failed: {}", e)),
+                // Check if target is on a remote slave
+                if let Some(_engine_id) = host.find_instance_engine(&to).await {
+                    // Remote: use tunnel proxy via slave's TunnelEndpoint
+                    if let Some(ep) = host.get_slave_tunnel_endpoint(&to).await {
+                        let proxy = ExtensionHandlerProxy::new(ep);
+                        match proxy.relay_message(from.clone(), to.clone(), content).await {
+                            Ok(()) => {
+                                info!("[EXT] Relayed message from {} to {} via tunnel proxy", from, to);
+                                Ok(())
                             }
-                        } else {
-                            Err("Slave tunnel endpoint not available".to_string())
+                            Err(e) => Err(format!("Tunnel relay failed: {}", e)),
                         }
                     } else {
-                        // Local delivery
-                        self.local_relay(&from, &to, &content).map(|()| {
-                            info!("[EXT] Relayed message from {} to {} (local)", from, to);
-                        })
+                        Err("Slave tunnel endpoint not available".to_string())
                     }
-                })
+                } else {
+                    // Local delivery
+                    self.local_relay(&from, &to, &content).map(|()| {
+                        info!("[EXT] Relayed message from {} to {} (local)", from, to);
+                    })
+                }
             }
 
             super::HubMode::Joined(slave) => {
@@ -109,7 +106,7 @@ impl ExtensionHandler for HubExtensionHandler {
                 let ep = slave.get_tunnel_endpoint()
                     .ok_or_else(|| "Not connected to host".to_string())?;
                 let proxy = ExtensionHandlerProxy::new(ep);
-                proxy.relay_message(from.clone(), to.clone(), content).map(|()| {
+                proxy.relay_message(from.clone(), to.clone(), content).await.map(|()| {
                     info!("[EXT] Relayed message from {} to {} via host proxy", from, to);
                 })
             }
@@ -121,8 +118,8 @@ impl ExtensionHandler for HubExtensionHandler {
         }
     }
 
-    fn fetch_contacts(&self, instance_id: String) -> Result<Vec<ContactInfo>, String> {
-        let mode = self.handle.block_on(self.hub.mode.read());
+    async fn fetch_contacts(&self, instance_id: String) -> Result<Vec<ContactInfo>, String> {
+        let mode = self.hub.mode.read().await;
 
         match &*mode {
             super::HubMode::Host(host) => {
@@ -130,7 +127,7 @@ impl ExtensionHandler for HubExtensionHandler {
                 let local_contacts = self.local_contacts(&instance_id);
                 drop(mode);
 
-                let remote = self.handle.block_on(host.get_all_remote_instances());
+                let remote = host.get_all_remote_instances().await;
 
                 let mut seen: HashSet<String> = HashSet::new();
                 let mut contacts: Vec<ContactInfo> = Vec::new();
@@ -163,7 +160,7 @@ impl ExtensionHandler for HubExtensionHandler {
                 let ep = slave.get_tunnel_endpoint()
                     .ok_or_else(|| "Not connected to host".to_string())?;
                 let proxy = ExtensionHandlerProxy::new(ep);
-                proxy.fetch_contacts(instance_id)
+                proxy.fetch_contacts(instance_id).await
             }
 
             super::HubMode::Off => {
@@ -174,6 +171,7 @@ impl ExtensionHandler for HubExtensionHandler {
         }
     }
 }
+
 /// Slave-side local handler for host→slave RPC requests.
 /// Handles relay_message and fetch_contacts for local instances only.
 pub struct SlaveLocalHandler {
@@ -222,14 +220,16 @@ impl SlaveLocalHandler {
     }
 }
 
+#[async_trait::async_trait]
 impl ExtensionHandler for SlaveLocalHandler {
-    fn relay_message(&self, from: String, to: String, content: String) -> Result<(), String> {
+    async fn relay_message(&self, from: String, to: String, content: String) -> Result<(), String> {
         self.local_relay(&from, &to, &content).map(|()| {
             info!("[EXT-SLAVE] Relayed message from {} to {} (local)", from, to);
         })
     }
 
-    fn fetch_contacts(&self, instance_id: String) -> Result<Vec<ContactInfo>, String> {
+    async fn fetch_contacts(&self, instance_id: String) -> Result<Vec<ContactInfo>, String> {
         Ok(self.local_contacts(&instance_id))
     }
 }
+

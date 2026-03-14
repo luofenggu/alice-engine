@@ -176,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
     let engine_env_config = env_config.clone();
     let engine_gs_store = global_settings_store.clone();
     let extension: Arc<dyn ExtensionHandler> = Arc::new(
-        HubExtensionHandler::new(hub_state.clone(), engine_state.instance_store.clone(), tokio::runtime::Handle::current())
+        HubExtensionHandler::new(hub_state.clone(), engine_state.instance_store.clone())
     );
     let engine_handle = tokio::spawn(async move {
         let mut engine = AliceEngine::new(

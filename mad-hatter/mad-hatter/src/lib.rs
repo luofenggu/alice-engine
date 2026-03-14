@@ -41,6 +41,7 @@ pub use mad_hatter_macros::bind_http;
 pub use mad_hatter_macros::ToMarkdown;
 pub use mad_hatter_macros::FromMarkdown;
 pub use mad_hatter_macros::tunnel_service;
+pub use async_trait::async_trait;
 
 pub mod llm;
 pub mod tunnel;
