@@ -200,6 +200,7 @@ impl ActionRecord {
                     serde_json::from_str::<ActionOutput>(s)
                         .ok()
                         .or_else(|| Some(ActionOutput::Note { text: s.to_string() }))
+                        .and_then(|o| if matches!(o, ActionOutput::Empty) { None } else { Some(o) })
                 }
             });
             (Some(input), output)

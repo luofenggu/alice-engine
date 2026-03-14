@@ -378,6 +378,7 @@ impl Memory {
         let rows: Vec<ActionLogRow> = action_log::table
             .filter(action_log::instance_id.eq(&self.instance_id))
             .filter(action_log::id.gt(cursor))
+            .filter(action_log::action_type.ne("distill"))
             .order(action_log::id.asc())
             .load(conn)
             .context("[MEMORY-DB] Failed to load action_log for render")?;
