@@ -81,11 +81,10 @@ fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<ActionOut
 
     // Build known sender set: "user" (owner) + contacts IDs
     let contact_ids: Vec<String> = alice
-        .hooks_caller
+        .extension
         .as_ref()
-        .map(|hc| {
-            hc.fetch_contacts(&alice.instance.id)
-                .unwrap_or_default()
+        .map(|ext| {
+            ext.fetch_contacts(&alice.instance.id)
                 .into_iter()
                 .map(|c| c.id)
                 .collect()
@@ -155,11 +154,11 @@ fn execute_send_msg(
     }
 
     // Non-user recipient: must go through contacts lookup
-    let hooks_caller = match alice.hooks_caller.as_ref() {
-        Some(hc) => hc,
+    let extension = match alice.extension.as_ref() {
+        Some(ext) => ext,
         None => {
             warn!(
-                "[ACTION-{}] send_msg to '{}' failed: no hooks_caller available",
+                "[ACTION-{}] send_msg to '{}' failed: no extension available",
                 tx.instance_id, recipient
             );
             tx.cancel_idle = true;
@@ -170,19 +169,7 @@ fn execute_send_msg(
     };
 
     // Fetch contacts list
-    let contacts = match hooks_caller.fetch_contacts(&alice.instance.id) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(
-                "[ACTION-{}] send_msg to '{}' failed: contacts fetch error: {}",
-                tx.instance_id, recipient, e
-            );
-            tx.cancel_idle = true;
-            return Ok(ActionOutput::SendMsgFailed {
-                error: format!("发送失败：通讯服务不可用，无法联系 \"{}\"", recipient),
-            });
-        }
-    };
+    let contacts = extension.fetch_contacts(&alice.instance.id);
 
     // Resolve recipient ID from contacts
     let resolved = match resolve_recipient_id(recipient, &contacts) {
@@ -221,10 +208,10 @@ fn execute_send_msg(
     }
 
     // Relay message
-    match hooks_caller.relay_message(&alice.instance.id, &resolved, content) {
-        Ok(response) if response.success => {
+    match extension.relay_message(&alice.instance.id, &resolved, content) {
+        Ok(()) => {
             info!(
-                "[ACTION-{}] send_msg relayed to '{}' via hooks",
+                "[ACTION-{}] send_msg relayed to '{}' via extension",
                 tx.instance_id, resolved
             );
             let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
@@ -236,18 +223,6 @@ fn execute_send_msg(
                 .write_agent_reply(&alice.instance.id, content, &timestamp, &resolved)
                 .context("Failed to write relayed agent reply")?;
             Ok(ActionOutput::SendMsg { msg_id: timestamp })
-        }
-        Ok(response) => {
-            warn!(
-                "[ACTION-{}] send_msg relay rejected for '{}': {}",
-                tx.instance_id,
-                resolved,
-                response.message.unwrap_or_default()
-            );
-            tx.cancel_idle = true;
-            Ok(ActionOutput::SendMsgFailed {
-                error: format!("发送失败：消息转发到 \"{}\" 时被拒绝", recipient),
-            })
         }
         Err(e) => {
             warn!(
@@ -842,9 +817,9 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_send_msg_no_hooks_caller_fails() {
+    fn test_execute_send_msg_no_extension_fails() {
         let (mut alice, mut tx, _tmp) = setup();
-        // alice.hooks_caller is None by default in test setup
+        // alice.extension is None by default in test setup
         let action = Action::SendMsg {
             recipient: "some_agent".to_string(),
             content: "hello agent!".to_string(),
@@ -862,7 +837,7 @@ mod tests {
     fn test_send_msg_failure_sets_cancel_idle() {
         let (mut alice, mut tx, _tmp) = setup();
         assert!(!tx.cancel_idle);
-        // alice.hooks_caller is None by default → send to non-user recipient will fail
+        // alice.extension is None by default → send to non-user recipient will fail
         let action = Action::SendMsg {
             recipient: "nonexistent_agent".to_string(),
             content: "hello".to_string(),

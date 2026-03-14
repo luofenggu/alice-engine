@@ -25,6 +25,8 @@ use alice_engine::api::routes;
 use alice_engine::api::state::EngineState;
 use alice_engine::core::signal::SignalHub;
 use alice_engine::engine::AliceEngine;
+use alice_engine::hub::extension_impl::HubExtensionHandler;
+use alice_engine::service::extension::ExtensionHandler;
 use alice_engine::policy::EnvConfig;
 
 /// Resolve a path: env value > CLI arg > None.
@@ -173,7 +175,9 @@ async fn main() -> anyhow::Result<()> {
     let engine_logs_dir = logs_dir.clone();
     let engine_env_config = env_config.clone();
     let engine_gs_store = global_settings_store.clone();
-    let engine_hooks_caller = engine_state.hooks_caller.clone();
+    let extension: Arc<dyn ExtensionHandler> = Arc::new(
+        HubExtensionHandler::new(hub_state.clone(), engine_state.instance_store.clone(), tokio::runtime::Handle::current())
+    );
     let engine_handle = std::thread::spawn(move || {
         let mut engine = AliceEngine::new(
             engine_instances_dir,
@@ -181,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
             signal_hub,
             engine_env_config,
             engine_gs_store,
-            engine_hooks_caller,
+            extension,
         );
         if let Err(e) = engine.run() {
             tracing::error!("Engine error: {}", e);

@@ -36,7 +36,7 @@ use tracing::{error, info, warn};
 
 use crate::core::signal::SignalHub;
 use crate::core::Alice;
-use crate::persist::hooks::HooksCaller;
+use crate::service::extension::ExtensionHandler;
 use crate::persist::instance::InstanceStore;
 use crate::util::Counter;
 
@@ -65,7 +65,7 @@ pub struct AliceEngine {
     /// Global settings store — reads latest from disk on each use.
     global_settings_store: crate::persist::GlobalSettingsStore,
     /// Shared hooks caller for all instances.
-    hooks_caller: Arc<HooksCaller>,
+    extension: Arc<dyn ExtensionHandler>,
     /// Temporary buffer for instances during restore (drained to threads in run()).
     instances: Vec<(String, Alice)>,
 }
@@ -78,7 +78,7 @@ impl AliceEngine {
         signal_hub: SignalHub,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: crate::persist::GlobalSettingsStore,
-        hooks_caller: Arc<HooksCaller>,
+        extension: Arc<dyn ExtensionHandler>,
     ) -> Self {
         let instance_store = InstanceStore::new(instances_base.clone());
 
@@ -89,7 +89,7 @@ impl AliceEngine {
             signal_hub,
             env_config,
             global_settings_store,
-            hooks_caller,
+            extension,
             instances: Vec::new(),
         }
     }
@@ -161,7 +161,7 @@ impl AliceEngine {
             signals.channels.index.clone(),
             self.env_config.clone(),
             Some(self.global_settings_store.clone()),
-            Some(self.hooks_caller.clone()),
+            Some(self.extension.clone()),
         )?;
 
         alice.signals = Some(signals);
@@ -708,14 +708,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
-        let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
+        let extension: std::sync::Arc<dyn crate::service::extension::ExtensionHandler> = std::sync::Arc::new(crate::service::extension::NoopExtensionHandler);
         let engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
             env,
             gs_store,
-            hooks_caller,
+            extension,
         );
         assert!(engine.instances.is_empty());
     }
@@ -737,14 +737,14 @@ mod tests {
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
-        let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
+        let extension: std::sync::Arc<dyn crate::service::extension::ExtensionHandler> = std::sync::Arc::new(crate::service::extension::NoopExtensionHandler);
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
             env,
             gs_store,
-            hooks_caller,
+            extension,
         );
         engine.restore_instances().unwrap();
 
@@ -772,14 +772,14 @@ mod tests {
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
-        let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
+        let extension: std::sync::Arc<dyn crate::service::extension::ExtensionHandler> = std::sync::Arc::new(crate::service::extension::NoopExtensionHandler);
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
             env,
             gs_store,
-            hooks_caller,
+            extension,
         );
         engine.restore_instances().unwrap();
 
@@ -835,14 +835,14 @@ mod tests {
 
         let env = std::sync::Arc::new(crate::policy::EnvConfig::from_env());
         let (_, gs_store) = crate::persist::GlobalSettingsStore::init(tmp.path(), &env).unwrap();
-        let hooks_caller = std::sync::Arc::new(crate::persist::hooks::HooksCaller::new(Default::default()));
+        let extension: std::sync::Arc<dyn crate::service::extension::ExtensionHandler> = std::sync::Arc::new(crate::service::extension::NoopExtensionHandler);
         let mut engine = AliceEngine::new(
             tmp.path().to_path_buf(),
             tmp.path().join("logs"),
             SignalHub::new(),
             env,
             gs_store,
-            hooks_caller,
+            extension,
         );
         engine.restore_instances().unwrap();
 

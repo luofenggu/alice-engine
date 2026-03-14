@@ -8,7 +8,6 @@ use crate::api::EngineState;
 use crate::service::*;
 use crate::api::routes::{CreateInstanceBody, ChannelSelectBody, VisionBody, MessagesQuery, RepliesQuery, FilePathQuery, SendMessageBody, RelayMessageBody, HubEnableBody, HubJoinBody};
 use crate::persist::settings::Settings;
-use crate::persist::hooks::HooksConfig;
 
 bind_http! {
     InstanceService for EngineState {
@@ -83,7 +82,6 @@ bind_http! {
         leave_hub() => POST "api/hub/leave" -> Response;
         hub_status() => GET "api/hub/status" -> Response;
         hub_endpoints() => GET "api/hub/endpoints" -> Response;
-        register_hooks(body: HooksConfig) => POST "api/hooks" -> Response;
     }
 }
 
@@ -92,8 +90,5 @@ bind_http! {
 // Centralizes all Hub-related URL paths that aren't covered by http_service!/bind_http! macros.
 
 pub const HUB_WS_PATH: &str = "/api/hub/ws";
-pub const HUB_HOOKS_PATH: &str = "/api/hooks";
 pub const HUB_CONTACTS_PATH_PREFIX: &str = "/api/hub/contacts/";
 pub const HUB_RELAY_PATH: &str = "/api/hub/relay";
-pub const HUB_TUNNEL_PROXY_CONTACTS_PATH_PREFIX: &str = "/api/hub/tunnel_proxy/contacts/";
-pub const HUB_TUNNEL_PROXY_RELAY_PATH: &str = "/api/hub/tunnel_proxy/relay";

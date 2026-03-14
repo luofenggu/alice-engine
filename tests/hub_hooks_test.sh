@@ -188,7 +188,7 @@ echo -e "\n${CYAN}[TEST 2]${NC} Contacts injection into inference prompt"
 api_post "$URL/api/instances/$ALICE_ID/messages" '{"content":"hello"}' > /dev/null
 
 # Wait for inference to start and hooks to be fetched
-sleep 3
+sleep 8
 
 # Check engine log for hooks fetch result
 LOG_FILE="$DATA_DIR/engine.log"

@@ -11,7 +11,6 @@ use crate::api::routes::{
     HubEnableBody, HubJoinBody,
 };
 use crate::persist::settings::Settings;
-use crate::persist::hooks::HooksConfig;
 
 pub trait InstanceService {
     fn list_instances(&self) -> impl std::future::Future<Output = Response> + Send;
@@ -69,5 +68,6 @@ pub trait HubService {
     fn leave_hub(&self) -> impl std::future::Future<Output = Response> + Send;
     fn hub_status(&self) -> impl std::future::Future<Output = Response> + Send;
     fn hub_endpoints(&self) -> impl std::future::Future<Output = Response> + Send;
-    fn register_hooks(&self, body: HooksConfig) -> impl std::future::Future<Output = Response> + Send;
 }
+
+pub mod extension;

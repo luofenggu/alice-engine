@@ -18,7 +18,6 @@ use serde::Deserialize;
 
 use super::http_protocol;
 use super::state::EngineState;
-use crate::persist::hooks::HooksConfig;
 use crate::persist::hooks::RelayRequest;
 use crate::persist::Settings;
 
@@ -578,8 +577,6 @@ http_service! {
     service HubPublicApi {
         GET "api/hub/contacts/{id}" => hub_contacts(id: String) -> Response;
         POST "api/hub/relay" => hub_relay(body: RelayRequest) -> Response;
-        GET "api/hub/tunnel_proxy/contacts/{id}" => tunnel_proxy_contacts(id: String) -> Response;
-        POST "api/hub/tunnel_proxy/relay" => tunnel_proxy_relay(body: String) -> Response;
     }
 }
 
@@ -597,104 +594,14 @@ impl HubPublicApiService for EngineState {
             None => Ok(json_error(StatusCode::NOT_FOUND, "Hub not in host mode")),
         }
     }
-
-    async fn tunnel_proxy_contacts(&self, id: String) -> mad_hatter::Result<Response> {
-        let slave = match self.hub.as_slave().await {
-            Some(s) => s,
-            None => return Ok(json_error(StatusCode::NOT_FOUND, "Not in joined mode")),
-        };
-
-        let req = crate::hub::tunnel::TunnelRequest {
-            request_id: uuid::Uuid::new_v4().to_string(),
-            method: "GET".to_string(),
-            path: format!("{}{}", HUB_CONTACTS_PATH_PREFIX, id),
-            headers: std::collections::HashMap::new(),
-            body: None,
-        };
-
-        match slave.proxy_request_to_host(req).await {
-            Some(resp) => Ok(tunnel_response_to_http(resp)),
-            None => Ok(json_error(StatusCode::BAD_GATEWAY, "Tunnel request to host failed")),
-        }
-    }
-
-    async fn tunnel_proxy_relay(&self, body: String) -> mad_hatter::Result<Response> {
-        let slave = match self.hub.as_slave().await {
-            Some(s) => s,
-            None => return Ok(json_error(StatusCode::NOT_FOUND, "Not in joined mode")),
-        };
-
-        use base64::Engine as _;
-        let req = crate::hub::tunnel::TunnelRequest {
-            request_id: uuid::Uuid::new_v4().to_string(),
-            method: "POST".to_string(),
-            path: HUB_RELAY_PATH.to_string(),
-            headers: {
-                let mut h = std::collections::HashMap::new();
-                h.insert("content-type".to_string(), "application/json".to_string());
-                h
-            },
-            body: if body.is_empty() {
-                None
-            } else {
-                Some(base64::engine::general_purpose::STANDARD.encode(body.as_bytes()))
-            },
-        };
-
-        match slave.proxy_request_to_host(req).await {
-            Some(resp) => Ok(tunnel_response_to_http(resp)),
-            None => Ok(json_error(StatusCode::BAD_GATEWAY, "Tunnel request to host failed")),
-        }
-    }
 }
-
-/// Tunnel proxy for relay: slave forwards to host via WebSocket tunnel
-/// Convert a TunnelResponse to an HTTP Response
-fn tunnel_response_to_http(resp: crate::hub::tunnel::TunnelResponse) -> Response {
-    use base64::Engine as _;
-    let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut headers = HeaderMap::new();
-    for (k, v) in &resp.headers {
-        if let (Ok(name), Ok(val)) = (
-            axum::http::header::HeaderName::from_bytes(k.as_bytes()),
-            axum::http::header::HeaderValue::from_str(v),
-        ) {
-            headers.insert(name, val);
-        }
-    }
-    let body_bytes = resp.body
-        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(&b).ok())
-        .unwrap_or_default();
-    (status, headers, body_bytes).into_response()
-}
-
-// ── Hub API (Mad Hatter) ──
 
 impl HubService for EngineState {
     async fn enable_hub(&self, body: HubEnableBody) -> Response {
         let local_port = self.env_config.http_port;
         let auth_secret = self.env_config.auth_secret.clone();
         match self.hub.enable_host(body.join_token, local_port, auth_secret).await {
-            Ok(()) => {
-                // Register hooks on self so local instances can use hub contacts/relay
-                let port = local_port;
-                let hooks_body = serde_json::json!({
-                    "contacts_url": format!("http://localhost:{}/api/hub/contacts/{{instance_id}}", port),
-                    "send_msg_relay_url": format!("http://localhost:{}/api/hub/relay", port)
-                });
-                let cookie = format!("{}={}", self.session_cookie_name, self.session_token);
-                let url = format!("http://localhost:{}/api/hooks", port);
-                match self.http_client.post(&url)
-                    .header("Cookie", cookie)
-                    .json(&hooks_body)
-                    .send()
-                    .await
-                {
-                    Ok(resp) => tracing::info!("[HUB] Self hooks registration: {}", resp.status()),
-                    Err(e) => tracing::warn!("[HUB] Failed to register hooks on self: {}", e),
-                }
-                json_ok(serde_json::json!({"status": "host mode enabled"}))
-            }
+            Ok(()) => json_ok(serde_json::json!({"status": "host mode enabled"})),
             Err(e) => json_error(StatusCode::BAD_REQUEST, &e),
         }
     }
@@ -773,19 +680,6 @@ impl HubService for EngineState {
         json_ok(groups)
     }
 
-    async fn register_hooks(&self, body: HooksConfig) -> Response {
-        match self.hooks_store.register(&body) {
-            Ok(merged) => {
-                self.hooks_caller.update_config(merged);
-                tracing::info!("[HOOKS] Hooks registered/updated successfully");
-                json_ok(crate::api::types::ActionResult::ok_empty())
-            }
-            Err(e) => {
-                tracing::warn!("[HOOKS] Failed to register hooks: {}", e);
-                json_ok(crate::api::types::ActionResult::err(e.to_string()))
-            }
-        }
-    }
 }
 
 /// WebSocket endpoint for slave engines to connect.

@@ -2,6 +2,7 @@ pub mod tunnel;
 pub mod host;
 pub mod slave;
 pub mod hooks;
+pub mod extension_impl;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;

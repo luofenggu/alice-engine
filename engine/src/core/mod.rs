@@ -52,7 +52,7 @@ use std::sync::RwLock;
 use crate::inference::Action;
 use crate::inference::output::ActionOutput;
 use crate::persist::instance;
-use crate::persist::hooks::HooksCaller;
+use crate::service::extension::ExtensionHandler;
 use crate::persist::settings::GlobalSettingsStore;
 use crate::policy::action_output;
 use crate::prompt::build_beat_request;
@@ -341,8 +341,8 @@ pub struct Alice {
 
     /// Global settings store for hot-reloading channels each beat.
     pub global_settings_store: Option<GlobalSettingsStore>,
-    /// Hooks caller for external extension points (contacts, relay, skills).
-    pub hooks_caller: Option<Arc<HooksCaller>>,
+    /// Extension handler for cross-instance communication (contacts, relay).
+    pub extension: Option<Arc<dyn ExtensionHandler>>,
 }
 
 impl Alice {
@@ -356,7 +356,7 @@ impl Alice {
         channel_index: Arc<AtomicU64>,
         env_config: Arc<crate::policy::EnvConfig>,
         global_settings_store: Option<GlobalSettingsStore>,
-        hooks_caller: Option<Arc<HooksCaller>>,
+        extension: Option<Arc<dyn ExtensionHandler>>,
     ) -> Result<Self> {
         // Read settings overrides before instance is moved into struct
         let mem_cfg = &crate::policy::EngineConfig::get().memory;
@@ -415,7 +415,7 @@ impl Alice {
 
             env_config,
             global_settings_store,
-            hooks_caller,
+            extension,
         })
     }
 
@@ -852,12 +852,11 @@ impl Alice {
         let mut tx = Transaction::new(&self.instance.id);
 
         // 3. Build inference request
-        // Fetch contacts and extra skills from hooks (silent degradation on failure)
-        let (contacts_info, extra_skills) = match &self.hooks_caller {
-            Some(caller) => {
-                let contacts = caller.format_contacts_for_prompt(&self.instance.id);
-                let skills = caller.fetch_skills(&self.instance.id);
-                (contacts, skills)
+        // Fetch contacts from extension handler (silent degradation on failure)
+        let (contacts_info, extra_skills) = match &self.extension {
+            Some(ext) => {
+                let contacts = ext.format_contacts_for_prompt(&self.instance.id);
+                (contacts, String::new())
             }
             None => (String::new(), String::new()),
         };
