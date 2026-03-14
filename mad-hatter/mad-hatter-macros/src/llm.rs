@@ -63,6 +63,7 @@ struct ToMarkdownField {
     kind: FieldKind,
     section_title: String,
     skip: bool,
+    flatten: bool,
 }
 
 /// Generate `impl ToMarkdown for Struct` from derive attributes.
@@ -94,6 +95,7 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
     for field in fields.iter() {
         let ident = field.ident.clone().unwrap();
         let skip = has_markdown_skip(&field.attrs);
+        let flatten = has_markdown_flatten(&field.attrs);
         let classified = extract_classified_docs(&field.attrs);
         let render_docs = classified.for_render();
         let section_title = if render_docs.is_empty() {
@@ -102,7 +104,7 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
             render_docs.join(" ")
         };
         let kind = classify_field_type(&field.ty);
-        tm_fields.push(ToMarkdownField { ident, kind, section_title, skip });
+        tm_fields.push(ToMarkdownField { ident, kind, section_title, skip, flatten });
     }
 
     // Name collision detection: case-insensitive check struct name vs field names
@@ -212,6 +214,7 @@ fn derive_to_markdown_enum(input: DeriveInput) -> TokenStream {
                     let fident = f.ident.as_ref().unwrap();
                     let skip = has_markdown_skip(&f.attrs);
                     if skip { return quote! {}; }
+                    let flatten = has_markdown_flatten(&f.attrs);
                     let classified = extract_classified_docs(&f.attrs);
                     let render_docs = classified.for_render();
                     let title = if render_docs.is_empty() {
@@ -220,7 +223,7 @@ fn derive_to_markdown_enum(input: DeriveInput) -> TokenStream {
                         render_docs.join(" ")
                     };
                     let kind = classify_field_type(&f.ty);
-                    gen_enum_field_depth_render(fident, &title, &kind)
+                    gen_enum_field_depth_render(fident, &title, &kind, flatten)
                 }).collect();
                 quote! {
                     Self::#variant_ident { #(#field_bindings),* } => {
@@ -267,9 +270,10 @@ fn derive_to_markdown_enum(input: DeriveInput) -> TokenStream {
                     let fident = f.ident.as_ref().unwrap();
                     let skip = has_markdown_skip(&f.attrs);
                     if skip { return quote! {}; }
+                    let flatten = has_markdown_flatten(&f.attrs);
                     let field_name = fident.to_string();
                     let kind = classify_field_type(&f.ty);
-                    gen_enum_field_item_render(fident, &field_name, &kind)
+                    gen_enum_field_item_render(fident, &field_name, &kind, flatten)
                 }).collect();
                 quote! {
                     Self::#variant_ident { #(#field_bindings),* } => {
@@ -309,7 +313,7 @@ fn derive_to_markdown_enum(input: DeriveInput) -> TokenStream {
 
 /// Generate depth-mode rendering for a single enum variant field.
 /// Similar to gen_depth_render but accesses field via local binding (not self.field).
-fn gen_enum_field_depth_render(ident: &syn::Ident, title: &str, kind: &FieldKind) -> TokenStream {
+fn gen_enum_field_depth_render(ident: &syn::Ident, title: &str, kind: &FieldKind, flatten: bool) -> TokenStream {
     match kind {
         FieldKind::String => {
             quote! {
@@ -359,14 +363,22 @@ fn gen_enum_field_depth_render(ident: &syn::Ident, title: &str, kind: &FieldKind
             }
         }
         FieldKind::Option(inner_kind) => {
-            gen_enum_option_depth_render(ident, title, inner_kind)
+            gen_enum_option_depth_render(ident, title, inner_kind, flatten)
         }
         FieldKind::Other => {
-            quote! {
-                {
-                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
-                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
-                    __out.push_str(&#ident.to_markdown_depth(__depth + 1));
+            if flatten {
+                quote! {
+                    {
+                        __out.push_str(&#ident.to_markdown_depth(__depth));
+                    }
+                }
+            } else {
+                quote! {
+                    {
+                        let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                        __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                        __out.push_str(&#ident.to_markdown_depth(__depth + 1));
+                    }
                 }
             }
         }
@@ -374,7 +386,7 @@ fn gen_enum_field_depth_render(ident: &syn::Ident, title: &str, kind: &FieldKind
 }
 
 /// Generate depth-mode rendering for Option<T> enum variant fields.
-fn gen_enum_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKind) -> TokenStream {
+fn gen_enum_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKind, flatten: bool) -> TokenStream {
     let value_render = match inner_kind {
         FieldKind::String => {
             quote! {
@@ -402,10 +414,16 @@ fn gen_enum_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &Fi
             }
         }
         _ => {
-            quote! {
-                let __hashes: ::std::string::String = "#".repeat(__depth + 1);
-                __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
-                __out.push_str(&__val.to_markdown_depth(__depth + 1));
+            if flatten {
+                quote! {
+                    __out.push_str(&__val.to_markdown_depth(__depth));
+                }
+            } else {
+                quote! {
+                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                    __out.push_str(&__val.to_markdown_depth(__depth + 1));
+                }
             }
         }
     };
@@ -418,7 +436,7 @@ fn gen_enum_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &Fi
 }
 
 /// Generate item-mode rendering for a single enum variant field.
-fn gen_enum_field_item_render(ident: &syn::Ident, field_name: &str, kind: &FieldKind) -> TokenStream {
+fn gen_enum_field_item_render(ident: &syn::Ident, field_name: &str, kind: &FieldKind, flatten: bool) -> TokenStream {
     match kind {
         FieldKind::String => {
             quote! {
@@ -460,15 +478,23 @@ fn gen_enum_field_item_render(ident: &syn::Ident, field_name: &str, kind: &Field
             }
         }
         FieldKind::Option(inner_kind) => {
-            gen_enum_option_item_render(ident, field_name, inner_kind)
+            gen_enum_option_item_render(ident, field_name, inner_kind, flatten)
         }
         FieldKind::Other => {
-            quote! {
-                {
-                    __out.push_str(#field_name);
-                    __out.push_str(": ");
-                    __out.push_str(&#ident.to_markdown_item());
-                    __out.push('\n');
+            if flatten {
+                quote! {
+                    {
+                        __out.push_str(&#ident.to_markdown_item());
+                    }
+                }
+            } else {
+                quote! {
+                    {
+                        __out.push_str(#field_name);
+                        __out.push_str(": ");
+                        __out.push_str(&#ident.to_markdown_item());
+                        __out.push('\n');
+                    }
                 }
             }
         }
@@ -476,7 +502,7 @@ fn gen_enum_field_item_render(ident: &syn::Ident, field_name: &str, kind: &Field
 }
 
 /// Generate item-mode rendering for Option<T> enum variant fields.
-fn gen_enum_option_item_render(ident: &syn::Ident, field_name: &str, inner_kind: &FieldKind) -> TokenStream {
+fn gen_enum_option_item_render(ident: &syn::Ident, field_name: &str, inner_kind: &FieldKind, flatten: bool) -> TokenStream {
     let value_render = match inner_kind {
         FieldKind::String => {
             quote! {
@@ -497,11 +523,17 @@ fn gen_enum_option_item_render(ident: &syn::Ident, field_name: &str, inner_kind:
             }
         }
         _ => {
-            quote! {
-                __out.push_str(#field_name);
-                __out.push_str(": ");
-                __out.push_str(&__val.to_markdown_item());
-                __out.push('\n');
+            if flatten {
+                quote! {
+                    __out.push_str(&__val.to_markdown_item());
+                }
+            } else {
+                quote! {
+                    __out.push_str(#field_name);
+                    __out.push_str(": ");
+                    __out.push_str(&__val.to_markdown_item());
+                    __out.push('\n');
+                }
             }
         }
     };
@@ -567,14 +599,22 @@ fn gen_depth_render(f: &ToMarkdownField) -> TokenStream {
             }
         }
         FieldKind::Option(inner_kind) => {
-            gen_option_depth_render(ident, title, inner_kind)
+            gen_option_depth_render(ident, title, inner_kind, f.flatten)
         }
         FieldKind::Other => {
-            quote! {
-                {
-                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
-                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
-                    __out.push_str(&self.#ident.to_markdown_depth(__depth + 1));
+            if f.flatten {
+                quote! {
+                    {
+                        __out.push_str(&self.#ident.to_markdown_depth(__depth));
+                    }
+                }
+            } else {
+                quote! {
+                    {
+                        let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                        __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                        __out.push_str(&self.#ident.to_markdown_depth(__depth + 1));
+                    }
                 }
             }
         }
@@ -598,7 +638,7 @@ fn gen_vec_element_render_depth(inner_kind: &FieldKind) -> TokenStream {
 }
 
 /// Generate depth-mode rendering for Option<T> fields.
-fn gen_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKind) -> TokenStream {
+fn gen_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKind, flatten: bool) -> TokenStream {
     let value_render = match inner_kind {
         FieldKind::String => {
             quote! {
@@ -626,10 +666,16 @@ fn gen_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKi
             }
         }
         _ => {
-            quote! {
-                let __hashes: ::std::string::String = "#".repeat(__depth + 1);
-                __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
-                __out.push_str(&__val.to_markdown_depth(__depth + 1));
+            if flatten {
+                quote! {
+                    __out.push_str(&__val.to_markdown_depth(__depth));
+                }
+            } else {
+                quote! {
+                    let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                    __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                    __out.push_str(&__val.to_markdown_depth(__depth + 1));
+                }
             }
         }
     };
@@ -687,15 +733,23 @@ fn gen_item_render(f: &ToMarkdownField) -> TokenStream {
             }
         }
         FieldKind::Option(inner_kind) => {
-            gen_option_item_render(ident, &field_name, inner_kind)
+            gen_option_item_render(ident, &field_name, inner_kind, f.flatten)
         }
         FieldKind::Other => {
-            quote! {
-                {
-                    __out.push_str(#field_name);
-                    __out.push_str(": ");
-                    __out.push_str(&self.#ident.to_markdown_item());
-                    __out.push('\n');
+            if f.flatten {
+                quote! {
+                    {
+                        __out.push_str(&self.#ident.to_markdown_item());
+                    }
+                }
+            } else {
+                quote! {
+                    {
+                        __out.push_str(#field_name);
+                        __out.push_str(": ");
+                        __out.push_str(&self.#ident.to_markdown_item());
+                        __out.push('\n');
+                    }
                 }
             }
         }
@@ -718,7 +772,7 @@ fn gen_vec_element_render_item(inner_kind: &FieldKind) -> TokenStream {
 }
 
 /// Generate item-mode rendering for Option<T> fields.
-fn gen_option_item_render(ident: &syn::Ident, field_name: &str, inner_kind: &FieldKind) -> TokenStream {
+fn gen_option_item_render(ident: &syn::Ident, field_name: &str, inner_kind: &FieldKind, flatten: bool) -> TokenStream {
     let value_render = match inner_kind {
         FieldKind::String => {
             quote! {
@@ -739,11 +793,17 @@ fn gen_option_item_render(ident: &syn::Ident, field_name: &str, inner_kind: &Fie
             }
         }
         _ => {
-            quote! {
-                __out.push_str(#field_name);
-                __out.push_str(": ");
-                __out.push_str(&__val.to_markdown_item());
-                __out.push('\n');
+            if flatten {
+                quote! {
+                    __out.push_str(&__val.to_markdown_item());
+                }
+            } else {
+                quote! {
+                    __out.push_str(#field_name);
+                    __out.push_str(": ");
+                    __out.push_str(&__val.to_markdown_item());
+                    __out.push('\n');
+                }
             }
         }
     };
@@ -1711,6 +1771,19 @@ fn has_markdown_required(attrs: &[syn::Attribute]) -> bool {
         if attr.path().is_ident("markdown") {
             if let Ok(nested) = attr.parse_args::<syn::Ident>() {
                 if nested == "required" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+/// Check if a field has `#[markdown(flatten)]` attribute.
+fn has_markdown_flatten(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("markdown") {
+            if let Ok(nested) = attr.parse_args::<syn::Ident>() {
+                if nested == "flatten" {
                     return true;
                 }
             }
