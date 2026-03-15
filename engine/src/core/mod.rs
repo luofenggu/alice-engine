@@ -50,6 +50,7 @@ use crate::external::llm::LlmConfig;
 use std::sync::atomic::AtomicU64;
 use std::sync::RwLock;
 use crate::inference::Action;
+use crate::bindings::db::ActionType;
 use crate::inference::output::ActionOutput;
 use crate::persist::instance;
 use crate::service::extension::ExtensionHandler;
@@ -817,7 +818,7 @@ impl Alice {
             // DB: insert action_log (executing)
             let action_data_json = serde_json::to_string(&Action::ReadMsg).unwrap_or_default();
             self.instance.memory.insert_action_log(
-                &action_id, Action::ReadMsg.type_name(), &action_data_json, &action_id[..14],
+                &action_id, &Action::ReadMsg.action_type(), &action_data_json, &action_id[..14],
             ).ok();
 
             let result = execute_action(&Action::ReadMsg, self, &mut tx).await;
@@ -914,7 +915,7 @@ impl Alice {
         let on_thinking: Option<Box<dyn FnMut(&str) + Send>> = Some(Box::new(move |text: &str| {
             let note_id = action_output::generate_action_id();
             info!("[THINKING-{}] Received thinking ({} chars)", instance_id_for_thinking, text.len());
-            memory_for_thinking.insert_done_note(&note_id, "thinking", text).ok();
+            memory_for_thinking.insert_done_note(&note_id, &ActionType::Thinking, text).ok();
         }));
         let mut stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input, cancel_signal, on_thinking).await
             .map_err(|e| {
@@ -940,7 +941,7 @@ impl Alice {
                 let interrupt_text = action_output::inference_interrupted().to_string();
                 // DB: record interrupt as done note
                 let note_id = action_output::generate_action_id();
-                self.instance.memory.insert_done_note(&note_id, "interrupt", &interrupt_text).ok();
+                self.instance.memory.insert_done_note(&note_id, &ActionType::Interrupt, &interrupt_text).ok();
                 break;
             }
 
@@ -962,7 +963,7 @@ impl Alice {
                                 action_output::hallucination_defense_interrupted(&reason);
                             // DB: record reject as done note
                             let note_id = action_output::generate_action_id();
-                            self.instance.memory.insert_done_note(&note_id, "reject", &reject_text).ok();
+                            self.instance.memory.insert_done_note(&note_id, &ActionType::Reject, &reject_text).ok();
                             break;
                         }
                     }
@@ -972,7 +973,7 @@ impl Alice {
                     // DB: insert action_log (executing)
                     let action_data_json = serde_json::to_string(&action).unwrap_or_default();
                     self.instance.memory.insert_action_log(
-                        &action_id, action.type_name(), &action_data_json, &action_id[..14],
+                        &action_id, &action.action_type(), &action_data_json, &action_id[..14],
                     ).ok();
 
                     // Cancel idle if a prior send_msg failed in this beat
@@ -1051,7 +1052,7 @@ impl Alice {
             );
             let interrupt_text = action_output::inference_interrupted().to_string();
             let note_id = action_output::generate_action_id();
-            self.instance.memory.insert_done_note(&note_id, "interrupt", &interrupt_text).ok();
+            self.instance.memory.insert_done_note(&note_id, &ActionType::Interrupt, &interrupt_text).ok();
         }
 
         // Handle inference result
@@ -1064,7 +1065,7 @@ impl Alice {
                 );
                 let note_text = e.clone();
                 let note_id = action_output::generate_action_id();
-                self.instance.memory.insert_done_note(&note_id, "inference_error", &note_text).ok();
+                self.instance.memory.insert_done_note(&note_id, &ActionType::InferenceError, &note_text).ok();
                 // Don't advance channel, don't bail - let beat end normally
                 // Agent will see this in current on next inference
             } else {

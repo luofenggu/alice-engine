@@ -11,7 +11,7 @@
 //! - commit_summary() — write session block → advance cursor
 //! - commit_history() — write history → delete old session block
 
-use crate::bindings::db::{
+use crate::bindings::db::{ActionType,
     self, HistoryRow, KnowledgeRow, MemoryDb, NewSessionBlock, SessionBlockRow,
 };
 
@@ -233,7 +233,7 @@ impl Memory {
     pub fn insert_action_log(
         &self,
         action_id: &str,
-        action_type: &str,
+        action_type: &ActionType,
         action_input_json: &str,
         created_at: &str,
     ) -> Result<()> {
@@ -242,7 +242,7 @@ impl Memory {
         let new_row = NewActionLog {
             instance_id: &self.instance_id,
             action_id,
-            action_type,
+            action_type: action_type.as_str(),
             action_input: action_input_json,
             action_output: None,
             status: ACTION_STATUS_EXECUTING,
@@ -256,7 +256,7 @@ impl Memory {
             .execute(conn)
             .with_context(|| format!("[MEMORY-DB] Failed to insert action_log: {}", action_id))?;
 
-        tracing::debug!("[MEMORY-DB] Inserted action_log: {} ({})", action_id, action_type);
+        tracing::debug!("[MEMORY-DB] Inserted action_log: {} ({})", action_id, action_type.as_str());
         Ok(())
     }
 
@@ -265,7 +265,7 @@ impl Memory {
     pub fn insert_done_note(
         &self,
         action_id: &str,
-        action_type: &str,
+        action_type: &ActionType,
         text: &str,
     ) -> Result<()> {
         use crate::bindings::db::{action_log, NewActionLog, ACTION_STATUS_DONE};
@@ -275,7 +275,7 @@ impl Memory {
         let new_row = NewActionLog {
             instance_id: &self.instance_id,
             action_id,
-            action_type,
+            action_type: action_type.as_str(),
             action_input: "",
             action_output: Some(text),
             status: ACTION_STATUS_DONE,
@@ -289,7 +289,7 @@ impl Memory {
             .execute(conn)
             .with_context(|| format!("[MEMORY-DB] Failed to insert done note: {}", action_id))?;
 
-        tracing::debug!("[MEMORY-DB] Inserted done note: {} ({})", action_id, action_type);
+        tracing::debug!("[MEMORY-DB] Inserted done note: {} ({})", action_id, action_type.as_str());
         Ok(())
     }
 
@@ -376,7 +376,7 @@ impl Memory {
         let rows: Vec<ActionLogRow> = action_log::table
             .filter(action_log::instance_id.eq(&self.instance_id))
             .filter(action_log::id.gt(cursor))
-            .filter(action_log::action_type.ne("distill"))
+            .filter(action_log::action_type.ne(ActionType::Distill.as_str()))
             .order(action_log::id.asc())
             .load(conn)
             .context("[MEMORY-DB] Failed to load action_log for render")?;
@@ -453,7 +453,7 @@ impl Memory {
         let count: i64 = action_log::table
             .filter(action_log::instance_id.eq(&self.instance_id))
             .filter(action_log::id.gt(cursor))
-            .filter(action_log::action_type.eq_any(&["send_msg", "read_msg"]))
+            .filter(action_log::action_type.eq_any(&[ActionType::SendMsg.as_str(), ActionType::ReadMsg.as_str()]))
             .filter(action_log::action_output.is_not_null())
             .select(sql::<BigInt>("COUNT(*)"))
             .first(conn)

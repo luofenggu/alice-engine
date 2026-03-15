@@ -623,6 +623,7 @@ fn execute_create_instance(
 mod tests {
     use super::*;
     use crate::inference::output::{ActionOutput, ReadMsgEntry};
+    use crate::bindings::db::ActionType;
 
     use tempfile::TempDir;
 
@@ -846,7 +847,7 @@ mod tests {
 
         // Insert action_log records so render_current_from_db() has content
         alice.instance.memory.insert_action_log(
-            "20260223160000_aaaaaa", "read_msg",
+            "20260223160000_aaaaaa", &ActionType::ReadMsg,
             &serde_json::to_string(&Action::ReadMsg).unwrap(),
             "20260223160000",
         ).unwrap();
@@ -863,7 +864,7 @@ mod tests {
             },
         ).unwrap();
         alice.instance.memory.insert_action_log(
-            "20260223160100_bbbbbb", "send_msg",
+            "20260223160100_bbbbbb", &ActionType::SendMsg,
             &serde_json::to_string(&Action::SendMsg { recipient: "user1".into(), content: "hi back".into() }).unwrap(),
             "20260223160100",
         ).unwrap();
@@ -919,7 +920,7 @@ mod tests {
 
         // Insert action_log record so render_current_from_db() has content
         alice.instance.memory.insert_action_log(
-            "20260223160000_aaaaaa", "send_msg",
+            "20260223160000_aaaaaa", &ActionType::SendMsg,
             &serde_json::to_string(&Action::SendMsg { recipient: "user".into(), content: "test".into() }).unwrap(),
             "20260223160000",
         ).unwrap();

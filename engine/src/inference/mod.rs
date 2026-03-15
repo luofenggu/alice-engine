@@ -176,6 +176,23 @@ impl Action {
             Action::Distill { .. } => "distill",
         }
     }
+
+    /// Returns the ActionType enum for this action.
+    pub fn action_type(&self) -> crate::bindings::db::ActionType {
+        use crate::bindings::db::ActionType;
+        match self {
+            Action::Idle { .. } => ActionType::Idle,
+            Action::ReadMsg => ActionType::ReadMsg,
+            Action::SendMsg { .. } => ActionType::SendMsg,
+            Action::Script { .. } => ActionType::Script,
+            Action::WriteFile { .. } => ActionType::WriteFile,
+            Action::ReplaceInFile { .. } => ActionType::ReplaceInFile,
+            Action::Summary { .. } => ActionType::Summary,
+            Action::SetProfile { .. } => ActionType::SetProfile,
+            Action::CreateInstance { .. } => ActionType::CreateInstance,
+            Action::Distill { .. } => ActionType::Distill,
+        }
+    }
 }
 
 impl fmt::Display for Action {

@@ -80,7 +80,98 @@ diesel::table! {
     }
 }
 
+
 // ---------------------------------------------------------------------------
+// ActionType — action_log.action_type列的类型安全枚举
+// ---------------------------------------------------------------------------
+
+/// All known action_type values in the action_log table.
+/// Action enum variants (10) + special types (5) + Other fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionType {
+    // Action enum对应的10个变体
+    Idle,
+    ReadMsg,
+    SendMsg,
+    Script,
+    WriteFile,
+    ReplaceInFile,
+    Summary,
+    SetProfile,
+    CreateInstance,
+    Distill,
+    // 特殊类型（非Action enum）
+    Thinking,
+    InferenceError,
+    Interrupt,
+    Reject,
+    LegacyImport,
+    // 未知类型兜底
+    Other(String),
+}
+
+impl ActionType {
+    /// DB中存储的字符串值。字面量集中在此，bindings外零字面量。
+    pub fn as_str(&self) -> &str {
+        match self {
+            ActionType::Idle => "idle",
+            ActionType::ReadMsg => "read_msg",
+            ActionType::SendMsg => "send_msg",
+            ActionType::Script => "script",
+            ActionType::WriteFile => "write_file",
+            ActionType::ReplaceInFile => "replace_in_file",
+            ActionType::Summary => "summary",
+            ActionType::SetProfile => "set_profile",
+            ActionType::CreateInstance => "create_instance",
+            ActionType::Distill => "distill",
+            ActionType::Thinking => "thinking",
+            ActionType::InferenceError => "inference_error",
+            ActionType::Interrupt => "interrupt",
+            ActionType::Reject => "reject",
+            ActionType::LegacyImport => "legacy_import",
+            ActionType::Other(s) => s.as_str(),
+        }
+    }
+
+    /// 从DB字符串值构造。未知值走Other兜底。
+    pub fn from_string(s: String) -> Self {
+        match s.as_str() {
+            "idle" => ActionType::Idle,
+            "read_msg" => ActionType::ReadMsg,
+            "send_msg" => ActionType::SendMsg,
+            "script" => ActionType::Script,
+            "write_file" => ActionType::WriteFile,
+            "replace_in_file" => ActionType::ReplaceInFile,
+            "summary" => ActionType::Summary,
+            "set_profile" => ActionType::SetProfile,
+            "create_instance" => ActionType::CreateInstance,
+            "distill" => ActionType::Distill,
+            "thinking" => ActionType::Thinking,
+            "inference_error" => ActionType::InferenceError,
+            "interrupt" => ActionType::Interrupt,
+            "reject" => ActionType::Reject,
+            "legacy_import" => ActionType::LegacyImport,
+            _ => ActionType::Other(s),
+        }
+    }
+
+    /// 是否是Action enum对应的变体（有action_input JSON）
+    pub fn is_action_enum(&self) -> bool {
+        matches!(self,
+            ActionType::Idle | ActionType::ReadMsg | ActionType::SendMsg |
+            ActionType::Script | ActionType::WriteFile | ActionType::ReplaceInFile |
+            ActionType::Summary | ActionType::SetProfile | ActionType::CreateInstance |
+            ActionType::Distill
+        )
+    }
+}
+
+impl std::fmt::Display for ActionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 // Models — messages
 // ---------------------------------------------------------------------------
 

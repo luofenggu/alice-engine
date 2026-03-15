@@ -7,7 +7,7 @@
 use mad_hatter::ToMarkdown;
 use serde::{Deserialize, Serialize};
 
-use crate::bindings::db::ActionLogRow;
+use crate::bindings::db::{ActionLogRow, ActionType};
 use crate::inference::Action;
 
 /// Truncation limit for stdout display.
@@ -406,7 +406,7 @@ impl ActionView {
         }
     }
 
-    /// Build from a DB row. Falls back gracefully on deserialization failure.
+    /// Build from a DB row. Dispatches by ActionType enum — no implicit contracts.
     pub fn from_db_row(row: &ActionLogRow) -> Self {
         use crate::bindings::db::{ACTION_STATUS_DISTILLED, ACTION_STATUS_DONE};
 
@@ -416,56 +416,56 @@ impl ActionView {
             _ => ActionStatus::Executing,
         };
 
-        // Parse action for fill_input
-        let action: Option<Action> = if row.action_input.is_empty() {
-            None
-        } else {
-            serde_json::from_str(&row.action_input).ok()
-        };
-
-        let mut view = ActionView::empty(row.action_id.clone(), row.action_type.clone());
+        let mut view = ActionView::empty(row.action_id.clone(), row.action_type.to_string());
         view.started_at = Some(row.created_at.clone());
 
-        // Executing status marker in note field
-        if status == ActionStatus::Executing {
-            view.note = Some("---action executing, result pending---".to_string());
-        }
-
-        // Distilled: only show distill_text
+        // Distilled: only show distill_text (highest priority, regardless of action_type)
         if status == ActionStatus::Distilled {
             view.distill_text = row.distill_text.clone();
             return view;
         }
 
-        // Fill input fields
-        if let Some(ref action) = action {
-            view.fill_input(action);
+        // Executing status marker
+        if status == ActionStatus::Executing {
+            view.note = Some("---action executing, result pending---".to_string());
         }
 
-        // Fill output fields (only when done)
-        if status == ActionStatus::Done {
-            if let Some(ref output_str) = row.action_output {
-                if !output_str.is_empty() {
-                    if let Ok(output) = serde_json::from_str::<ActionOutput>(output_str) {
-                        if !matches!(output, ActionOutput::Empty) {
-                            view.fill_output(&output);
+        // Dispatch by ActionType: enum action variants vs special types
+        if ActionType::from_string(row.action_type.clone()).is_action_enum() {
+            // Action enum variants: structured input (JSON) and output (ActionOutput JSON)
+            let action: Option<Action> = if row.action_input.is_empty() {
+                None
+            } else {
+                serde_json::from_str(&row.action_input).ok()
+            };
+
+            if let Some(ref action) = action {
+                view.fill_input(action);
+            }
+
+            if status == ActionStatus::Done {
+                if let Some(ref output_str) = row.action_output {
+                    if !output_str.is_empty() {
+                        if let Ok(output) = serde_json::from_str::<ActionOutput>(output_str) {
+                            if !matches!(output, ActionOutput::Empty) {
+                                view.fill_output(&output);
+                            }
+                        } else {
+                            // ActionOutput JSON parse failed — unexpected for enum actions
+                            view.note = Some(format!(
+                                "⚠️ output parse error: {}",
+                                truncate_for_display(output_str, 200)
+                            ));
                         }
-                    } else {
-                        // Deserialization failed — show raw as note
-                        view.note = Some(truncate_for_display(output_str, 200));
                     }
                 }
             }
-        }
-
-        // For non-enum action types (inference_error, etc.) with no input
-        if row.action_input.is_empty() && view.note.is_none() {
-            if let Some(ref output_str) = row.action_output {
-                if !output_str.is_empty() {
-                    // Try to parse as ActionOutput::Note
-                    if let Ok(ActionOutput::Note { text }) = serde_json::from_str::<ActionOutput>(output_str) {
-                        view.note = Some(text);
-                    } else {
+        } else {
+            // Non-enum action types (thinking, inference_error, interrupt, reject, etc.)
+            // Output is plain text — store directly as note, no JSON parsing, no truncation
+            if status == ActionStatus::Done {
+                if let Some(ref output_str) = row.action_output {
+                    if !output_str.is_empty() {
                         view.note = Some(output_str.clone());
                     }
                 }
@@ -474,8 +474,8 @@ impl ActionView {
 
         view
     }
-}
 
+}
 impl ActionOutput {
     /// Extract msg_id from SendMsg variant.
     pub fn msg_id(&self) -> Option<&str> {

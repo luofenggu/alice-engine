@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::persist::memory::{Memory, SessionBlockEntry};
+use crate::bindings::db::ActionType;
 
 /// Run all legacy migrations. Called from Instance::open.
 ///
@@ -224,7 +225,7 @@ fn migrate_current(memory: &Memory, sessions_dir: &Path) -> Result<()> {
         chrono::Local::now().format("%Y%m%d%H%M%S")
     );
 
-    memory.insert_done_note(&action_id, "legacy_import", &content)?;
+    memory.insert_done_note(&action_id, &ActionType::LegacyImport, &content)?;
     rename_migrated(&current_file)?;
 
     info!(
@@ -461,7 +462,7 @@ mod tests {
 
         // Pre-populate DB with an action_log entry
         memory
-            .insert_done_note("existing_001", "some_action", "existing content")
+            .insert_done_note("existing_001", &ActionType::Other("some_action".into()), "existing content")
             .unwrap();
 
         // Write current.txt that should NOT be migrated
