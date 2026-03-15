@@ -166,8 +166,8 @@ pub enum ActionStatus {
 pub struct ActionView {
         pub action_id: String,
 
-    /// description
-    pub description: String,
+    /// action_type
+    pub action_type: String,
 
     /// started_at
     pub started_at: Option<String>,
@@ -276,11 +276,11 @@ pub struct ActionView {
 }
 
 impl ActionView {
-    /// Create an empty ActionView with only action_id and description set.
-    pub(crate) fn empty(action_id: String, description: String) -> Self {
+    /// Create an empty ActionView with only action_id and action_type set.
+    pub(crate) fn empty(action_id: String, action_type: String) -> Self {
         ActionView {
             action_id,
-            description,
+            action_type,
             started_at: None,
             content: None,
             recipient: None,
@@ -418,24 +418,14 @@ impl ActionView {
             _ => ActionStatus::Executing,
         };
 
-        // Parse action for description (Display trait)
+        // Parse action for fill_input
         let action: Option<Action> = if row.action_input.is_empty() {
             None
         } else {
             serde_json::from_str(&row.action_input).ok()
         };
 
-        // Generate description
-        let action_label = action.as_ref().map(|a| format!("{}", a)).unwrap_or_else(|| row.action_type.clone());
-        let description = if status == ActionStatus::Distilled {
-            format!("[已提炼] {}", action_label)
-        } else if status == ActionStatus::Executing {
-            action_label.clone()
-        } else {
-            action_label.clone()
-        };
-
-        let mut view = ActionView::empty(row.action_id.clone(), description);
+        let mut view = ActionView::empty(row.action_id.clone(), row.action_type.clone());
         view.started_at = Some(row.created_at.clone());
 
         // Executing status marker in note field
