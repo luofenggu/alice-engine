@@ -323,9 +323,7 @@ impl ActionView {
                 self.recipient = Some(recipient.clone());
                 self.message = Some(content.clone());
             }
-            Action::Thinking { content } => {
-                self.content = Some(content.clone());
-            }
+
             Action::Script { content } => {
                 self.content = Some(content.clone());
             }

@@ -175,9 +175,9 @@ pub fn humanize_llm_error(raw: &str) -> String {
         return "内部运行时创建失败".to_string();
     }
 
-    // Format/parse errors from FromMarkdown
-    if raw.contains("Unexpected content before first") {
-        return "你的输出格式不正确——Action分隔符前有多余内容。如果需要记录思考过程，请使用thinking action".to_string();
+    // Format/parse errors from FromMarkdown (preamble violation)
+    if raw.contains("FORMAT VIOLATION") {
+        return "你的输出格式不正确——Action分隔符前有多余内容。思考过程会自动收集，无需特殊格式".to_string();
     }
     if raw.contains("Missing end marker") {
         return "你的输出不完整——缺少结束标记。请确保每个action都有完整的开始和结束".to_string();

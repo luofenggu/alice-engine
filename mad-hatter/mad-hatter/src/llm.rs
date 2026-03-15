@@ -216,7 +216,7 @@ fn build_prompt<Req: ToMarkdown, Resp: FromMarkdown>(request: &Req, token: &str)
     let request_text = request.to_markdown();
     let schema = Resp::schema_markdown(token);
     format!(
-        "{}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{}",
+        "{}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{}\n\n如果你需要在输出前思考，可以使用 <think>...</think> 标签包裹你的思考过程。思考内容是可选的，思考结束后必须严格按照上面的格式输出。示例：\n<think>\n分析一下这个问题...\n</think>\n（然后直接按格式输出）",
         request_text,
         schema
     )
@@ -234,7 +234,7 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    stream_infer_with_on_text(channel, request, None, None, None).await
+    stream_infer_with_on_text(channel, request, None, None, None, None).await
 }
 
 /// Stream inference with optional text callback (async)
@@ -252,6 +252,7 @@ pub async fn stream_infer_with_on_text<Req, Resp>(
     on_text: Option<Box<dyn FnMut(&str) + Send>>,
     on_input: Option<Box<dyn FnOnce(&str) + Send>>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    on_thinking: Option<Box<dyn FnMut(&str) + Send>>,
 ) -> Result<StreamInfer<Resp>, String>
 where
     Req: ToMarkdown + StructInput,
@@ -273,6 +274,8 @@ where
         parsed_count: 0,
         on_text,
         cancel,
+        on_thinking,
+        thinking_done: false,
         _phantom: std::marker::PhantomData,
     })
 }
@@ -287,6 +290,8 @@ pub struct StreamInfer<T: FromMarkdown> {
     parsed_count: usize,
     on_text: Option<Box<dyn FnMut(&str) + Send>>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    on_thinking: Option<Box<dyn FnMut(&str) + Send>>,
+    thinking_done: bool,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -314,9 +319,50 @@ impl<T: FromMarkdown> StreamInfer<T> {
                 }
             }
 
+            // Thinking detection: before preamble check, handle <think>...</think>
+            if self.parsed_count == 0 && !self.thinking_done {
+                if let Some(think_start) = self.buffer.find("<think>") {
+                    // Check that content before <think> is only whitespace
+                    let before_think = self.buffer[..think_start].trim();
+                    if !before_think.is_empty() {
+                        // Non-empty content before <think> = preamble
+                        self.done = true;
+                        let display = if before_think.len() > 200 { &before_think[..200] } else { before_think };
+                        return Some(Err(format!(
+                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO commentary before the separator. Your output gets thrown away every single time you do this.",
+                            separator, display
+                        )));
+                    }
+                    if let Some(think_end) = self.buffer.find("</think>") {
+                        // Complete thinking block found
+                        let thinking_content = self.buffer[think_start + 7..think_end].trim().to_string();
+                        if !thinking_content.is_empty() {
+                            if let Some(ref mut cb) = self.on_thinking {
+                                cb(&thinking_content);
+                            }
+                        }
+                        // Remove thinking block from buffer
+                        self.buffer = self.buffer[think_end + 8..].to_string();
+                        self.thinking_done = true;
+                        continue;
+                    } else {
+                        // <think> found but no </think> yet — need more data, skip preamble check
+                        // Fall through to receiver read below
+                    }
+                } else {
+                    // No <think> tag found yet
+                    // If buffer could be a partial <think> prefix, wait for more data
+                    let trimmed = self.buffer.trim();
+                    if !trimmed.is_empty() && !"<think>".starts_with(trimmed) {
+                        self.thinking_done = true;
+                    }
+                    // Otherwise buffer is empty/whitespace or partial <think> prefix — need more data
+                }
+            }
+
             // Early preamble detection: check completed lines before first separator
             // Uses line-level matching to avoid substring false positives
-            if self.parsed_count == 0 && find_line_match(&self.buffer, &separator).is_none() {
+            if self.parsed_count == 0 && self.thinking_done && find_line_match(&self.buffer, &separator).is_none() {
                 if let Some(last_newline) = self.buffer.rfind('\n') {
                     let completed = &self.buffer[..last_newline];
                     for line in completed.lines() {
@@ -328,13 +374,9 @@ impl<T: FromMarkdown> StreamInfer<T> {
                         self.done = true;
                         let display = if t.len() > 200 { &t[..200] } else { t };
                         return Some(Err(format!(
-                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO thinking, NO commentary before the separator. Your output gets thrown away every single time you do this.",
+                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO commentary before the separator. Your output gets thrown away every single time you do this.",
                             separator, display
                         )));
-
-
-
-
                     }
                 }
             }
@@ -353,7 +395,7 @@ impl<T: FromMarkdown> StreamInfer<T> {
                         self.done = true;
                         let display = if before.len() > 200 { &before[..200] } else { before };
                         return Some(Err(format!(
-                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO thinking, NO commentary before the separator. Your output gets thrown away every single time you do this.",
+                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO commentary before the separator. Your output gets thrown away every single time you do this.",
                             separator, display
                         )));
                     }
@@ -465,7 +507,7 @@ where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    infer_with_on_text(channel, request, None, None, None).await
+    infer_with_on_text(channel, request, None, None, None, None).await
 }
 
 /// Full inference with optional text callback (async)
@@ -478,12 +520,13 @@ pub async fn infer_with_on_text<Req, Resp>(
     on_text: Option<Box<dyn FnMut(&str) + Send>>,
     on_input: Option<Box<dyn FnOnce(&str) + Send>>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    on_thinking: Option<Box<dyn FnMut(&str) + Send>>,
 ) -> Result<Vec<Resp>, String>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
 {
-    let mut stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text, on_input, cancel).await?;
+    let mut stream = stream_infer_with_on_text::<Req, Resp>(channel, request, on_text, on_input, cancel, on_thinking).await?;
     let mut results = Vec::new();
     while let Some(item) = stream.next().await {
         results.push(item?);

@@ -298,6 +298,7 @@ async fn test_stream_infer_on_text_receives_all_chunks() {
         })),
         None,
         None,
+        None,
     ).await.unwrap();
 
     let mut results = Vec::new();
@@ -342,6 +343,7 @@ async fn test_stream_infer_on_text_none_equivalent() {
         None,
         None,
         None,
+        None,
     ).await.unwrap();
 
     let mut results = Vec::new();
@@ -373,6 +375,7 @@ async fn test_stream_infer_preamble_returns_error() {
     let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &PreambleChannel,
         &request,
+        None,
         None,
         None,
         None,
@@ -409,6 +412,7 @@ async fn test_stream_infer_no_preamble_works_normally() {
         None,
         None,
         None,
+        None,
     ).await.unwrap();
 
     let mut results = Vec::new();
@@ -437,6 +441,7 @@ async fn test_stream_infer_whitespace_only_preamble_ok() {
     let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &WhitespacePreambleChannel,
         &request,
+        None,
         None,
         None,
         None,
@@ -486,6 +491,7 @@ async fn test_stream_infer_cancel_mid_stream() {
         None,
         None,
         Some(cancel_clone),
+        None,
     ).await.unwrap();
 
     let mut results = Vec::new();
@@ -518,6 +524,7 @@ async fn test_stream_infer_cancel_none_no_effect() {
     let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
         &NormalChannel,
         &request,
+        None,
         None,
         None,
         None,
@@ -554,6 +561,7 @@ async fn test_stream_infer_cancel_before_start() {
         None,
         None,
         Some(cancel),
+        None,
     ).await.unwrap();
 
     let mut results = Vec::new();
@@ -561,5 +569,184 @@ async fn test_stream_infer_cancel_before_start() {
         results.push(result);
     }
     assert_eq!(results.len(), 0); // Nothing parsed
+}
+
+// --- Thinking tests ---
+
+#[tokio::test]
+async fn test_stream_thinking_then_action() {
+    struct ThinkingChannel;
+
+    impl LlmChannel for ThinkingChannel {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            let chunks = vec![
+                "<think>\nI need to think about this carefully.\n</think>\n".to_string(),
+                format!("StreamAction-{}\n", token),
+                "reply\n".to_string(),
+                "hello world\n".to_string(),
+                format!("StreamAction-end-{}\n", token),
+            ];
+            Ok(mock_channel_rx(chunks))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let collected_thinking = Arc::new(Mutex::new(Vec::<String>::new()));
+    let thinking_clone = collected_thinking.clone();
+
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &ThinkingChannel,
+        &request,
+        None,
+        None,
+        None,
+        Some(Box::new(move |thinking: &str| {
+            thinking_clone.lock().unwrap().push(thinking.to_string());
+        })),
+    ).await.unwrap();
+
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result.unwrap());
+    }
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], StreamAction::Reply { content: "hello world".to_string() });
+
+    let thinking = collected_thinking.lock().unwrap();
+    assert_eq!(thinking.len(), 1);
+    assert!(thinking[0].contains("think about this carefully"));
+}
+
+#[tokio::test]
+async fn test_stream_thinking_no_callback() {
+    struct ThinkingNoCallbackChannel;
+
+    impl LlmChannel for ThinkingNoCallbackChannel {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            let chunks = vec![
+                "<think>\nSome internal reasoning\n</think>\n".to_string(),
+                format!("StreamAction-{}\n", token),
+                "idle\n".to_string(),
+                format!("StreamAction-end-{}\n", token),
+            ];
+            Ok(mock_channel_rx(chunks))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    // on_thinking = None — thinking should be silently discarded
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &ThinkingNoCallbackChannel,
+        &request,
+        None,
+        None,
+        None,
+        None,
+    ).await.unwrap();
+
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result.unwrap());
+    }
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], StreamAction::Idle);
+}
+
+#[tokio::test]
+async fn test_stream_thinking_with_leading_whitespace() {
+    struct ThinkingWhitespaceChannel;
+
+    impl LlmChannel for ThinkingWhitespaceChannel {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            let chunks = vec![
+                "\n\n".to_string(),
+                "<think>\nthinking with leading whitespace\n</think>\n".to_string(),
+                format!("StreamAction-{}\n", token),
+                "reply\n".to_string(),
+                "result\n".to_string(),
+                format!("StreamAction-end-{}\n", token),
+            ];
+            Ok(mock_channel_rx(chunks))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let collected_thinking = Arc::new(Mutex::new(Vec::<String>::new()));
+    let thinking_clone = collected_thinking.clone();
+
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &ThinkingWhitespaceChannel,
+        &request,
+        None,
+        None,
+        None,
+        Some(Box::new(move |thinking: &str| {
+            thinking_clone.lock().unwrap().push(thinking.to_string());
+        })),
+    ).await.unwrap();
+
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result.unwrap());
+    }
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], StreamAction::Reply { content: "result".to_string() });
+
+    let thinking = collected_thinking.lock().unwrap();
+    assert_eq!(thinking.len(), 1);
+    assert!(thinking[0].contains("leading whitespace"));
+}
+
+#[tokio::test]
+async fn test_stream_thinking_gradual_chunks() {
+    struct ThinkingGradualChannel;
+
+    impl LlmChannel for ThinkingGradualChannel {
+        fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
+            let token = extract_token(&prompt, "StreamAction");
+            // Thinking arrives in small chunks
+            let chunks = vec![
+                "<thi".to_string(),
+                "nk>\nLine 1\n".to_string(),
+                "Line 2\n</th".to_string(),
+                "ink>\n".to_string(),
+                format!("StreamAction-{}\n", token),
+                "reply\n".to_string(),
+                "done\n".to_string(),
+                format!("StreamAction-end-{}\n", token),
+            ];
+            Ok(mock_channel_rx(chunks))
+        }
+    }
+
+    let request = StreamReq { prompt: "test".to_string() };
+    let collected_thinking = Arc::new(Mutex::new(Vec::<String>::new()));
+    let thinking_clone = collected_thinking.clone();
+
+    let mut stream = stream_infer_with_on_text::<StreamReq, StreamAction>(
+        &ThinkingGradualChannel,
+        &request,
+        None,
+        None,
+        None,
+        Some(Box::new(move |thinking: &str| {
+            thinking_clone.lock().unwrap().push(thinking.to_string());
+        })),
+    ).await.unwrap();
+
+    let mut results = Vec::new();
+    while let Some(result) = stream.next().await {
+        results.push(result.unwrap());
+    }
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], StreamAction::Reply { content: "done".to_string() });
+
+    let thinking = collected_thinking.lock().unwrap();
+    assert_eq!(thinking.len(), 1);
+    assert!(thinking[0].contains("Line 1"));
+    assert!(thinking[0].contains("Line 2"));
 }
 

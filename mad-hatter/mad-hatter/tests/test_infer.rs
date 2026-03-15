@@ -409,6 +409,7 @@ async fn test_infer_with_on_text_receives_chunks() {
         })),
         None,
         None,
+        None,
     ).await.unwrap();
 
     // Verify parsing works
@@ -449,6 +450,7 @@ async fn test_infer_with_on_text_none_equivalent() {
         None,
         None,
         None,
+        None,
     ).await.unwrap();
 
     assert_eq!(results.len(), 1);
@@ -478,6 +480,7 @@ async fn test_infer_with_preamble_returns_error() {
     let result = infer_with_on_text::<SimpleRequest, SimpleAction>(
         &InferPreambleChannel,
         &request,
+        None,
         None,
         None,
         None,
@@ -513,6 +516,7 @@ async fn test_infer_with_cancel() {
         None,
         None,
         Some(cancel),
+        None,
     ).await.unwrap();
 
     assert_eq!(results.len(), 0); // Nothing parsed because cancelled immediately

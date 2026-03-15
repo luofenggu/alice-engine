@@ -86,13 +86,7 @@ pub enum Action {
         /// @render 信件内容
         content: String,
     },
-    /// @render Action：记录思考
-    /// @render 可以在实施action之前先记录planning-thinking（思考计划）
-    /// @render 也可以在关键action之后记录reflection-thinking（观察结果）
-    Thinking {
-        /// @render thinking内容
-        content: String,
-    },
+
     /// @render Action：执行本地脚本
     /// @render 脚本执行时cwd已经是工作目录(workspace)，脚本中的相对路径基于workspace
     /// @render 使用绝对路径可以访问工作目录之外的文件（需要开启privilege权限，可以跟用户商量）
@@ -172,7 +166,7 @@ impl Action {
             Action::Idle { .. } => "idle",
             Action::ReadMsg => "read_msg",
             Action::SendMsg { .. } => "send_msg",
-            Action::Thinking { .. } => "thinking",
+
             Action::Script { .. } => "script",
             Action::WriteFile { .. } => "write_file",
             Action::ReplaceInFile { .. } => "replace_in_file",
@@ -193,7 +187,7 @@ impl fmt::Display for Action {
             } => write!(f, "idle {}", secs),
             Action::ReadMsg => write!(f, "read_msg"),
             Action::SendMsg { recipient, .. } => write!(f, "send_msg → {}", recipient),
-            Action::Thinking { .. } => write!(f, "thinking"),
+
             Action::Script { .. } => write!(f, "script"),
             Action::WriteFile { path, .. } => write!(f, "write_file → {}", path),
             Action::ReplaceInFile { path, .. } => {
@@ -221,39 +215,35 @@ use anyhow::Result;
 /// markers, ending with `Action-end-{token}`.
 ///
 /// Post-process a single action: strip markdown code blocks, validate required fields.
-/// Actions with empty required fields are converted to Thinking.
-fn post_process_action(action: Action) -> Action {
+/// Actions with empty required fields return Err.
+fn post_process_action(action: Action) -> Result<Action> {
     match action {
-        Action::Script { content } => Action::Script {
+        Action::Script { content } => Ok(Action::Script {
             content: strip_markdown_code_block(&content),
-        },
+        }),
         Action::WriteFile { path, content } => {
             if path.trim().is_empty() {
-                Action::Thinking {
-                    content: "⚠️ write_file: 缺少文件路径".to_string(),
-                }
+                anyhow::bail!("write_file: missing file path")
             } else {
-                Action::WriteFile {
+                Ok(Action::WriteFile {
                     path,
                     content: strip_markdown_code_block(&content),
-                }
+                })
             }
         }
         Action::SendMsg { recipient, content } => {
             if recipient.trim().is_empty() {
-                Action::Thinking {
-                    content: "⚠️ send_msg: 缺少收件人".to_string(),
-                }
+                anyhow::bail!("send_msg: missing recipient")
             } else {
-                Action::SendMsg { recipient, content }
+                Ok(Action::SendMsg { recipient, content })
             }
         }
-        other => other,
+        other => Ok(other),
     }
 }
 
 /// Post-processing: Script and WriteFile content is stripped of markdown code blocks.
-/// Actions with empty required fields are converted to Thinking.
+/// Actions with empty required fields return Err.
 pub fn parse_actions(raw: &str, separator_token: &str) -> Result<Vec<Action>> {
     let element_sep = format!("Action-{}", separator_token);
     let end_marker = format!("Action-end-{}", separator_token);
@@ -272,17 +262,17 @@ pub fn parse_actions(raw: &str, separator_token: &str) -> Result<Vec<Action>> {
 
     match Action::from_markdown(&input, separator_token) {
         Ok(actions) => {
-            let actions = actions.into_iter().map(post_process_action).collect();
-            Ok(actions)
+            let actions: Result<Vec<Action>> = actions.into_iter().map(post_process_action).collect();
+            actions
         }
         Err(e) => {
             let error_msg = format!(
-                "⚠️ action解析失败: {}\n原始输出: {}",
+                "action parse failed: {}\nraw output: {}",
                 e,
                 crate::util::safe_truncate(raw, 200)
             );
             tracing::warn!("[PARSE] {}", error_msg);
-            Ok(vec![Action::Thinking { content: error_msg }])
+            anyhow::bail!("{}", error_msg)
         }
     }
 }
@@ -296,15 +286,14 @@ pub fn parse_single_action_chunk(body: &str, separator_token: &str) -> Vec<Actio
     let input = format!("{}\n{}\n{}", element_sep, body.trim(), end_marker);
 
     match Action::from_markdown(&input, separator_token) {
-        Ok(actions) => actions.into_iter().map(post_process_action).collect(),
+        Ok(actions) => {
+            actions.into_iter()
+                .filter_map(|a| post_process_action(a).ok())
+                .collect()
+        }
         Err(e) => {
-            let error_msg = format!(
-                "⚠️ action解析失败: {}\n原始输出: {}",
-                e,
-                crate::util::safe_truncate(body, 200)
-            );
-            tracing::warn!("[PARSE] {}", error_msg);
-            vec![Action::Thinking { content: error_msg }]
+            tracing::warn!("[PARSE] action parse failed: {}", e);
+            Vec::new()
         }
     }
 }
@@ -420,10 +409,9 @@ mod tests {
     #[test]
     fn test_parse_idle_with_invalid_timeout() {
         let raw = format!("{}\nidle\nabc\n{}", sep(), end());
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
-        // FromMarkdown will fail to parse "abc" as u64, resulting in error → Thinking
-        assert!(matches!(actions[0], Action::Thinking { .. }));
+        // FromMarkdown will fail to parse "abc" as u64, resulting in parse error
+        let result = parse_actions(&raw, TOKEN);
+        assert!(result.is_err(), "Invalid timeout should cause parse error");
     }
 
     #[test]
@@ -466,17 +454,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_thinking() {
+    fn test_parse_thinking_removed() {
+        // Thinking variant removed from Action enum; "thinking" is no longer a valid action type
         let raw = format!(
             "{}\nthinking\nI need to plan this carefully.\nStep 1...\n{}",
             sep(), end()
         );
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::Thinking { content } => assert!(content.contains("plan this carefully")),
-            _ => panic!("Expected Thinking"),
-        }
+        let result = parse_actions(&raw, TOKEN);
+        assert!(result.is_err(), "thinking is no longer a valid action type");
     }
 
     #[test]
@@ -548,12 +533,12 @@ mod tests {
     #[test]
     fn test_parse_multiple_actions() {
         let raw = format!(
-            "{}\nthinking\nplanning...\n{}\nscript\necho test\n{}\nidle\n{}",
+            "{}\nscript\necho planning\n{}\nscript\necho test\n{}\nidle\n{}",
             sep(), sep(), sep(), end()
         );
         let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 3);
-        assert!(matches!(actions[0], Action::Thinking { .. }));
+        assert!(matches!(actions[0], Action::Script { .. }));
         assert!(matches!(actions[1], Action::Script { .. }));
         assert!(matches!(actions[2], Action::Idle { timeout_secs: None }));
     }
@@ -587,16 +572,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_unknown_action_becomes_thinking() {
+    fn test_parse_unknown_action_returns_error() {
         let raw = format!("{}\nunknown_action\n{}", sep(), end());
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::Thinking { content } => {
-                assert!(content.contains("action解析失败"));
-            }
-            _ => panic!("Expected Thinking with parse error"),
-        }
+        let result = parse_actions(&raw, TOKEN);
+        assert!(result.is_err(), "Unknown action should return Err");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("action parse failed"), "Error should contain 'action parse failed', got: {}", err);
     }
 
     #[test]
@@ -635,21 +616,21 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_send_msg_empty_becomes_thinking() {
-        // Empty send_msg with no fields should fail parsing
+    fn test_parse_send_msg_empty_returns_error() {
+        // Empty send_msg with no fields should fail
         let raw = format!("{}\nsend_msg\n{}", sep(), end());
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Thinking { .. }));
+        let result = parse_actions(&raw, TOKEN);
+        // Either returns Err (from_markdown fails) or Ok with empty recipient → Err from post_process
+        assert!(result.is_err(), "Empty send_msg should return Err");
     }
 
     #[test]
-    fn test_parse_write_file_empty_becomes_thinking() {
-        // Empty write_file with no fields should fail parsing
+    fn test_parse_write_file_empty_returns_error() {
+        // Empty write_file with no fields should fail
         let raw = format!("{}\nwrite_file\n{}", sep(), end());
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Thinking { .. }));
+        let result = parse_actions(&raw, TOKEN);
+        // Either returns Err (from_markdown fails) or Ok with empty path → Err from post_process
+        assert!(result.is_err(), "Empty write_file should return Err");
     }
 
     #[test]
@@ -756,7 +737,7 @@ mod tests {
         assert!(schema.contains("idle"));
         assert!(schema.contains("read_msg"));
         assert!(schema.contains("send_msg"));
-        assert!(schema.contains("thinking"));
+
         assert!(schema.contains("script"));
         assert!(schema.contains("write_file"));
         assert!(schema.contains("replace_in_file"));
@@ -772,26 +753,16 @@ mod tests {
     #[test]
     fn test_format_anomaly_garbage_before_separator() {
         // LLM outputs garbage before the first action separator
-        // from_markdown should return "Unexpected content before first separator"
-        // parse_actions should convert it to Thinking with error message
+        // parse_actions should return Err
         let raw = format!("这是一些废话blah blah\n{}\nidle\n{}", sep(), end());
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::Thinking { content } => {
-                assert!(
-                    content.contains("action解析失败"),
-                    "Error should contain 'action解析失败', got: {}",
-                    content
-                );
-                assert!(
-                    content.contains("Unexpected content before first"),
-                    "Error should mention unexpected content, got: {}",
-                    content
-                );
-            }
-            other => panic!("Expected Thinking with error, got: {:?}", other),
-        }
+        let result = parse_actions(&raw, TOKEN);
+        assert!(result.is_err(), "Garbage before separator should cause error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("action parse failed"),
+            "Error should contain 'action parse failed', got: {}",
+            err
+        );
     }
 
     #[test]
@@ -810,38 +781,29 @@ mod tests {
     #[test]
     fn test_format_anomaly_misspelled_variant() {
         // LLM outputs correct separator but misspells the variant name
-        // from_markdown should fail to match any variant → Thinking with error
+        // parse_actions should return Err
         let raw = format!("{}\nidel\n{}", sep(), end());
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::Thinking { content } => {
-                assert!(
-                    content.contains("action解析失败"),
-                    "Error should contain 'action解析失败', got: {}",
-                    content
-                );
-            }
-            other => panic!("Expected Thinking with error, got: {:?}", other),
-        }
+        let result = parse_actions(&raw, TOKEN);
+        assert!(result.is_err(), "Misspelled variant should cause error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("action parse failed"),
+            "Error should contain 'action parse failed', got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_format_anomaly_empty_after_separator() {
         // LLM outputs separator but no content before end marker
         let raw = format!("{}\n{}", sep(), end());
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        // Empty chunk after separator — should either be empty or error
+        let result = parse_actions(&raw, TOKEN);
+        // Empty chunk after separator — should be error or empty
         // The key point: no panic, graceful handling
-        for action in &actions {
-            if let Action::Thinking { content } = action {
-                // If it becomes a Thinking, the error message should be informative
-                assert!(
-                    content.contains("action解析失败") || content.contains("⚠️"),
-                    "Error Thinking should have informative message, got: {}",
-                    content
-                );
-            }
+        // Either Err or Ok(empty vec) is acceptable
+        match result {
+            Ok(actions) => assert!(actions.is_empty(), "Empty chunk should produce no actions"),
+            Err(_) => {} // Error is also acceptable
         }
     }
 
@@ -850,24 +812,15 @@ mod tests {
         // Multiple actions where the middle one has an invalid variant
         // from_markdown processes all chunks; bad variant causes error for entire parse
         let raw = format!(
-            "{}\nthinking\nok\n{}\nbad_action_name\n{}\nidle\n{}",
+            "{}\nscript\necho ok\n{}\nbad_action_name\n{}\nidle\n{}",
             sep(),
             sep(),
             sep(),
             end()
         );
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        // Should have at least one action; the bad one becomes Thinking with error
-        // OR the entire parse fails and becomes a single Thinking
-        let has_error = actions.iter().any(|a| match a {
-            Action::Thinking { content } => content.contains("action解析失败"),
-            _ => false,
-        });
-        assert!(
-            has_error,
-            "Should contain at least one Thinking with parse error. Got: {:?}",
-            actions
-        );
+        let result = parse_actions(&raw, TOKEN);
+        // Bad variant causes parse error for entire batch
+        assert!(result.is_err(), "Bad variant in middle should cause parse error");
     }
 
     #[test]
@@ -900,18 +853,14 @@ mod tests {
     fn test_format_anomaly_error_message_includes_original_output() {
         // Verify that error messages include truncated original output for debugging
         let raw = format!("废话废话废话\n{}\nnonexistent_action\n{}", sep(), end());
-        let actions = parse_actions(&raw, TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::Thinking { content } => {
-                assert!(
-                    content.contains("原始输出"),
-                    "Error should include original output snippet, got: {}",
-                    content
-                );
-            }
-            other => panic!("Expected Thinking with error, got: {:?}", other),
-        }
+        let result = parse_actions(&raw, TOKEN);
+        assert!(result.is_err(), "Garbage + bad action should cause error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("raw output"),
+            "Error should include original output snippet, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -941,8 +890,8 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(
-            err.contains("Unexpected content before first"),
-            "Error should mention unexpected content, got: {}",
+            err.contains("FORMAT VIOLATION"),
+            "Error should contain FORMAT VIOLATION, got: {}",
             err
         );
     }

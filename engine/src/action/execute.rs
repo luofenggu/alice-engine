@@ -33,7 +33,7 @@ pub async fn execute_action(action: &Action, alice: &mut Alice, tx: &mut Transac
         Action::Idle { timeout_secs } => execute_idle(alice, tx, *timeout_secs),
         Action::ReadMsg => execute_read_msg(alice, tx).await,
         Action::SendMsg { recipient, content } => execute_send_msg(alice, tx, recipient, content).await,
-        Action::Thinking { content } => execute_thinking(alice, tx, content),
+
         Action::Script { content } => execute_script(alice, tx, content).await,
         Action::WriteFile { path, content } => execute_write_file(alice, tx, path, content).await,
         Action::ReplaceInFile { path, search, replace } => execute_replace_in_file(alice, tx, path, search, replace).await,
@@ -231,14 +231,7 @@ async fn execute_send_msg(
     }
 }
 
-fn execute_thinking(_alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<ActionOutput> {
-    info!(
-        "[ACTION-{}] thinking ({} chars)",
-        tx.instance_id,
-        content.len()
-    );
-    Ok(ActionOutput::Empty)
-}
+
 
 async fn execute_script(alice: &mut Alice, tx: &mut Transaction, content: &str) -> Result<ActionOutput> {
     info!(
@@ -673,15 +666,7 @@ mod tests {
         assert!(matches!(result, ActionOutput::Empty));
     }
 
-    #[tokio::test]
-    async fn test_execute_thinking() {
-        let (mut alice, mut tx, _tmp) = setup();
-        let action = Action::Thinking {
-            content: "deep thought".to_string(),
-        };
-        let result = execute_action(&action, &mut alice, &mut tx).await.unwrap();
-        assert!(matches!(result, ActionOutput::Empty));
-    }
+
 
     #[tokio::test]
     async fn test_execute_script() {

@@ -679,7 +679,7 @@ impl Alice {
         } else {
             None
         };
-        let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &request, on_text, on_input, None).await
+        let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &request, on_text, on_input, None, None).await
             .map_err(|e| anyhow::anyhow!(e))?;
         let output = results.into_iter().next()
             .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
@@ -909,7 +909,14 @@ impl Alice {
             None
         };
         let cancel_signal = self.signals.as_ref().map(|s| s.interrupt.clone());
-        let mut stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input, cancel_signal).await
+        let memory_for_thinking = self.instance.memory.clone();
+        let instance_id_for_thinking = self.instance.id.clone();
+        let on_thinking: Option<Box<dyn FnMut(&str) + Send>> = Some(Box::new(move |text: &str| {
+            let note_id = action_output::generate_action_id();
+            info!("[THINKING-{}] Received thinking ({} chars)", instance_id_for_thinking, text.len());
+            memory_for_thinking.insert_done_note(&note_id, "thinking", text).ok();
+        }));
+        let mut stream_iter = stream_infer_with_on_text::<_, Action>(&channel, &request, on_text, on_input, cancel_signal, on_thinking).await
             .map_err(|e| {
                 let (backoff, rotation) = self.set_inference_backoff();
                 anyhow::anyhow!(
@@ -1050,7 +1057,7 @@ impl Alice {
         // Handle inference result
         if let Some(e) = inference_error {
             // Preamble errors (format errors) should not trigger channel rotation
-            if e.contains("Unexpected content before first") {
+            if e.contains("FORMAT VIOLATION") {
                 warn!(
                     "[PREAMBLE-{}] LLM output preamble before first action, recording as inference error",
                     self.instance.id
@@ -1192,7 +1199,7 @@ pub async fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
     } else {
         None
     };
-    let results = infer_with_on_text::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request, on_text, on_input, None).await
+    let results = infer_with_on_text::<_, crate::inference::capture::CaptureOutput>(&channel, &task.request, on_text, on_input, None, None).await
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no capture output"))?;
@@ -1249,7 +1256,7 @@ pub async fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
     } else {
         None
     };
-    let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &task.request, on_text, on_input, None).await
+    let results = infer_with_on_text::<_, crate::inference::compress::CompressOutput>(&channel, &task.request, on_text, on_input, None, None).await
         .map_err(|e| anyhow::anyhow!(e))?;
     let output = results.into_iter().next()
         .ok_or_else(|| anyhow::anyhow!("LLM returned no compress output"))?;
@@ -1391,7 +1398,7 @@ mod tests {
     fn test_sequence_guard_normal_allows_all() {
         let mut guard = SequenceGuard::new("test");
         assert_eq!(
-            guard.check(&Action::Thinking {
+            guard.check(&Action::Summary {
                 content: "hi".into()
             }),
             SequenceVerdict::Allow
@@ -1463,7 +1470,7 @@ mod tests {
             content: "echo hi".into(),
         };
         assert_eq!(guard.check(&script), SequenceVerdict::Allow);
-        match guard.check(&Action::Thinking {
+        match guard.check(&Action::Summary {
             content: "hmm".into(),
         }) {
             SequenceVerdict::Reject(_) => {}
@@ -1475,7 +1482,7 @@ mod tests {
     fn test_sequence_guard_nonblocking_chain() {
         let mut guard = SequenceGuard::new("test");
         assert_eq!(
-            guard.check(&Action::Thinking {
+            guard.check(&Action::Summary {
                 content: "a".into()
             }),
             SequenceVerdict::Allow
@@ -1500,7 +1507,7 @@ mod tests {
     fn test_sequence_guard_bab_pattern() {
         let mut guard = SequenceGuard::new("test");
         assert_eq!(
-            guard.check(&Action::Thinking {
+            guard.check(&Action::Summary {
                 content: "plan".into()
             }),
             SequenceVerdict::Allow
@@ -1511,7 +1518,7 @@ mod tests {
             }),
             SequenceVerdict::Allow
         );
-        match guard.check(&Action::Thinking {
+        match guard.check(&Action::Summary {
             content: "reflect".into(),
         }) {
             SequenceVerdict::Reject(_) => {}
@@ -1525,7 +1532,7 @@ mod tests {
         assert!(Action::ReadMsg.is_blocking());
 
         assert!(!Action::Idle { timeout_secs: None }.is_blocking());
-        assert!(!Action::Thinking { content: "".into() }.is_blocking());
+        assert!(!Action::Summary { content: "".into() }.is_blocking());
         assert!(!Action::SendMsg {
             recipient: "".into(),
             content: "".into()
