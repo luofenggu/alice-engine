@@ -333,7 +333,7 @@ impl<T: FromMarkdown> StreamInfer<T> {
                             separator, display
                         )));
                     }
-                    if let Some(think_end) = self.buffer.find("</think>") {
+                    if let Some(think_end) = find_line_match(&self.buffer, "</think>") {
                         // Complete thinking block found
                         let thinking_content = self.buffer[think_start + 7..think_end].trim().to_string();
                         if !thinking_content.is_empty() {
