@@ -124,7 +124,7 @@ async fn test_infer_single_action() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let response = format!(
-                "SimpleAction-{t}\nreply\n你好！我收到了你的消息。\nSimpleAction-end-{t}",
+                "SimpleAction-{t}\nreply\ncontent-{t}\n你好！我收到了你的消息。\nSimpleAction-end-{t}",
                 t = token
             );
             Ok(mock_channel_rx(vec![response]))
@@ -151,7 +151,7 @@ async fn test_infer_multiple_actions() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let response = format!(
-                "SimpleAction-{t}\nthink\n让我想想...\nSimpleAction-{t}\nreply\n答案是42。\nSimpleAction-{t}\nidle\nSimpleAction-end-{t}",
+                "SimpleAction-{t}\nthink\ncontent-{t}\n让我想想...\nSimpleAction-{t}\nreply\ncontent-{t}\n答案是42。\nSimpleAction-{t}\nidle\nSimpleAction-end-{t}",
                 t = token
             );
             Ok(mock_channel_rx(vec![response]))
@@ -209,7 +209,7 @@ async fn test_infer_option_field() {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let response = if self.with_value {
                 format!(
-                    "SimpleAction-{t}\nwait\n120\nSimpleAction-end-{t}",
+                    "SimpleAction-{t}\nwait\nseconds-{t}\n120\nSimpleAction-end-{t}",
                     t = token
                 )
             } else {
@@ -244,7 +244,7 @@ async fn test_infer_streaming_chunks() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let full = format!(
-                "SimpleAction-{t}\nreply\nHello World!\nSimpleAction-end-{t}",
+                "SimpleAction-{t}\nreply\ncontent-{t}\nHello World!\nSimpleAction-end-{t}",
                 t = token
             );
             let chunks: Vec<String> = full.chars()
@@ -390,6 +390,7 @@ async fn test_infer_with_on_text_receives_chunks() {
             let chunks = vec![
                 format!("SimpleAction-{}\n", token),
                 "reply\n".to_string(),
+                format!("content-{}\n", token),
                 "on_text测试\n".to_string(),
                 format!("SimpleAction-end-{}\n", token),
             ];
@@ -421,11 +422,12 @@ async fn test_infer_with_on_text_receives_chunks() {
 
     // Verify callback received all 4 chunks
     let chunks = collected.lock().unwrap();
-    assert_eq!(chunks.len(), 4);
+    assert_eq!(chunks.len(), 5);
     assert!(chunks[0].starts_with("SimpleAction-"));
     assert_eq!(chunks[1], "reply\n");
-    assert_eq!(chunks[2], "on_text测试\n");
-    assert!(chunks[3].starts_with("SimpleAction-end-"));
+    assert!(chunks[2].starts_with("content-"));
+    assert_eq!(chunks[3], "on_text测试\n");
+    assert!(chunks[4].starts_with("SimpleAction-end-"));
 }
 
 #[tokio::test]
@@ -436,7 +438,7 @@ async fn test_infer_with_on_text_none_equivalent() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token_from_prompt(&prompt, "SimpleAction");
             let response = format!(
-                "SimpleAction-{t}\nreply\n无回调infer\nSimpleAction-end-{t}\n",
+                "SimpleAction-{t}\nreply\ncontent-{t}\n无回调infer\nSimpleAction-end-{t}\n",
                 t = token
             );
             Ok(mock_channel_rx(vec![response]))

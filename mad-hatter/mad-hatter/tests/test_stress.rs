@@ -95,7 +95,7 @@ fn test_idle_roundtrip() {
 fn test_idle_with_param_some() {
     let token = "abc123";
     let input = format!(
-        "Action-{t}\nidle_with_param\n120\nAction-end-{t}",
+        "Action-{t}\nidle_with_param\nseconds-{t}\n120\nAction-end-{t}",
         t = token
     );
     let result = Action::from_markdown(&input, token).unwrap();
@@ -118,7 +118,7 @@ fn test_thinking_roundtrip() {
     let token = "abc123";
     let content = "这是一段思考内容。\n\n包含空行。\n还有更多内容。";
     let input = format!(
-        "Action-{t}\nthinking\n{c}\nAction-end-{t}",
+        "Action-{t}\nthinking\ncontent-{t}\n{c}\nAction-end-{t}",
         t = token, c = content
     );
     let result = Action::from_markdown(&input, token).unwrap();
@@ -130,7 +130,7 @@ fn test_script_with_code_block() {
     let token = "abc123";
     let content = "#!/bin/bash\necho \"hello\"\n\n```\nsome nested code\n```\necho done";
     let input = format!(
-        "Action-{t}\nscript\n{c}\nAction-end-{t}",
+        "Action-{t}\nscript\ncontent-{t}\n{c}\nAction-end-{t}",
         t = token, c = content
     );
     let result = Action::from_markdown(&input, token).unwrap();
@@ -142,7 +142,7 @@ fn test_summary_roundtrip() {
     let token = "abc123";
     let content = "## 对话小结\n\n### 已完成\n- 任务A\n- 任务B";
     let input = format!(
-        "Action-{t}\nsummary\n{c}\nAction-end-{t}",
+        "Action-{t}\nsummary\ncontent-{t}\n{c}\nAction-end-{t}",
         t = token, c = content
     );
     let result = Action::from_markdown(&input, token).unwrap();
@@ -235,7 +235,7 @@ fn test_distill_roundtrip() {
 fn test_set_profile_roundtrip() {
     let token = "abc123";
     let input = format!(
-        "Action-{t}\nset_profile\nname: 四号\ncolor: #FF6B6B\nAction-end-{t}",
+        "Action-{t}\nset_profile\nsettings-{t}\nname: 四号\ncolor: #FF6B6B\nAction-end-{t}",
         t = token
     );
     let result = Action::from_markdown(&input, token).unwrap();
@@ -266,7 +266,7 @@ fn test_create_instance_roundtrip() {
 fn test_multi_action_mixed() {
     let token = "abc123";
     let input = format!(
-        "Action-{t}\nthinking\n分析问题...\nAction-{t}\nsend_msg\nrecipient-{t}\nuser\ncontent-{t}\n你好\nAction-{t}\nscript\necho hello\nAction-{t}\nidle\nAction-end-{t}",
+        "Action-{t}\nthinking\ncontent-{t}\n分析问题...\nAction-{t}\nsend_msg\nrecipient-{t}\nuser\ncontent-{t}\n你好\nAction-{t}\nscript\ncontent-{t}\necho hello\nAction-{t}\nidle\nAction-end-{t}",
         t = token
     );
     let result = Action::from_markdown(&input, token).unwrap();
@@ -286,7 +286,7 @@ fn test_content_with_empty_lines() {
     let token = "abc123";
     let content = "第一段\n\n\n第二段\n\n第三段";
     let input = format!(
-        "Action-{t}\nthinking\n{c}\nAction-end-{t}",
+        "Action-{t}\nthinking\ncontent-{t}\n{c}\nAction-end-{t}",
         t = token, c = content
     );
     let result = Action::from_markdown(&input, token).unwrap();
@@ -298,7 +298,7 @@ fn test_content_with_code_blocks() {
     let token = "abc123";
     let content = "执行以下脚本：\n```bash\n#!/bin/bash\nfor i in 1 2 3; do\n  echo $i\ndone\n```\n完成。";
     let input = format!(
-        "Action-{t}\nscript\n{c}\nAction-end-{t}",
+        "Action-{t}\nscript\ncontent-{t}\n{c}\nAction-end-{t}",
         t = token, c = content
     );
     let result = Action::from_markdown(&input, token).unwrap();
@@ -309,7 +309,7 @@ fn test_content_with_code_blocks() {
 fn test_missing_end_marker() {
     let token = "abc123";
     let input = format!(
-        "Action-{t}\nthinking\n一些内容",
+        "Action-{t}\nthinking\ncontent-{t}\n一些内容",
         t = token
     );
     let result = Action::from_markdown(&input, token);

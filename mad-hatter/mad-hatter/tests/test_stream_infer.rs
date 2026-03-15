@@ -65,9 +65,11 @@ async fn test_stream_infer_yields_elements_one_by_one() {
             let chunks = vec![
                 format!("StreamAction-{}\n", token),
                 "think\n".to_string(),
+                format!("content-{}\n", token),
                 "正在思考...\n".to_string(),
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
+                format!("content-{}\n", token),
                 "回答完毕。\n".to_string(),
                 format!("StreamAction-{}\n", token),
                 "idle\n".to_string(),
@@ -99,7 +101,7 @@ async fn test_stream_infer_single_chunk() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!(
-                "StreamAction-{t}\nthink\n深度思考中\nStreamAction-{t}\nreply\n最终答案\nStreamAction-end-{t}",
+                "StreamAction-{t}\nthink\ncontent-{t}\n深度思考中\nStreamAction-{t}\nreply\ncontent-{t}\n最终答案\nStreamAction-end-{t}",
                 t = token
             );
             Ok(mock_channel_rx(vec![response]))
@@ -126,7 +128,7 @@ async fn test_stream_infer_missing_end_marker() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!(
-                "StreamAction-{t}\nthink\n被截断了",
+                "StreamAction-{t}\nthink\ncontent-{t}\n被截断了",
                 t = token
             );
             Ok(mock_channel_rx(vec![response]))
@@ -194,7 +196,7 @@ async fn test_stream_infer_gradual_chunks() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let full = format!(
-                "StreamAction-{t}\nreply\nHello World\nStreamAction-end-{t}",
+                "StreamAction-{t}\nreply\ncontent-{t}\nHello World\nStreamAction-end-{t}",
                 t = token
             );
             // Split into 2-char chunks
@@ -249,7 +251,7 @@ async fn test_stream_infer_with_code_block_wrapper() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!(
-                "```\nStreamAction-{t}\nreply\n代码块内的回复\nStreamAction-end-{t}\n```",
+                "```\nStreamAction-{t}\nreply\ncontent-{t}\n代码块内的回复\nStreamAction-end-{t}\n```",
                 t = token
             );
             Ok(mock_channel_rx(vec![response]))
@@ -279,6 +281,7 @@ async fn test_stream_infer_on_text_receives_all_chunks() {
             let chunks = vec![
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
+                format!("content-{}\n", token),
                 "回调测试内容\n".to_string(),
                 format!("StreamAction-end-{}\n", token),
             ];
@@ -313,11 +316,12 @@ async fn test_stream_infer_on_text_receives_all_chunks() {
 
     // Verify callback received all 4 chunks
     let chunks = collected.lock().unwrap();
-    assert_eq!(chunks.len(), 4);
+    assert_eq!(chunks.len(), 5);
     assert!(chunks[0].starts_with("StreamAction-"));
     assert_eq!(chunks[1], "reply\n");
-    assert_eq!(chunks[2], "回调测试内容\n");
-    assert!(chunks[3].starts_with("StreamAction-end-"));
+    assert!(chunks[2].starts_with("content-"));
+    assert_eq!(chunks[3], "回调测试内容\n");
+    assert!(chunks[4].starts_with("StreamAction-end-"));
 }
 
 #[tokio::test]
@@ -329,7 +333,7 @@ async fn test_stream_infer_on_text_none_equivalent() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let response = format!(
-                "StreamAction-{t}\nreply\n无回调\nStreamAction-end-{t}\n",
+                "StreamAction-{t}\nreply\ncontent-{t}\n无回调\nStreamAction-end-{t}\n",
                 t = token
             );
             Ok(mock_channel_rx(vec![response]))
@@ -468,12 +472,15 @@ async fn test_stream_infer_cancel_mid_stream() {
             let chunks = vec![
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
+                format!("content-{}\n", token),
                 "first action\n".to_string(),
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
+                format!("content-{}\n", token),
                 "second action\n".to_string(),
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
+                format!("content-{}\n", token),
                 "third action\n".to_string(),
                 format!("StreamAction-end-{}\n", token),
             ];
@@ -516,7 +523,7 @@ async fn test_stream_infer_cancel_none_no_effect() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             Ok(mock_channel_rx(vec![
-                format!("StreamAction-{}\nreply\nworks\nStreamAction-end-{}\n", token, token),
+                format!("StreamAction-{}\nreply\ncontent-{}\nworks\nStreamAction-end-{}\n", token, token, token),
             ]))
         }
     }
@@ -547,7 +554,7 @@ async fn test_stream_infer_cancel_before_start() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             Ok(mock_channel_rx(vec![
-                format!("StreamAction-{}\nreply\nshould not see\nStreamAction-end-{}\n", token, token),
+                format!("StreamAction-{}\nreply\ncontent-{}\nshould not see\nStreamAction-end-{}\n", token, token, token),
             ]))
         }
     }
@@ -584,6 +591,7 @@ async fn test_stream_thinking_then_action() {
 format!("<think-{}>\nI need to think about this carefully.\n</think-{}>\n", token, token),
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
+                format!("content-{}\n", token),
                 "hello world\n".to_string(),
                 format!("StreamAction-end-{}\n", token),
             ];
@@ -666,6 +674,7 @@ async fn test_stream_thinking_with_leading_whitespace() {
 format!("<think-{}>\nthinking with leading whitespace\n</think-{}>\n", token, token),
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
+                format!("content-{}\n", token),
                 "result\n".to_string(),
                 format!("StreamAction-end-{}\n", token),
             ];
@@ -717,6 +726,7 @@ async fn test_stream_thinking_gradual_chunks() {
                 format!("Line 2\n{}\n", think_close),
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
+                format!("content-{}\n", token),
                 "done\n".to_string(),
                 format!("StreamAction-end-{}\n", token),
             ];

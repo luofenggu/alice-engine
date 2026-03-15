@@ -988,33 +988,6 @@ fn gen_schema_markdown(enum_name_str: &str, variants: &[VariantInfo]) -> TokenSt
                     doc = #doc, ename = #enum_name_str, token = token, snake = #snake
                 ));
             });
-        } else if total == 1 && option_fields.len() == 1 {
-            let fdoc = &option_fields[0].doc;
-            variant_schemas.push(quote! {
-                __out.push_str(&::std::format!(
-                    "{doc}\n{ename}-{token}\n{snake}\n{fdoc}（可选）\n",
-                    doc = #doc, ename = #enum_name_str, token = token, snake = #snake, fdoc = #fdoc
-                ));
-            });
-        } else if total == 1 && required_fields.len() == 1 {
-            let f = &required_fields[0];
-            let fdoc = &f.doc;
-            if f.is_vec {
-                let vec_type = &f.vec_inner_type;
-                variant_schemas.push(quote! {
-                    __out.push_str(&::std::format!(
-                        "{doc}\n{ename}-{token}\n{snake}\n{fdoc}（包含嵌套{vtype}元素）\n",
-                        doc = #doc, ename = #enum_name_str, token = token, snake = #snake, fdoc = #fdoc, vtype = #vec_type
-                    ));
-                });
-            } else {
-                variant_schemas.push(quote! {
-                    __out.push_str(&::std::format!(
-                        "{doc}\n{ename}-{token}\n{snake}\n{fdoc}（多行）\n",
-                        doc = #doc, ename = #enum_name_str, token = token, snake = #snake, fdoc = #fdoc
-                    ));
-                });
-            }
         } else {
             let mut field_lines = Vec::new();
             for f in &vi.fields {
@@ -1082,73 +1055,6 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                     __results.push(#enum_name::#variant_ident);
                 }
             });
-        } else if field_count == 1 {
-            let f = &vi.fields[0];
-            let field_ident = syn::Ident::new(&f.name, proc_macro2::Span::call_site());
-
-            if f.is_option {
-                let inner = &f.inner_type;
-                let fname_str = &f.name;
-                if is_numeric_inner_type(inner) {
-                    match_arms.push(quote! {
-                        #snake => {
-                            let __val_str = __body.trim();
-                            let __opt = if __val_str.is_empty() {
-                                ::std::option::Option::None
-                            } else {
-                                match __val_str.parse() {
-                                    Ok(v) => ::std::option::Option::Some(v),
-                                    Err(e) => return ::std::result::Result::Err(
-                                        ::std::format!("[{}] Failed to parse optional field '{}' of variant '{}': {}", #enum_name_str, #fname_str, #snake, e)
-                                    ),
-                                }
-                            };
-                            __results.push(#enum_name::#variant_ident { #field_ident: __opt });
-                        }
-                    });
-                } else {
-                    match_arms.push(quote! {
-                        #snake => {
-                            let __val_str = __body.trim();
-                            let __opt = if __val_str.is_empty() {
-                                ::std::option::Option::None
-                            } else {
-                                ::std::option::Option::Some(__val_str.to_string())
-                            };
-                            __results.push(#enum_name::#variant_ident { #field_ident: __opt });
-                        }
-                    });
-                }
-            } else if f.is_vec {
-                let vec_inner_ty = f.vec_inner_syn_type.as_ref().unwrap();
-                match_arms.push(quote! {
-                    #snake => {
-                        let __vec_items = <#vec_inner_ty as ::mad_hatter::llm::FromMarkdown>::from_markdown(__body, token)?;
-                        __results.push(#enum_name::#variant_ident { #field_ident: __vec_items });
-                    }
-                });
-            } else {
-                let fname_str = &f.name;
-                if f.is_required {
-                    match_arms.push(quote! {
-                        #snake => {
-                            let __val = __body.trim_end().to_string();
-                            if __val.trim().is_empty() {
-                                return ::std::result::Result::Err(
-                                    ::std::format!("[{}] Required field '{}' of variant '{}' is empty", #enum_name_str, #fname_str, #snake)
-                                );
-                            }
-                            __results.push(#enum_name::#variant_ident { #field_ident: __val });
-                        }
-                    });
-                } else {
-                    match_arms.push(quote! {
-                        #snake => {
-                            __results.push(#enum_name::#variant_ident { #field_ident: __body.trim_end().to_string() });
-                        }
-                    });
-                }
-            }
         } else {
             let multi_parse = gen_multi_field_parse(enum_name, enum_name_str, vi);
             match_arms.push(quote! {

@@ -55,7 +55,7 @@ struct Config {
 fn test_strip_code_block_bare() {
     let token = "tk1";
     let inner = format!(
-        "SimpleAction-{token}\nthinking\nHello world\nSimpleAction-end-{token}"
+        "SimpleAction-{token}\nthinking\ncontent-{token}\nHello world\nSimpleAction-end-{token}"
     );
     // Wrap in bare ```
     let input = format!("```\n{inner}\n```");
@@ -88,7 +88,7 @@ fn test_strip_code_block_with_language() {
 fn test_strip_code_block_no_wrap() {
     let token = "tk3";
     let input = format!(
-        "SimpleAction-{token}\nthinking\nNo wrap here\nSimpleAction-end-{token}"
+        "SimpleAction-{token}\nthinking\ncontent-{token}\nNo wrap here\nSimpleAction-end-{token}"
     );
 
     let result = SimpleAction::from_markdown(&input, token).unwrap();
@@ -105,7 +105,7 @@ fn test_strip_code_block_no_wrap() {
 fn test_strip_code_block_multi_action() {
     let token = "tk4";
     let inner = format!(
-        "SimpleAction-{token}\nthinking\nFirst\nSimpleAction-{token}\nidle\nSimpleAction-end-{token}"
+        "SimpleAction-{token}\nthinking\ncontent-{token}\nFirst\nSimpleAction-{token}\nidle\nSimpleAction-end-{token}"
     );
     let input = format!("```\n{inner}\n```");
 

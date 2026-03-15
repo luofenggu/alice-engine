@@ -80,7 +80,7 @@ fn test_zero_field_parse() {
 
 #[test]
 fn test_one_field_parse() {
-    let input = "TestAction-abc123\nthinking\n这是思考内容\n可以多行\nTestAction-end-abc123";
+    let input = "TestAction-abc123\nthinking\ncontent-abc123\n这是思考内容\n可以多行\nTestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], TestAction::Thinking {
@@ -90,7 +90,7 @@ fn test_one_field_parse() {
 
 #[test]
 fn test_option_field_with_value() {
-    let input = "TestAction-abc123\nidle\n120\nTestAction-end-abc123";
+    let input = "TestAction-abc123\nidle\ntimeout_secs-abc123\n120\nTestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], TestAction::Idle {
@@ -153,6 +153,7 @@ fn test_multi_action_parse() {
     let input = "\
 TestAction-abc123
 thinking
+content-abc123
 这是思考
 
 TestAction-abc123
@@ -164,6 +165,7 @@ content-abc123
 
 TestAction-abc123
 idle
+timeout_secs-abc123
 120
 TestAction-end-abc123";
     let result = TestAction::from_markdown(input, "abc123").unwrap();
@@ -205,6 +207,7 @@ fn test_end_marker_missing_multi_action() {
     let input = "\
 TestAction-abc123
 thinking
+content-abc123
 some thought
 
 TestAction-abc123
@@ -224,6 +227,7 @@ read_msg
 
 TestAction-test42
 thinking
+content-test42
 一段思考内容
 
 TestAction-test42

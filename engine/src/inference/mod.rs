@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_parse_idle_with_timeout() {
-        let raw = format!("{}\nidle\n120\n{}", sep(), end());
+        let raw = format!("{}\nidle\ntimeout_secs-{}\n120\n{}", sep(), TOKEN, end());
         let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_parse_idle_with_invalid_timeout() {
-        let raw = format!("{}\nidle\nabc\n{}", sep(), end());
+        let raw = format!("{}\nidle\ntimeout_secs-{}\nabc\n{}", sep(), TOKEN, end());
         // FromMarkdown will fail to parse "abc" as u64, resulting in parse error
         let result = parse_actions(&raw, TOKEN);
         assert!(result.is_err(), "Invalid timeout should cause parse error");
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_parse_script() {
-        let raw = format!("{}\nscript\necho hello\nls -la\n{}", sep(), end());
+        let raw = format!("{}\nscript\ncontent-{}\necho hello\nls -la\n{}", sep(), TOKEN, end());
         let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
@@ -534,8 +534,8 @@ mod tests {
     #[test]
     fn test_parse_summary() {
         let raw = format!(
-            "{}\nsummary\nAlice读了代码，修改了配置文件。\n{}",
-            sep(), end()
+            "{}\nsummary\ncontent-{}\nAlice读了代码，修改了配置文件。\n{}",
+            sep(), TOKEN, end()
         );
         let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
@@ -550,8 +550,8 @@ mod tests {
     #[test]
     fn test_parse_multiple_actions() {
         let raw = format!(
-            "{}\nscript\necho planning\n{}\nscript\necho test\n{}\nidle\n{}",
-            sep(), sep(), sep(), end()
+            "{}\nscript\ncontent-{}\necho planning\n{}\nscript\ncontent-{}\necho test\n{}\nidle\n{}",
+            sep(), TOKEN, sep(), TOKEN, sep(), end()
         );
         let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 3);
@@ -684,8 +684,8 @@ mod tests {
     #[test]
     fn test_parse_set_profile() {
         let raw = format!(
-            "{}\nset_profile\nname: TestBot\ncolor: #FF0000\n{}",
-            sep(), end()
+            "{}\nset_profile\ncontent-{}\nname: TestBot\ncolor: #FF0000\n{}",
+            sep(), TOKEN, end()
         );
         let actions = parse_actions(&raw, TOKEN).unwrap();
         assert_eq!(actions.len(), 1);
@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_parse_single_action_chunk() {
-        let body = "idle\n120";
+        let body = &format!("idle\ntimeout_secs-{}\n120", TOKEN);
         let actions = parse_single_action_chunk(body, TOKEN);
         assert_eq!(actions.len(), 1);
         match &actions[0] {
