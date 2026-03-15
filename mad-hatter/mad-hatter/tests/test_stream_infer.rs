@@ -581,7 +581,7 @@ async fn test_stream_thinking_then_action() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let chunks = vec![
-                "<think>\nI need to think about this carefully.\n</think>\n".to_string(),
+format!("<think-{}>\nI need to think about this carefully.\n</think-{}>\n", token, token),
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
                 "hello world\n".to_string(),
@@ -626,7 +626,7 @@ async fn test_stream_thinking_no_callback() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             let chunks = vec![
-                "<think>\nSome internal reasoning\n</think>\n".to_string(),
+format!("<think-{}>\nSome internal reasoning\n</think-{}>\n", token, token),
                 format!("StreamAction-{}\n", token),
                 "idle\n".to_string(),
                 format!("StreamAction-end-{}\n", token),
@@ -663,7 +663,7 @@ async fn test_stream_thinking_with_leading_whitespace() {
             let token = extract_token(&prompt, "StreamAction");
             let chunks = vec![
                 "\n\n".to_string(),
-                "<think>\nthinking with leading whitespace\n</think>\n".to_string(),
+format!("<think-{}>\nthinking with leading whitespace\n</think-{}>\n", token, token),
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
                 "result\n".to_string(),
@@ -708,11 +708,13 @@ async fn test_stream_thinking_gradual_chunks() {
         fn start_stream(&self, prompt: String) -> Result<UnboundedReceiver<String>, String> {
             let token = extract_token(&prompt, "StreamAction");
             // Thinking arrives in small chunks
-            let chunks = vec![
-                "<thi".to_string(),
-                "nk>\nLine 1\n".to_string(),
-                "Line 2\n</th".to_string(),
-                "ink>\n".to_string(),
+            let think_open = format!("<think-{}>", token);
+                let think_close = format!("</think-{}>", token);
+                let mid = think_open.len() / 2;
+                let chunks = vec![
+                think_open[..mid].to_string(),
+                format!("{}\nLine 1\n", &think_open[mid..]),
+                format!("Line 2\n{}\n", think_close),
                 format!("StreamAction-{}\n", token),
                 "reply\n".to_string(),
                 "done\n".to_string(),

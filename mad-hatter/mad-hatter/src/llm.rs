@@ -216,9 +216,10 @@ fn build_prompt<Req: ToMarkdown, Resp: FromMarkdown>(request: &Req, token: &str)
     let request_text = request.to_markdown();
     let schema = Resp::schema_markdown(token);
     format!(
-        "{}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{}\n\n如果你需要在输出前思考，可以使用 <think>...</think> 标签包裹你的思考过程。思考内容是可选的，思考结束后必须严格按照上面的格式输出。示例：\n<think>\n分析一下这个问题...\n</think>\n（然后直接按格式输出）",
-        request_text,
-        schema
+        "{request}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{schema}\n\n如果你需要在输出前思考，可以使用 <think-{token}>...</think-{token}> 标签包裹你的思考过程。思考内容是可选的，思考结束后必须严格按照上面的格式输出。示例：\n<think-{token}>\n分析一下这个问题...\n</think-{token}>\n（然后直接按格式输出）",
+        request = request_text,
+        schema = schema,
+        token = token,
     )
 }
 
@@ -319,13 +320,15 @@ impl<T: FromMarkdown> StreamInfer<T> {
                 }
             }
 
-            // Thinking detection: before preamble check, handle <think>...</think>
+            // Thinking detection: before preamble check, handle <think-{token}>...</think-{token}>
             if self.parsed_count == 0 && !self.thinking_done {
-                if let Some(think_start) = self.buffer.find("<think>") {
-                    // Check that content before <think> is only whitespace
+                let think_open = format!("<think-{}>", self.token);
+                let think_close = format!("</think-{}>", self.token);
+                if let Some(think_start) = self.buffer.find(&think_open) {
+                    // Check that content before thinking tag is only whitespace
                     let before_think = self.buffer[..think_start].trim();
                     if !before_think.is_empty() {
-                        // Non-empty content before <think> = preamble
+                        // Non-empty content before thinking tag = preamble
                         self.done = true;
                         let display = if before_think.len() > 200 { &before_think[..200] } else { before_think };
                         return Some(Err(format!(
@@ -333,30 +336,30 @@ impl<T: FromMarkdown> StreamInfer<T> {
                             separator, display
                         )));
                     }
-                    if let Some(think_end) = find_line_match(&self.buffer, "</think>") {
+                    if let Some(think_end) = find_line_match(&self.buffer, &think_close) {
                         // Complete thinking block found
-                        let thinking_content = self.buffer[think_start + 7..think_end].trim().to_string();
+                        let thinking_content = self.buffer[think_start + think_open.len()..think_end].trim().to_string();
                         if !thinking_content.is_empty() {
                             if let Some(ref mut cb) = self.on_thinking {
                                 cb(&thinking_content);
                             }
                         }
                         // Remove thinking block from buffer
-                        self.buffer = self.buffer[think_end + 8..].to_string();
+                        self.buffer = self.buffer[think_end + think_close.len()..].to_string();
                         self.thinking_done = true;
                         continue;
                     } else {
-                        // <think> found but no </think> yet — need more data, skip preamble check
+                        // Thinking open tag found but no close tag yet — need more data, skip preamble check
                         // Fall through to receiver read below
                     }
                 } else {
-                    // No <think> tag found yet
-                    // If buffer could be a partial <think> prefix, wait for more data
+                    // No thinking open tag found yet
+                    // If buffer could be a partial thinking tag prefix, wait for more data
                     let trimmed = self.buffer.trim();
-                    if !trimmed.is_empty() && !"<think>".starts_with(trimmed) {
+                    if !trimmed.is_empty() && !think_open.starts_with(trimmed) {
                         self.thinking_done = true;
                     }
-                    // Otherwise buffer is empty/whitespace or partial <think> prefix — need more data
+                    // Otherwise buffer is empty/whitespace or partial thinking tag prefix — need more data
                 }
             }
 
