@@ -1735,7 +1735,12 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
             if let Meta::NameValue(nv) = &attr.meta {
                 if let syn::Expr::Lit(expr_lit) = &nv.value {
                     if let Lit::Str(s) = &expr_lit.lit {
-                        docs.push(s.value().trim().to_string());
+                        let trimmed = s.value().trim().to_string();
+                        if let Some(rest) = trimmed.strip_prefix("@render ") {
+                            docs.push(rest.to_string());
+                        } else if trimmed == "@render" {
+                            docs.push(String::new());
+                        }
                     }
                 }
             }

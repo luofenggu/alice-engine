@@ -6,19 +6,19 @@
 //! End-marker protection is handled automatically by the mad-hatter framework.
 
 
-/// 你是一位小说作家。请将下列内容浓缩为一篇短篇随笔，纪念一个agent和它的用户之间的故事，供agent回忆与用户之间的经历。用第二人称（你）叙述。重要的准则和术语用 > 引用标记。
+/// @render 你是一位小说作家。请将下列内容浓缩为一篇短篇随笔，纪念一个agent和它的用户之间的故事，供agent回忆与用户之间的经历。用第二人称（你）叙述。重要的准则和术语用 > 引用标记。
 #[derive(mad_hatter::ToMarkdown)]
 pub struct CompressRequest {
-    /// 压缩要求
+    /// @render 压缩要求
     pub requirement: String,
-    /// 待压缩内容
+    /// @render 待压缩内容
     pub content: String,
 }
 
 /// 压缩结果
 #[derive(mad_hatter::FromMarkdown)]
 pub struct CompressOutput {
-    /// 随笔
+    /// @render 随笔
     #[markdown(required)]
     pub summary: String,
 }

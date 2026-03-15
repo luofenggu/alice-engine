@@ -145,51 +145,51 @@ pub struct SessionBlock {
 
 #[derive(ToMarkdown)]
 pub struct EnvironmentInfo {
-    /// 你是
+    /// @render 你是
     pub identity: String,
-    /// 可联系的其他实例
+    /// @render 可联系的其他实例
     pub contacts: Option<String>,
-    /// 脚本环境
+    /// @render 脚本环境
     pub shell_env: String,
-    /// 公网地址
+    /// @render 公网地址
     pub host: Option<String>,
 }
 
 #[derive(ToMarkdown)]
 pub struct StatusInfo {
-    /// 现在时刻
+    /// @render 现在时刻
     pub current_time: String,
-    /// 系统启动时刻
+    /// @render 系统启动时刻
     pub start_time: String,
-    /// 收件箱未读来信
+    /// @render 收件箱未读来信
     pub unread: String,
-    /// 实例名
+    /// @render 实例名
     pub instance_name: String,
-    /// 记忆用量
+    /// @render 记忆用量
     pub memory_usage: String,
 }
 
-/// 你醒了，你发现自己身处一个密闭房间，桌子上摆放着几样东西。
-/// 收件箱：你可以在此收到来信
-/// 寄件箱：你可以在此寄出信件
-/// 工作目录：你可以在此读写文件、执行脚本以完成任务
+/// @render 你醒了，你发现自己身处一个密闭房间，桌子上摆放着几样东西。
+/// @render 收件箱：你可以在此收到来信
+/// @render 寄件箱：你可以在此寄出信件
+/// @render 工作目录：你可以在此读写文件、执行脚本以完成任务
 #[derive(ToMarkdown)]
 pub struct BeatRequest {
-    /// skill
+    /// @render skill
     pub skill: String,
-    /// extra_skill
+    /// @render extra_skill
     pub extra_skill: String,
-    /// 知识
+    /// @render 知识
     pub knowledge: String,
-    /// 经历
+    /// @render 经历
     pub history: String,
-    /// 近况
+    /// @render 近况
     pub sessions: Vec<SessionBlock>,
-    /// 环境信息
+    /// @render 环境信息
     pub environment: EnvironmentInfo,
-    /// current
+    /// @render current
     pub current: String,
-    /// 当前状态
+    /// @render 当前状态
     pub status: StatusInfo,
 }
 

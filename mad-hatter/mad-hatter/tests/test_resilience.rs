@@ -9,41 +9,41 @@ use mad_hatter::llm::FromMarkdown as _;
 // Test types
 // ============================================================
 
-/// Simple enum for strip code block tests
+/// @render Simple enum for strip code block tests
 #[derive(Debug, PartialEq, FromMarkdown)]
 enum SimpleAction {
-    /// 记录思考
+    /// @render 记录思考
     Thinking {
-        /// thinking内容
+        /// @render thinking内容
         content: String,
     },
-    /// 发送消息
+    /// @render 发送消息
     SendMsg {
-        /// 收件人
+        /// @render 收件人
         #[markdown(required)]
         recipient: String,
-        /// 消息内容
+        /// @render 消息内容
         content: String,
     },
-    /// 写入文件
+    /// @render 写入文件
     WriteFile {
-        /// 文件路径
+        /// @render 文件路径
         #[markdown(required)]
         path: String,
-        /// 文件内容
+        /// @render 文件内容
         content: String,
     },
-    /// 空操作
+    /// @render 空操作
     Idle,
 }
 
-/// Struct with required field
+/// @render Struct with required field
 #[derive(Debug, PartialEq, FromMarkdown)]
 struct Config {
-    /// 名称
+    /// @render 名称
     #[markdown(required)]
     name: String,
-    /// 描述（可选）
+    /// @render 描述（可选）
     description: String,
 }
 

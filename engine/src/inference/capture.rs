@@ -201,10 +201,10 @@ impl ToMarkdown for CaptureRequest {
 
 impl StructInput for CaptureRequest {}
 
-/// 知识捕获结果
+/// @render 知识捕获结果
 #[derive(mad_hatter::FromMarkdown)]
 pub struct CaptureOutput {
-    /// 知识文件
+    /// @render 知识文件
     #[markdown(required)]
     pub knowledge: String,
 }

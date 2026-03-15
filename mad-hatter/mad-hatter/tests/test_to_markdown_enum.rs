@@ -27,11 +27,11 @@ enum SingleFieldAction {
 #[derive(ToMarkdown)]
 enum MultiFieldAction {
     Script {
-        /// Standard output
+        /// @render Standard output
         stdout: String,
-        /// Exit code
+        /// @render Exit code
         exit_code: i32,
-        /// Truncated
+        /// @render Truncated
         truncated: bool,
     },
 }
@@ -39,7 +39,7 @@ enum MultiFieldAction {
 #[derive(ToMarkdown)]
 enum WithOption {
     Idle {
-        /// Timeout seconds
+        /// @render Timeout seconds
         timeout_secs: Option<u64>,
     },
     Note {
@@ -66,16 +66,16 @@ enum WithSkip {
 
 #[derive(ToMarkdown)]
 struct Inner {
-    /// Name
+    /// @render Name
     name: String,
-    /// Value
+    /// @render Value
     value: u64,
 }
 
 #[derive(ToMarkdown)]
 enum WithNested {
     Complex {
-        /// Description
+        /// @render Description
         desc: String,
         detail: Inner,
     },

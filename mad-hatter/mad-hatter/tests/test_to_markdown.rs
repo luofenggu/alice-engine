@@ -7,18 +7,18 @@ use mad_hatter::llm::ToMarkdown as _;
 
 #[allow(dead_code)]
 #[derive(ToMarkdown)]
-/// 你是一个知识提炼专家。请根据以下信息更新知识文档。
+/// @render 你是一个知识提炼专家。请根据以下信息更新知识文档。
 struct CaptureInput {
     #[markdown(skip)]
     end_marker: String,
 
-    /// 当前知识内容
+    /// @render 当前知识内容
     knowledge: String,
-    /// 近况
+    /// @render 近况
     recent: String,
-    /// 当前增量
+    /// @render 当前增量
     current: String,
-    /// 本次小结
+    /// @render 本次小结
     summary: String,
 }
 
@@ -69,9 +69,9 @@ fn test_all_empty_fields() {
 
 #[derive(ToMarkdown)]
 struct SimpleStruct {
-    /// 名称
+    /// @render 名称
     name: String,
-    /// 描述
+    /// @render 描述
     description: String,
 }
 
@@ -105,18 +105,18 @@ fn test_field_without_doc_uses_field_name() {
 
 #[derive(ToMarkdown)]
 struct Inner {
-    /// 发送者
+    /// @render 发送者
     sender: String,
-    /// 内容
+    /// @render 内容
     content: String,
 }
 
 #[derive(ToMarkdown)]
-/// 顶层结构
+/// @render 顶层结构
 struct Outer {
-    /// 标题
+    /// @render 标题
     title: String,
-    /// 详细信息
+    /// @render 详细信息
     detail: Inner,
 }
 
@@ -151,15 +151,15 @@ fn test_nested_struct() {
 
 #[derive(ToMarkdown)]
 struct Message {
-    /// 发送者标识
+    /// @render 发送者标识
     sender: String,
-    /// 消息内容
+    /// @render 消息内容
     content: String,
 }
 
 #[derive(ToMarkdown)]
 struct Chat {
-    /// 最近的对话消息
+    /// @render 最近的对话消息
     messages: Vec<Message>,
 }
 
@@ -205,11 +205,11 @@ fn test_empty_vec_skipped() {
 
 #[derive(ToMarkdown)]
 struct Status {
-    /// 未读消息数
+    /// @render 未读消息数
     unread_count: usize,
-    /// HTTP端口
+    /// @render HTTP端口
     port: u16,
-    /// 是否在线
+    /// @render 是否在线
     online: bool,
 }
 
@@ -236,9 +236,9 @@ fn test_basic_types() {
 
 #[derive(ToMarkdown)]
 struct Config {
-    /// 超时时间
+    /// @render 超时时间
     timeout: Option<u64>,
-    /// 名称
+    /// @render 名称
     name: Option<String>,
 }
 
@@ -281,7 +281,7 @@ struct PromptMsg {
 #[derive(ToMarkdown)]
 struct SessionEntry {
     messages: Vec<PromptMsg>,
-    /// 小结
+    /// @render 小结
     summary: String,
 }
 
@@ -293,15 +293,15 @@ struct SessionBlock {
 
 #[allow(dead_code)]
 #[derive(ToMarkdown)]
-/// 你醒了
+/// @render 你醒了
 struct BeatRequestMini {
     #[markdown(skip)]
     action_token: String,
-    /// 你的知识
+    /// @render 你的知识
     knowledge: String,
-    /// 近况
+    /// @render 近况
     session_blocks: Vec<SessionBlock>,
-    /// 当前状态
+    /// @render 当前状态
     current: String,
 }
 

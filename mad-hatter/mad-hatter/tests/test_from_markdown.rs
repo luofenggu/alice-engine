@@ -3,36 +3,36 @@ use mad_hatter::llm::FromMarkdown as _;
 
 #[derive(FromMarkdown, Debug, PartialEq)]
 enum TestAction {
-    /// 阅读收件箱
+    /// @render 阅读收件箱
     ReadMsg,
 
-    /// 记录思考
+    /// @render 记录思考
     Thinking {
-        /// 思考内容
+        /// @render 思考内容
         content: String,
     },
 
-    /// 什么都不做
+    /// @render 什么都不做
     Idle {
-        /// 等待秒数
+        /// @render 等待秒数
         timeout_secs: Option<u64>,
     },
 
-    /// 寄出信件
+    /// @render 寄出信件
     SendMsg {
-        /// 收件人
+        /// @render 收件人
         recipient: String,
-        /// 信件内容
+        /// @render 信件内容
         content: String,
     },
 
-    /// 搜索替换文件内容
+    /// @render 搜索替换文件内容
     ReplaceInFile {
-        /// 文件路径
+        /// @render 文件路径
         path: String,
-        /// 搜索文本
+        /// @render 搜索文本
         search: String,
-        /// 替换文本
+        /// @render 替换文本
         replace: String,
     },
 }

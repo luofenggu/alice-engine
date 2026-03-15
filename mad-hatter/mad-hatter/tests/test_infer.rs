@@ -8,36 +8,36 @@ use tokio::sync::mpsc::UnboundedReceiver;
 // ============================================================
 
 #[derive(ToMarkdown)]
-/// 你是一个助手。请根据用户的请求执行操作。
+/// @render 你是一个助手。请根据用户的请求执行操作。
 struct SimpleRequest {
-    /// 用户消息
+    /// @render 用户消息
     message: String,
-    /// 上下文信息
+    /// @render 上下文信息
     context: String,
 }
 
 #[derive(FromMarkdown, PartialEq, Debug)]
 enum SimpleAction {
-    /// 回复用户
+    /// @render 回复用户
     #[allow(dead_code)]
     Reply {
         content: String,
     },
-    /// 什么都不做
+    /// @render 什么都不做
     #[allow(dead_code)]
     Idle,
-    /// 记录思考
+    /// @render 记录思考
     #[allow(dead_code)]
     Think {
         content: String,
     },
-    /// 发送消息
+    /// @render 发送消息
     #[allow(dead_code)]
     SendMsg {
         recipient: String,
         content: String,
     },
-    /// 等待
+    /// @render 等待
     #[allow(dead_code)]
     Wait {
         seconds: Option<u64>,
@@ -77,7 +77,7 @@ fn extract_token_from_prompt(prompt: &str, type_name: &str) -> String {
 // Mock LlmChannel
 // ============================================================
 
-/// Mock channel that captures the prompt for inspection
+/// @render Mock channel that captures the prompt for inspection
 struct CapturingChannel {
     captured_prompt: Mutex<String>,
     response: String,
@@ -103,7 +103,7 @@ impl LlmChannel for CapturingChannel {
     }
 }
 
-/// Mock channel that returns an error
+/// @render Mock channel that returns an error
 struct ErrorChannel;
 
 impl LlmChannel for ErrorChannel {

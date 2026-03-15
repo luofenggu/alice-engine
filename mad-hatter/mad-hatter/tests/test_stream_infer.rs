@@ -5,25 +5,25 @@ use tokio::sync::mpsc::UnboundedReceiver;
 // --- Test types ---
 
 #[derive(ToMarkdown)]
-/// Test request
+/// @render Test request
 struct StreamReq {
-    /// prompt
+    /// @render prompt
     prompt: String,
 }
 
 #[derive(FromMarkdown, PartialEq, Debug)]
 enum StreamAction {
-    /// 思考
+    /// @render 思考
     Think {
-        /// 内容
+        /// @render 内容
         content: String,
     },
-    /// 回复
+    /// @render 回复
     Reply {
-        /// 内容
+        /// @render 内容
         content: String,
     },
-    /// 等待
+    /// @render 等待
     Idle,
 }
 

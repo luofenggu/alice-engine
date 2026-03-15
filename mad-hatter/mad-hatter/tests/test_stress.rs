@@ -17,59 +17,59 @@ struct ReplaceBlock {
 
 #[derive(FromMarkdown, PartialEq, Debug)]
 enum Action {
-    /// 什么都不做
+    /// @render 什么都不做
     Idle,
 
-    /// 等待指定秒数
+    /// @render 等待指定秒数
     IdleWithParam {
         seconds: Option<u16>,
     },
 
-    /// 记录思考
+    /// @render 记录思考
     Thinking {
         content: String,
     },
 
-    /// 执行脚本
+    /// @render 执行脚本
     Script {
         content: String,
     },
 
-    /// 小结
+    /// @render 小结
     Summary {
         content: String,
     },
 
-    /// 寄出信件
+    /// @render 寄出信件
     SendMsg {
         recipient: String,
         content: String,
     },
 
-    /// 写入文件
+    /// @render 写入文件
     WriteFile {
         file_path: String,
         content: String,
     },
 
-    /// 搜索替换
+    /// @render 搜索替换
     ReplaceInFile {
         file_path: String,
         blocks: Vec<ReplaceBlock>,
     },
 
-    /// 提炼
+    /// @render 提炼
     Distill {
         action_id: String,
         summary: String,
     },
 
-    /// 设置个人资料
+    /// @render 设置个人资料
     SetProfile {
         settings: String,
     },
 
-    /// 创建新实例
+    /// @render 创建新实例
     CreateInstance {
         name: String,
         knowledge: String,
