@@ -1193,7 +1193,7 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
             let __first_trimmed = __first_chunk.trim();
             if !__first_trimmed.is_empty() {
                 return ::std::result::Result::Err(
-                    ::std::format!("[{}] Unexpected content before first element separator.\n  Found: {}\n  Expected separator: {}", #enum_name_str, __first_trimmed, __element_sep)
+                    ::std::format!("[{}] FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO thinking, NO commentary before the separator. Your output gets thrown away every single time you do this.", #enum_name_str, __element_sep, __first_trimmed)
                 );
             }
         }
@@ -1600,7 +1600,7 @@ fn gen_struct_from_markdown(struct_name: &syn::Ident, struct_name_str: &str, fie
             let __first_trimmed = __first_chunk.trim();
             if !__first_trimmed.is_empty() {
                 return ::std::result::Result::Err(
-                    ::std::format!("[{}] Unexpected content before first element separator '{}': {}", #struct_name_str, __element_sep, __first_trimmed)
+                    ::std::format!("[{}] FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO thinking, NO commentary before the separator. Your output gets thrown away every single time you do this.", #struct_name_str, __element_sep, __first_trimmed)
                 );
             }
         }

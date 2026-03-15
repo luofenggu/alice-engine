@@ -382,7 +382,7 @@ async fn test_stream_infer_preamble_returns_error() {
     assert!(result.is_some(), "should return an error result");
     let err = result.unwrap();
     assert!(err.is_err(), "preamble should cause error");
-    assert!(err.unwrap_err().contains("Unexpected content before first"), "error should mention unexpected content");
+    assert!(err.unwrap_err().contains("FORMAT VIOLATION"), "error should mention unexpected content");
 
     // Stream should be done after preamble error
     assert!(stream.next().await.is_none(), "stream should be done after preamble error");

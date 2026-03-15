@@ -328,9 +328,13 @@ impl<T: FromMarkdown> StreamInfer<T> {
                         self.done = true;
                         let display = if t.len() > 200 { &t[..200] } else { t };
                         return Some(Err(format!(
-                            "Unexpected content before first element separator.\n  Found: {}\n  Expected separator: {}",
-                            display, separator
+                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO thinking, NO commentary before the separator. Your output gets thrown away every single time you do this.",
+                            separator, display
                         )));
+
+
+
+
                     }
                 }
             }
@@ -349,8 +353,8 @@ impl<T: FromMarkdown> StreamInfer<T> {
                         self.done = true;
                         let display = if before.len() > 200 { &before[..200] } else { before };
                         return Some(Err(format!(
-                            "Unexpected content before first element separator.\n  Found: {}\n  Expected separator: {}",
-                            display, separator
+                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO thinking, NO commentary before the separator. Your output gets thrown away every single time you do this.",
+                            separator, display
                         )));
                     }
                     self.buffer = self.buffer[first_pos..].to_string();

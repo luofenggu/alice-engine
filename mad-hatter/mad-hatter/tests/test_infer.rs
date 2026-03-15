@@ -485,7 +485,7 @@ async fn test_infer_with_preamble_returns_error() {
 
     assert!(result.is_err(), "preamble should cause error");
     let err = result.unwrap_err();
-    assert!(err.contains("Unexpected content before first"), "error should mention preamble: {}", err);
+    assert!(err.contains("FORMAT VIOLATION"), "error should mention preamble: {}", err);
 }
 
 // === Cancel tests ===
