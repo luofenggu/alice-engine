@@ -505,7 +505,7 @@ impl AliceEngine {
                     consecutive_beats.value(),
                     alice.safety_cooldown_secs
                 );
-                alice.notify_anomaly(&crate::policy::messages::safety_valve_triggered(
+                alice.notify_anomaly(&crate::bindings::i18n::safety_valve_triggered(
                     consecutive_beats.value(),
                     alice.safety_cooldown_secs,
                 ));
@@ -526,7 +526,7 @@ impl AliceEngine {
                             alice.beat_count.value(),
                             max
                         );
-                        alice.notify_anomaly(&crate::policy::messages::beat_limit_reached(
+                        alice.notify_anomaly(&crate::bindings::i18n::beat_limit_reached(
                             alice.beat_count.value(),
                             max,
                         ));
@@ -566,7 +566,7 @@ impl AliceEngine {
             if consecutive_beats.value() % engine_policy.disk_check_interval_beats == 0 {
                 if let Some(avail_mb) = crate::external::shell::available_mb(&instance_dir) {
                     if avail_mb < engine_policy.disk_min_available_mb {
-                        alice.notify_anomaly(&crate::policy::messages::disk_space_low(avail_mb));
+                        alice.notify_anomaly(&crate::bindings::i18n::disk_space_low(avail_mb));
                     }
                 }
             }
@@ -610,7 +610,7 @@ impl AliceEngine {
                                                 "[HISTORY-ROLL-{}] Background failed: {}",
                                                 iid, e
                                             );
-                                            crate::policy::messages::roll_failed(&e.to_string())
+                                            crate::bindings::i18n::roll_failed(&e.to_string())
                                         }
                                     };
                                     // Notify via system message

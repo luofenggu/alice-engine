@@ -4,6 +4,7 @@
 //! Implemented by hub module for cross-engine communication.
 
 use mad_hatter::tunnel_service;
+use crate::bindings::i18n;
 use crate::persist::hooks::ContactInfo;
 
 /// Extension handler for cross-instance operations.
@@ -37,7 +38,7 @@ impl ExtensionHandler for NoopExtensionHandler {
         _to_instance_id: String,
         _content: String,
     ) -> Result<(), String> {
-        Err("No extension handler configured".to_string())
+        Err(i18n::no_extension_handler())
     }
 
     async fn fetch_contacts(&self, _instance_id: String) -> Result<Vec<ContactInfo>, String> {

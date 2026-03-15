@@ -9,6 +9,7 @@ use tracing::{info, warn, error, debug};
 use base64::Engine as _;
 
 use mad_hatter::tunnel::TunnelEndpoint;
+use crate::bindings::i18n;
 use crate::hub::tunnel::*;
 use crate::hub::extension_impl::SlaveLocalHandler;
 use crate::persist::instance::InstanceStore;
@@ -101,8 +102,8 @@ impl SlaveState {
             tokio_tungstenite::connect_async(&ws_url),
         )
             .await
-            .map_err(|_| format!("Connection timeout (5s) to {}", self.host_url))?
-            .map_err(|e| format!("WebSocket connect failed: {}", e))?;
+            .map_err(|_| i18n::hub_connection_timeout(&self.host_url))?
+            .map_err(|e| i18n::hub_ws_connect_failed(&e.to_string()))?;
 
         let (ws_sender_raw, ws_receiver) = ws_stream.split();
 
@@ -132,7 +133,7 @@ impl SlaveState {
             if let Some(ws) = s.as_mut() {
                 ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into()))
                     .await
-                    .map_err(|e| format!("Failed to send register: {}", e))?;
+                    .map_err(|e| i18n::hub_send_register_failed(&e.to_string()))?;
             }
         }
 
@@ -490,7 +491,7 @@ impl HttpProxy for SlaveHttpProxyHandler {
                     status: 502,
                     headers: HashMap::new(),
                     body: Some(base64::engine::general_purpose::STANDARD.encode(
-                        format!("Tunnel error: {}", e).as_bytes(),
+                        i18n::hub_tunnel_error(&e.to_string()).as_bytes(),
                     )),
                 })
             }

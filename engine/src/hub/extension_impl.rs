@@ -5,6 +5,7 @@
 //! - Host mode: aggregated remote + local instances
 //! - Joined mode: tunnel proxy to host via ExtensionHandlerProxy
 
+use crate::bindings::i18n;
 use std::sync::Arc;
 use std::collections::HashSet;
 use tracing::{info, warn};
@@ -55,12 +56,12 @@ impl HubExtensionHandler {
     /// Local relay: deliver message to a local instance.
     fn local_relay(&self, from: &str, to: &str, content: &str) -> Result<(), String> {
         let instance = self.instance_store.open(to)
-            .map_err(|e| format!("Instance {} not found: {}", to, e))?;
+            .map_err(|e| i18n::hub_instance_not_found(&to, &e.to_string()))?;
         let ch = &instance.chat;
         let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
         ch.write_agent_reply(from, content, &timestamp, "")
             .map(|_| ())
-            .map_err(|e| format!("Failed to write relay message: {}", e))
+            .map_err(|e| i18n::hub_relay_write_failed(&e.to_string()))
     }
 }
 
@@ -84,10 +85,10 @@ impl ExtensionHandler for HubExtensionHandler {
                                 info!("[EXT] Relayed message from {} to {} via tunnel proxy", from, to);
                                 Ok(())
                             }
-                            Err(e) => Err(format!("Tunnel relay failed: {}", e)),
+                            Err(e) => Err(i18n::hub_tunnel_relay_failed(&e.to_string())),
                         }
                     } else {
-                        Err("Slave tunnel endpoint not available".to_string())
+                        Err(i18n::hub_slave_endpoint_unavailable())
                     }
                 } else {
                     // Local delivery
@@ -103,7 +104,7 @@ impl ExtensionHandler for HubExtensionHandler {
 
                 // Use ExtensionHandlerProxy through tunnel to host
                 let ep = slave.get_tunnel_endpoint()
-                    .ok_or_else(|| "Not connected to host".to_string())?;
+                    .ok_or_else(|| i18n::hub_not_connected())?;
                 let proxy = ExtensionHandlerProxy::new(ep);
                 proxy.relay_message(from.clone(), to.clone(), content).await.map(|()| {
                     info!("[EXT] Relayed message from {} to {} via host proxy", from, to);
@@ -157,7 +158,7 @@ impl ExtensionHandler for HubExtensionHandler {
 
                 // Use ExtensionHandlerProxy through tunnel to host
                 let ep = slave.get_tunnel_endpoint()
-                    .ok_or_else(|| "Not connected to host".to_string())?;
+                    .ok_or_else(|| i18n::hub_not_connected())?;
                 let proxy = ExtensionHandlerProxy::new(ep);
                 proxy.fetch_contacts(instance_id).await
             }
@@ -209,12 +210,12 @@ impl SlaveLocalHandler {
 
     fn local_relay(&self, from: &str, to: &str, content: &str) -> Result<(), String> {
         let instance = self.instance_store.open(to)
-            .map_err(|e| format!("Instance {} not found: {}", to, e))?;
+            .map_err(|e| i18n::hub_instance_not_found(&to, &e.to_string()))?;
         let ch = &instance.chat;
         let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
         ch.write_agent_reply(from, content, &timestamp, "")
             .map(|_| ())
-            .map_err(|e| format!("Failed to write relay message: {}", e))
+            .map_err(|e| i18n::hub_relay_write_failed(&e.to_string()))
     }
 }
 

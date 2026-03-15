@@ -8,6 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use tracing::{info, warn, error};
 
 use mad_hatter::tunnel::{Dispatch, TunnelEndpoint};
+use crate::bindings::i18n;
 use crate::hub::tunnel::*;
 use crate::persist::instance::InstanceStore;
 use crate::service::http_proxy::{HttpProxy, HttpProxyProxy, HttpProxyRequest, HttpProxyResponse};
@@ -300,11 +301,11 @@ impl ExtensionHandler for HostLocalHandler {
                 .map(|_| {
                     info!("[HUB-HOST-RPC] Relayed message from {} to {} (local)", from_instance_id, to_instance_id);
                 })
-                .map_err(|e| format!("Failed to write relay message: {}", e))
+                .map_err(|e| i18n::hub_relay_write_failed(&e.to_string()))
         } else {
             // Target not local — try routing to another slave via RPC
             let host = self.host.upgrade()
-                .ok_or_else(|| "Host state no longer available".to_string())?;
+                .ok_or_else(|| i18n::hub_host_unavailable())?;
 
             if let Some(endpoint) = host.get_slave_tunnel_endpoint(&to_instance_id).await {
                 let proxy = crate::service::extension::ExtensionHandlerProxy::new(endpoint);
@@ -313,7 +314,7 @@ impl ExtensionHandler for HostLocalHandler {
                         info!("[HUB-HOST-RPC] Relayed message from {} to {} via slave RPC", from_instance_id, to_instance_id);
                     })
             } else {
-                Err(format!("Instance {} not found on any connected engine", to_instance_id))
+                Err(i18n::hub_instance_not_found_anywhere(&to_instance_id))
             }
         }
     }

@@ -130,7 +130,7 @@ impl SequenceGuard {
                     SequenceVerdict::Allow
                 } else {
                     SequenceVerdict::Reject(
-                        crate::policy::messages::sequence_reject_after_blocking(
+                        crate::bindings::i18n::sequence_reject_after_blocking(
                             &self.instance_id,
                             &action.to_string(),
                         ),
@@ -141,7 +141,7 @@ impl SequenceGuard {
                 if is_idle {
                     SequenceVerdict::Ignore
                 } else {
-                    SequenceVerdict::Reject(crate::policy::messages::sequence_reject_after_idle(
+                    SequenceVerdict::Reject(crate::bindings::i18n::sequence_reject_after_idle(
                         &self.instance_id,
                         &action.to_string(),
                     ))
@@ -553,7 +553,7 @@ impl Alice {
             format!("{}\n\n{}", current_history, rendered_block)
         };
         let request = crate::inference::compress::CompressRequest {
-            requirement: format!("不超过{}KB", self.history_kb),
+            requirement: crate::bindings::i18n::roll_requirement(self.history_kb),
             content,
         };
 
@@ -596,7 +596,7 @@ impl Alice {
                 );
                 self.instance.memory.delete_session_block_db(oldest_block)?;
                 self.instance.memory.clear_last_rolled();
-                return Ok(Some(crate::policy::messages::roll_deleted_residual(
+                return Ok(Some(crate::bindings::i18n::roll_deleted_residual(
                     oldest_block,
                 )));
             }
@@ -617,7 +617,7 @@ impl Alice {
         if entries.is_empty() {
             // Empty block, just delete it
             self.instance.memory.delete_session_block_db(oldest_block)?;
-            return Ok(Some(crate::policy::messages::roll_deleted_empty(
+            return Ok(Some(crate::bindings::i18n::roll_deleted_empty(
                 oldest_block,
             )));
         }
@@ -647,7 +647,7 @@ impl Alice {
             format!("{}\n\n{}", current_history, rendered_block)
         };
         let request = crate::inference::compress::CompressRequest {
-            requirement: format!("不超过{}KB", self.history_kb),
+            requirement: crate::bindings::i18n::roll_requirement(self.history_kb),
             content,
         };
 
@@ -691,7 +691,7 @@ impl Alice {
                 "[ROLL-{}] LLM returned empty history, aborting roll",
                 self.instance.id
             );
-            return Ok(Some(crate::policy::messages::roll_llm_empty().to_string()));
+            return Ok(Some(crate::bindings::i18n::roll_llm_empty()));
         }
 
         // 5. Commit history via DB
@@ -701,7 +701,7 @@ impl Alice {
             .commit_history(clean_history, oldest_block)?;
         let new_kb = self.instance.memory.read_history().len() as u64 / 1024;
 
-        let result = crate::policy::messages::roll_result(old_kb, new_kb);
+        let result = crate::bindings::i18n::roll_result(old_kb, new_kb);
         info!("[ROLL-{}] {}", self.instance.id, result);
 
         Ok(Some(result))
@@ -984,7 +984,7 @@ impl Alice {
                         );
 
                         // Record done
-                        let cancelled_output = ActionOutput::Note { text: "idle cancelled: send_msg failed earlier in this beat".into() };
+                        let cancelled_output = ActionOutput::Note { text: crate::bindings::i18n::idle_cancelled() };
                         tx.record_done(&action_id);
 
                         // DB: complete action_log (done) for cancelled idle
@@ -1214,7 +1214,7 @@ pub async fn execute_capture_task(task: CaptureTask) -> anyhow::Result<String> {
 
     let new_kb = task.memory.read_knowledge().len() as u64 / 1024;
 
-    let result = crate::policy::messages::capture_result(old_kb, new_kb);
+    let result = crate::bindings::i18n::capture_result(old_kb, new_kb);
     info!("[CAPTURE-{}] Background: {}", task.instance_id, result);
     Ok(result)
 }
@@ -1273,7 +1273,7 @@ pub async fn execute_roll_task(task: RollTask) -> anyhow::Result<String> {
         .commit_history(clean_history, &task.oldest_block)?;
     let new_kb = task.memory.read_history().len() as u64 / 1024;
 
-    let result = crate::policy::messages::roll_result(old_kb, new_kb);
+    let result = crate::bindings::i18n::roll_result(old_kb, new_kb);
     info!("[ROLL-{}] Background: {}", task.instance_id, result);
 
     Ok(result)
@@ -1300,7 +1300,7 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
             }
             Err(e) => {
                 error!("[CAPTURE] Background capture failed: {}", e);
-                crate::policy::messages::capture_failed(&e.to_string())
+                crate::bindings::i18n::capture_failed(&e.to_string())
             }
         };
         let ts = crate::persist::chat::ChatHistory::now_timestamp();

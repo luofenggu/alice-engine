@@ -9,7 +9,7 @@ use crate::core::Alice;
 use crate::inference::beat::{self, BeatRequest, SessionBlock, SessionMessage};
 use crate::inference::output::ActionView;
 use crate::inference::capture::CaptureRequest;
-use crate::policy::messages;
+use crate::bindings::i18n;
 use mad_hatter::llm::ToMarkdown;
 
 // ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ pub fn build_beat_request(
     let knowledge = beat::build_knowledge_content(&knowledge_content);
 
     let history = if history_content.is_empty() {
-        messages::empty_placeholder().to_string()
+        i18n::empty_placeholder()
     } else {
         history_content.clone()
     };

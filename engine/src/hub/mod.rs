@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use sha2::{Sha256, Digest};
 use tracing::info;
+use crate::bindings::i18n;
 use crate::persist::instance::InstanceStore;
 
 use crate::hub::host::HostState;
@@ -54,7 +55,7 @@ impl HubState {
     /// Enable host mode with a join token (room password)
     pub async fn enable_host(&self, join_token: String, instance_store: crate::persist::instance::InstanceStore) -> Result<(), String> {
         if join_token.is_empty() {
-            return Err("Join token cannot be empty".to_string());
+            return Err(i18n::hub_join_token_empty());
         }
         let mut mode = self.mode.write().await;
         match &*mode {
@@ -64,8 +65,8 @@ impl HubState {
                 *mode = HubMode::Host(host);
                 Ok(())
             }
-            HubMode::Host(_) => Err("Already in host mode".to_string()),
-            HubMode::Joined(_) => Err("Currently joined to a host. Leave first.".to_string()),
+            HubMode::Host(_) => Err(i18n::hub_already_host()),
+            HubMode::Joined(_) => Err(i18n::hub_joined_leave_first()),
         }
     }
 
@@ -78,7 +79,7 @@ impl HubState {
                 *mode = HubMode::Off;
                 Ok(())
             }
-            _ => Err("Not in host mode".to_string()),
+            _ => Err(i18n::hub_not_host()),
         }
     }
 
@@ -99,8 +100,8 @@ impl HubState {
             let mode = self.mode.read().await;
             match &*mode {
                 HubMode::Off => {},
-                HubMode::Host(_) => return Err("Currently in host mode. Disable first.".to_string()),
-                HubMode::Joined(_) => return Err("Already joined to a host. Leave first.".to_string()),
+                HubMode::Host(_) => return Err(i18n::hub_host_disable_first()),
+                HubMode::Joined(_) => return Err(i18n::hub_already_joined()),
             }
         }
 
@@ -123,7 +124,7 @@ impl HubState {
                 info!("[HUB] Joined host at {}", host_url);
                 Ok(())
             }
-            _ => Err("Mode changed during connection attempt".to_string()),
+            _ => Err(i18n::hub_mode_changed()),
         }
     }
 
@@ -139,7 +140,7 @@ impl HubState {
                 }
                 other => {
                     *mode = other;
-                    return Err("Not joined to any host".to_string());
+                    return Err(i18n::hub_not_joined());
                 }
             }
         };
@@ -168,12 +169,12 @@ impl HubState {
                 let count = host.slave_count().await;
                 HubStatus {
                     mode: "host".to_string(),
-                    detail: Some(format!("{} slaves connected", count)),
+                    detail: Some(i18n::hub_slaves_connected(count)),
                 }
             }
             HubMode::Joined(slave) => HubStatus {
                 mode: "joined".to_string(),
-                detail: Some(format!("connected to {}", slave.host_url)),
+                detail: Some(i18n::hub_connected_to(&slave.host_url)),
             },
         }
     }

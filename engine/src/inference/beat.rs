@@ -5,7 +5,7 @@
 //! stream_infer() uses to_markdown() + schema_markdown() to build the prompt.
 
 
-use crate::policy::messages;
+use crate::bindings::i18n;
 
 use mad_hatter::ToMarkdown;
 use crate::inference::output::ActionView;
@@ -281,7 +281,7 @@ pub fn build_knowledge_content(knowledge_content: &str) -> String {
     if knowledge_content.trim().is_empty() {
         String::new()
     } else {
-        messages::knowledge_section(knowledge_content)
+        i18n::knowledge_section(knowledge_content)
     }
 }
 
@@ -360,11 +360,11 @@ fn make_memory_usage(
 ) -> String {
     let total = history_size + daily_size + current_size + knowledge_size;
     let knowledge_indicator = if knowledge_size < 51200 {
-        messages::knowledge_capacity_ok(knowledge_size)
+        i18n::knowledge_capacity_ok(knowledge_size)
     } else if knowledge_size < 61440 {
-        messages::knowledge_capacity_warning(knowledge_size)
+        i18n::knowledge_capacity_warning(knowledge_size)
     } else {
-        messages::knowledge_capacity_critical(knowledge_size)
+        i18n::knowledge_capacity_critical(knowledge_size)
     };
 
     let mut usage = format!(
@@ -374,7 +374,7 @@ fn make_memory_usage(
 
     if total > SOFT_LIMIT {
         let kb = total / 1000;
-        usage.push_str(&format!(" {}", messages::memory_over_limit(kb)));
+        usage.push_str(&format!(" {}", i18n::memory_over_limit(kb)));
     }
 
     usage

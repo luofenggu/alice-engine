@@ -159,7 +159,7 @@ impl EngineState {
                     "[API] Deleted instance: {} -> .trash/{}",
                     instance_id, trash_name
                 );
-                ActionResult::ok(crate::policy::messages::instance_deleted(&instance_id))
+                ActionResult::ok(crate::bindings::i18n::instance_deleted(&instance_id))
             }
             Err(e) => {
                 error!("[API] Delete instance failed: {}", e);
@@ -240,7 +240,7 @@ impl EngineState {
     pub async fn send_message(&self, instance_id: String, content: String) -> ActionResult {
         let content = content.trim().to_string();
         if content.is_empty() {
-            return ActionResult::err(crate::policy::messages::empty_message());
+            return ActionResult::err(crate::bindings::i18n::empty_message());
         }
 
         let store = self.instance_store.clone();
@@ -268,7 +268,7 @@ impl EngineState {
     pub async fn send_relay_message(&self, instance_id: String, sender: String, content: String) -> ActionResult {
         let content = content.trim().to_string();
         if content.is_empty() {
-            return ActionResult::err(crate::policy::messages::empty_message());
+            return ActionResult::err(crate::bindings::i18n::empty_message());
         }
         if sender.is_empty() {
             return ActionResult::err("sender is required for relay messages".to_string());
@@ -302,7 +302,7 @@ impl EngineState {
     ) -> ActionResult {
         let content = content.trim().to_string();
         if content.is_empty() {
-            return ActionResult::err(crate::policy::messages::empty_message());
+            return ActionResult::err(crate::bindings::i18n::empty_message());
         }
 
         let store = self.instance_store.clone();
@@ -451,7 +451,7 @@ impl EngineState {
                     info!("[API] Settings updated for {}: {}", instance_id, desc);
                     Ok::<_, anyhow::Error>(ActionResult::ok(desc))
                 }
-                None => Ok(ActionResult::err(crate::policy::messages::no_valid_fields())),
+                None => Ok(ActionResult::err(crate::bindings::i18n::no_valid_fields())),
             }
         })
         .await;
@@ -487,7 +487,7 @@ impl EngineState {
         let result = tokio::task::spawn_blocking(move || {
             store.merge_update(update)?;
             Ok::<_, anyhow::Error>(ActionResult::ok(
-                crate::policy::messages::global_settings_updated(),
+                crate::bindings::i18n::global_settings_updated(),
             ))
         })
         .await;
@@ -623,7 +623,7 @@ impl EngineState {
 
             if engine_config.file_browse.is_binary_file(&file_name) {
                 return Ok(FileReadResult::binary(
-                    crate::policy::messages::binary_file_description(&file_name, size),
+                    crate::bindings::i18n::binary_file_description(&file_name, size),
                     size,
                 ));
             }

@@ -13,6 +13,7 @@ use crate::external::shell::{resolve_action_path, Shell};
 use crate::inference::Action;
 use crate::inference::output::{ActionOutput, ReadMsgEntry, truncate_stdout};
 use crate::persist::hooks::ContactInfo;
+use crate::bindings::i18n;
 
 /// Create a Shell instance with appropriate sandboxing for the given Alice.
 /// In local mode (no sandbox user), runs without sandboxing.
@@ -159,7 +160,7 @@ async fn execute_send_msg(
             );
             tx.cancel_idle = true;
             return Ok(ActionOutput::SendMsgFailed {
-                error: format!("发送失败：通讯服务不可用，无法联系 \"{}\"", recipient),
+                error: i18n::send_failed_no_extension(recipient),
             });
         }
     };
@@ -187,11 +188,7 @@ async fn execute_send_msg(
                 })
                 .collect();
             return Ok(ActionOutput::SendMsgFailed {
-                error: format!(
-                    "发送失败：收件人 \"{}\" 不在联系人列表中。可用联系人：{}",
-                    recipient,
-                    names.join(", ")
-                ),
+                error: i18n::send_failed_not_in_contacts(recipient, &names.join(", ")),
             });
         }
     };
@@ -225,7 +222,7 @@ async fn execute_send_msg(
             );
             tx.cancel_idle = true;
             Ok(ActionOutput::SendMsgFailed {
-                error: format!("发送失败：消息转发到 \"{}\" 时被拒绝", recipient),
+                error: i18n::send_failed_rejected(recipient),
             })
         }
     }
@@ -259,15 +256,15 @@ fn extract_skeleton(path: &str, content: &str) -> String {
     match SkeletonConfig::get().extract_from_path(path, content) {
         ExtractionResult::Full => {
             let (truncated, _) = truncate_stdout(content);
-            format!("---file content---\n{}", truncated)
+            i18n::file_content_with_header(&truncated)
         }
         ExtractionResult::Skeleton(skeleton) => {
-            format!("--- skeleton (auto-extracted, showing interface & comments only, not full content) ---\n{}", skeleton)
+            i18n::skeleton_with_header(&skeleton)
         }
         ExtractionResult::NoRule => {
             let lines: Vec<&str> = content.lines().collect();
             let preview = format_preview(&lines);
-            format!("--- preview (first 10 + last 5 lines, not full content) ---\n{}", preview)
+            i18n::preview_with_header(&preview)
         }
     }
 }
@@ -288,7 +285,7 @@ fn format_preview(lines: &[&str]) -> String {
         preview.push(format!("{:>4}: {}", i + 1, line));
     }
     if total > PREVIEW_THRESHOLD {
-        preview.push("     ...".to_string());
+        preview.push(i18n::preview_ellipsis());
         for (i, line) in lines[total - PREVIEW_TAIL_LINES..].iter().enumerate() {
             preview.push(format!("{:>4}: {}", total - PREVIEW_TAIL_LINES + i + 1, line));
         }
