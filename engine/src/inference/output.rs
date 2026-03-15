@@ -2,7 +2,7 @@
 //!
 //! Structured output from action execution.
 //! ActionOutput enum mirrors Action enum — one output variant per action type.
-//! ActionRecord combines input + status + output for rendering.
+//! ActionView provides flattened rendering for current prompt.
 
 use mad_hatter::ToMarkdown;
 use serde::{Deserialize, Serialize};
@@ -156,35 +156,258 @@ pub enum ActionStatus {
     Distilled,
 }
 
+
+/// Flattened view of an action for current prompt rendering.
+///
+/// Built from DB rows (action_input + action_output JSON).
+/// Only derives ToMarkdown — never used for parsing.
+/// Fields are detailed Option<T> — no big concatenated strings.
 #[derive(ToMarkdown)]
-pub struct ActionRecord {
-    /// action_id
+pub struct ActionView {
+    #[markdown(skip)]
     pub action_id: String,
-    #[markdown(skip)]
-    pub action_type: String,
-    #[markdown(skip)]
-    pub status: ActionStatus,
-    #[markdown(flatten)]
-    pub input: Option<Action>,
-    #[markdown(flatten)]
-    pub output: Option<ActionOutput>,
+
+    /// description
+    pub description: String,
+
+    // -- input side --
+
+    /// content
+    #[markdown(weak)]
+    pub content: Option<String>,
+
+    /// recipient
+    pub recipient: Option<String>,
+
+    /// message
+    #[markdown(weak)]
+    pub message: Option<String>,
+
+    /// file_path
+    pub file_path: Option<String>,
+
+    /// file_content
+    #[markdown(weak)]
+    pub file_content: Option<String>,
+
+    /// search_text
+    #[markdown(weak)]
+    pub search_text: Option<String>,
+
+    /// replace_text
+    #[markdown(weak)]
+    pub replace_text: Option<String>,
+
+    /// timeout_secs
+    pub timeout_secs: Option<u64>,
+
+    /// target_action_id
+    pub target_action_id: Option<String>,
+
+    /// distill_summary
+    #[markdown(weak)]
+    pub distill_summary: Option<String>,
+
+    /// instance_name
+    pub instance_name: Option<String>,
+
+    /// knowledge
+    #[markdown(weak)]
+    pub knowledge: Option<String>,
+
+    /// profile_settings
+    pub profile_settings: Option<String>,
+
+    // -- output side --
+
+    /// stdout
+    #[markdown(weak)]
+    pub stdout: Option<String>,
+
+    /// exit_code
+    pub exit_code: Option<i32>,
+
+    /// elapsed_secs
+    pub elapsed_secs: Option<f64>,
+
+    /// skeleton
+    #[markdown(weak)]
+    pub skeleton: Option<String>,
+
+    /// msg_id
+    pub msg_id: Option<String>,
+
+    /// messages
+    #[markdown(weak)]
+    pub messages: Option<String>,
+
+    /// match_count
+    pub match_count: Option<usize>,
+
+    /// before_context
+    #[markdown(weak)]
+    pub before_context: Option<String>,
+
+    /// after_context
+    #[markdown(weak)]
+    pub after_context: Option<String>,
+
+    /// block_name
+    pub block_name: Option<String>,
+
+    /// created_instance_id
+    pub created_instance_id: Option<String>,
+
+    /// error
+    #[markdown(weak)]
+    pub error: Option<String>,
+
+    // -- status --
+
+    /// note
+    #[markdown(weak)]
+    pub note: Option<String>,
+
     /// distill_text
+    #[markdown(weak)]
     pub distill_text: Option<String>,
 }
 
-impl ActionRecord {
-    /// Build from a DB row. Falls back to Note on deserialization failure.
-    pub fn from_db_row(row: &ActionLogRow) -> Self {
-        use crate::bindings::db::{ACTION_STATUS_DISTILLED, ACTION_STATUS_DONE};
+impl ActionView {
+    /// Create an empty ActionView with only action_id and description set.
+    fn empty(action_id: String, description: String) -> Self {
+        ActionView {
+            action_id,
+            description,
+            content: None,
+            recipient: None,
+            message: None,
+            file_path: None,
+            file_content: None,
+            search_text: None,
+            replace_text: None,
+            timeout_secs: None,
+            target_action_id: None,
+            distill_summary: None,
+            instance_name: None,
+            knowledge: None,
+            profile_settings: None,
+            stdout: None,
+            exit_code: None,
+            elapsed_secs: None,
+            skeleton: None,
+            msg_id: None,
+            messages: None,
+            match_count: None,
+            before_context: None,
+            after_context: None,
+            block_name: None,
+            created_instance_id: None,
+            error: None,
+            note: None,
+            distill_text: None,
+        }
+    }
 
-        let input: Option<Action> = if row.action_input.is_empty() {
-            None
-        } else {
-            Some(serde_json::from_str(&row.action_input)
-                .unwrap_or_else(|_| Action::Thinking {
-                    content: format!("[deserialization failed] {}", truncate_for_display(&row.action_input, 100)),
-                }))
-        };
+    /// Fill input fields from a deserialized Action.
+    fn fill_input(&mut self, action: &Action) {
+        match action {
+            Action::Idle { timeout_secs } => {
+                self.timeout_secs = *timeout_secs;
+            }
+            Action::ReadMsg => {}
+            Action::SendMsg { recipient, content } => {
+                self.recipient = Some(recipient.clone());
+                self.message = Some(content.clone());
+            }
+            Action::Thinking { content } => {
+                self.content = Some(content.clone());
+            }
+            Action::Script { content } => {
+                self.content = Some(content.clone());
+            }
+            Action::WriteFile { path, content } => {
+                self.file_path = Some(path.clone());
+                self.file_content = Some(content.clone());
+            }
+            Action::ReplaceInFile { path, search, replace } => {
+                self.file_path = Some(path.clone());
+                self.search_text = Some(search.clone());
+                self.replace_text = Some(replace.clone());
+            }
+            Action::Summary { content } => {
+                self.content = Some(content.clone());
+            }
+            Action::Distill { target_action_id, summary } => {
+                self.target_action_id = Some(target_action_id.clone());
+                self.distill_summary = Some(summary.clone());
+            }
+            Action::SetProfile { content } => {
+                self.profile_settings = Some(content.clone());
+            }
+            Action::CreateInstance { name, knowledge } => {
+                self.instance_name = Some(name.clone());
+                self.knowledge = Some(knowledge.clone());
+            }
+        }
+    }
+
+    /// Fill output fields from a deserialized ActionOutput.
+    fn fill_output(&mut self, output: &ActionOutput) {
+        match output {
+            ActionOutput::Empty => {}
+            ActionOutput::ReadMsg { entries } => {
+                let rendered: Vec<String> = entries.iter().map(|e| render_msg_entry(e)).collect();
+                self.messages = Some(rendered.join("\n"));
+            }
+            ActionOutput::SendMsg { msg_id } => {
+                self.msg_id = Some(msg_id.clone());
+            }
+            ActionOutput::SendMsgFailed { error } => {
+                self.error = Some(error.clone());
+            }
+            ActionOutput::Script { stdout, exit_code, elapsed_secs, truncated: _ } => {
+                let (display_stdout, _) = truncate_stdout(stdout);
+                self.stdout = Some(display_stdout);
+                self.exit_code = Some(*exit_code);
+                self.elapsed_secs = Some(*elapsed_secs);
+            }
+            ActionOutput::WriteFile { skeleton, bytes: _, lines: _ } => {
+                self.skeleton = Some(skeleton.clone());
+            }
+            ActionOutput::ReplaceInFile { match_count, before, after } => {
+                self.match_count = Some(*match_count);
+                self.before_context = Some(before.clone());
+                self.after_context = Some(after.clone());
+            }
+            ActionOutput::ReplaceInFileFailed { match_count, search_preview } => {
+                self.match_count = Some(*match_count);
+                self.error = Some(format!("match_count={}, search: {}", match_count, search_preview));
+            }
+            ActionOutput::Summary { block_name, knowledge_chars: _, msg_count: _, msg_range: _ } => {
+                self.block_name = Some(block_name.clone());
+            }
+            ActionOutput::SummaryEmpty => {}
+            ActionOutput::Distill { old_bytes: _, new_bytes: _ } => {}
+            ActionOutput::SetProfile { updated } => {
+                self.note = Some(updated.clone());
+            }
+            ActionOutput::SetProfileFailed { unknown_key } => {
+                self.error = Some(format!("unknown key: {}", unknown_key));
+            }
+            ActionOutput::CreateInstance { instance_id, name, knowledge_bytes: _ } => {
+                self.created_instance_id = Some(instance_id.clone());
+                self.note = Some(format!("created: {} ({})", name, instance_id));
+            }
+            ActionOutput::Note { text } => {
+                self.note = Some(text.clone());
+            }
+        }
+    }
+
+    /// Build from a DB row. Falls back gracefully on deserialization failure.
+    pub fn from_db_row(row: &ActionLogRow) -> Self {
+        use crate::bindings::db::{ACTION_STATUS_DISTILLED, ACTION_STATUS_DONE, ACTION_STATUS_EXECUTING};
 
         let status = match row.status.as_str() {
             s if s == ACTION_STATUS_DONE => ActionStatus::Done,
@@ -192,44 +415,66 @@ impl ActionRecord {
             _ => ActionStatus::Executing,
         };
 
-        // For distilled records, don't load input or output (only distill_text)
-        let (final_input, output) = if status == ActionStatus::Distilled {
-            (None, None)
-        } else if input.is_none() {
-            // Empty action_input (e.g. interrupt/reject/inference_error notes)
-            let output = row.action_output.as_deref().and_then(|s| {
-                if s.is_empty() {
-                    None
-                } else {
-                    serde_json::from_str::<ActionOutput>(s)
-                        .ok()
-                        .or_else(|| Some(ActionOutput::Note { text: s.to_string() }))
-                        .and_then(|o| if matches!(o, ActionOutput::Empty) { None } else { Some(o) })
-                }
-            });
-            (None, output)
+        // Parse action for description (Display trait)
+        let action: Option<Action> = if row.action_input.is_empty() {
+            None
         } else {
-            let output = row.action_output.as_deref().and_then(|s| {
-                if s.is_empty() {
-                    None
-                } else {
-                    serde_json::from_str::<ActionOutput>(s)
-                        .ok()
-                        .or_else(|| Some(ActionOutput::Note { text: s.to_string() }))
-                        .and_then(|o| if matches!(o, ActionOutput::Empty) { None } else { Some(o) })
-                }
-            });
-            (input, output)
+            serde_json::from_str(&row.action_input).ok()
         };
 
-        ActionRecord {
-            action_id: row.action_id.clone(),
-            action_type: row.action_type.clone(),
-            input: final_input,
-            status,
-            output,
-            distill_text: row.distill_text.clone(),
+        // Generate description
+        let description = if status == ActionStatus::Distilled {
+            format!("[已提炼] {}", action.as_ref().map(|a| format!("{}", a)).unwrap_or_else(|| row.action_type.clone()))
+        } else if status == ActionStatus::Executing {
+            format!("{}\n---action executing, result pending---", action.as_ref().map(|a| format!("{}", a)).unwrap_or_else(|| row.action_type.clone()))
+        } else {
+            action.as_ref().map(|a| format!("{}", a)).unwrap_or_else(|| row.action_type.clone())
+        };
+
+        let mut view = ActionView::empty(row.action_id.clone(), description);
+
+        // Distilled: only show distill_text
+        if status == ActionStatus::Distilled {
+            view.distill_text = row.distill_text.clone();
+            return view;
         }
+
+        // Fill input fields
+        if let Some(ref action) = action {
+            view.fill_input(action);
+        }
+
+        // Fill output fields (only when done)
+        if status == ActionStatus::Done {
+            if let Some(ref output_str) = row.action_output {
+                if !output_str.is_empty() {
+                    if let Ok(output) = serde_json::from_str::<ActionOutput>(output_str) {
+                        if !matches!(output, ActionOutput::Empty) {
+                            view.fill_output(&output);
+                        }
+                    } else {
+                        // Deserialization failed — show raw as note
+                        view.note = Some(truncate_for_display(output_str, 200));
+                    }
+                }
+            }
+        }
+
+        // For non-enum action types (inference_error, etc.) with no input
+        if row.action_input.is_empty() && view.note.is_none() {
+            if let Some(ref output_str) = row.action_output {
+                if !output_str.is_empty() {
+                    // Try to parse as ActionOutput::Note
+                    if let Ok(ActionOutput::Note { text }) = serde_json::from_str::<ActionOutput>(output_str) {
+                        view.note = Some(text);
+                    } else {
+                        view.note = Some(truncate_for_display(output_str, 200));
+                    }
+                }
+            }
+        }
+
+        view
     }
 }
 

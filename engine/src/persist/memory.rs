@@ -15,7 +15,7 @@ use crate::bindings::db::{
     self, HistoryRow, KnowledgeRow, MemoryDb, NewSessionBlock, SessionBlockRow,
 };
 
-use crate::inference::output::{ActionOutput, ActionRecord};
+use crate::inference::output::{ActionOutput, ActionView};
 use mad_hatter::llm::ToMarkdown;
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -366,7 +366,7 @@ impl Memory {
     }
 
     /// Render current memory from action_log (all entries after cursor).
-    /// Uses ActionRecord for structured rendering.
+    /// Uses ActionView for structured rendering.
     pub fn render_current_from_db(&self) -> Result<String> {
         use crate::bindings::db::{action_log, ActionLogRow};
 
@@ -384,8 +384,17 @@ impl Memory {
 
         let mut parts: Vec<String> = Vec::new();
         for row in &rows {
-            let record = ActionRecord::from_db_row(row);
-            parts.push(record.to_markdown());
+            let view = ActionView::from_db_row(row);
+            let action_id = &view.action_id;
+            let mut block = String::new();
+            block.push_str(&format!("---------行为编号[{}]开始---------\n", action_id));
+            let content = view.to_markdown();
+            if !content.is_empty() {
+                block.push_str(&content);
+                block.push_str("\n");
+            }
+            block.push_str(&format!("---------行为编号[{}]结束---------", action_id));
+            parts.push(block);
         }
 
         Ok(parts.join("\n"))

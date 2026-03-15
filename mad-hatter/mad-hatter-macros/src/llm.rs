@@ -64,6 +64,7 @@ struct ToMarkdownField {
     section_title: String,
     skip: bool,
     flatten: bool,
+    weak: bool,
 }
 
 /// Generate `impl ToMarkdown for Struct` from derive attributes.
@@ -88,23 +89,23 @@ pub fn derive_to_markdown(input: DeriveInput) -> TokenStream {
     };
 
     // Extract struct-level doc comment as header (use @render docs for ToMarkdown)
-    let struct_classified = extract_classified_docs(&input.attrs);
-    let struct_header = join_as_comment(struct_classified.for_render());
+    let struct_docs = extract_doc_comments(&input.attrs);
+    let struct_header = join_as_comment(&struct_docs);
 
     let mut tm_fields: Vec<ToMarkdownField> = Vec::new();
     for field in fields.iter() {
         let ident = field.ident.clone().unwrap();
         let skip = has_markdown_skip(&field.attrs);
         let flatten = has_markdown_flatten(&field.attrs);
-        let classified = extract_classified_docs(&field.attrs);
-        let render_docs = classified.for_render();
-        let section_title = if render_docs.is_empty() {
+        let docs = extract_doc_comments(&field.attrs);
+        let section_title = if docs.is_empty() {
             ident.to_string()
         } else {
-            render_docs.join(" ")
+            docs.join(" ")
         };
         let kind = classify_field_type(&field.ty);
-        tm_fields.push(ToMarkdownField { ident, kind, section_title, skip, flatten });
+        let weak = has_markdown_weak(&field.attrs);
+        tm_fields.push(ToMarkdownField { ident, kind, section_title, skip, flatten, weak });
     }
 
     // Name collision detection: case-insensitive check struct name vs field names
@@ -215,12 +216,11 @@ fn derive_to_markdown_enum(input: DeriveInput) -> TokenStream {
                     let skip = has_markdown_skip(&f.attrs);
                     if skip { return quote! {}; }
                     let flatten = has_markdown_flatten(&f.attrs);
-                    let classified = extract_classified_docs(&f.attrs);
-                    let render_docs = classified.for_render();
-                    let title = if render_docs.is_empty() {
+                    let docs = extract_doc_comments(&f.attrs);
+                    let title = if docs.is_empty() {
                         fident.to_string()
                     } else {
-                        render_docs.join(" ")
+                        docs.join(" ")
                     };
                     let kind = classify_field_type(&f.ty);
                     gen_enum_field_depth_render(fident, &title, &kind, flatten)
@@ -552,20 +552,40 @@ fn gen_depth_render(f: &ToMarkdownField) -> TokenStream {
 
     match &f.kind {
         FieldKind::String => {
-            quote! {
-                {
-                    let __val = &self.#ident;
-                    if !__val.is_empty() {
-                        if __val.contains('\n') {
-                            let __hashes: ::std::string::String = "#".repeat(__depth + 1);
-                            __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
-                            __out.push_str(__val);
-                            __out.push('\n');
-                        } else {
-                            __out.push_str(#title);
-                            __out.push_str(": ");
-                            __out.push_str(__val);
-                            __out.push('\n');
+            if f.weak {
+                quote! {
+                    {
+                        let __val = &self.#ident;
+                        if !__val.is_empty() {
+                            if __val.contains('\n') {
+                                __out.push_str(&::std::format!("\n// {}\n", #title));
+                                __out.push_str(__val);
+                                __out.push('\n');
+                            } else {
+                                __out.push_str(#title);
+                                __out.push_str(": ");
+                                __out.push_str(__val);
+                                __out.push('\n');
+                            }
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    {
+                        let __val = &self.#ident;
+                        if !__val.is_empty() {
+                            if __val.contains('\n') {
+                                let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                                __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                                __out.push_str(__val);
+                                __out.push('\n');
+                            } else {
+                                __out.push_str(#title);
+                                __out.push_str(": ");
+                                __out.push_str(__val);
+                                __out.push('\n');
+                            }
                         }
                     }
                 }
@@ -599,7 +619,7 @@ fn gen_depth_render(f: &ToMarkdownField) -> TokenStream {
             }
         }
         FieldKind::Option(inner_kind) => {
-            gen_option_depth_render(ident, title, inner_kind, f.flatten)
+            gen_option_depth_render(ident, title, inner_kind, f.flatten, f.weak)
         }
         FieldKind::Other => {
             if f.flatten {
@@ -638,21 +658,38 @@ fn gen_vec_element_render_depth(inner_kind: &FieldKind) -> TokenStream {
 }
 
 /// Generate depth-mode rendering for Option<T> fields.
-fn gen_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKind, flatten: bool) -> TokenStream {
+fn gen_option_depth_render(ident: &syn::Ident, title: &str, inner_kind: &FieldKind, flatten: bool, weak: bool) -> TokenStream {
     let value_render = match inner_kind {
         FieldKind::String => {
-            quote! {
-                if !__val.is_empty() {
-                    if __val.contains('\n') {
-                        let __hashes: ::std::string::String = "#".repeat(__depth + 1);
-                        __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
-                        __out.push_str(__val);
-                        __out.push('\n');
-                    } else {
-                        __out.push_str(#title);
-                        __out.push_str(": ");
-                        __out.push_str(__val);
-                        __out.push('\n');
+            if weak {
+                quote! {
+                    if !__val.is_empty() {
+                        if __val.contains('\n') {
+                            __out.push_str(&::std::format!("\n// {}\n", #title));
+                            __out.push_str(__val);
+                            __out.push('\n');
+                        } else {
+                            __out.push_str(#title);
+                            __out.push_str(": ");
+                            __out.push_str(__val);
+                            __out.push('\n');
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    if !__val.is_empty() {
+                        if __val.contains('\n') {
+                            let __hashes: ::std::string::String = "#".repeat(__depth + 1);
+                            __out.push_str(&::std::format!("\n{} {} {}\n", __hashes, #title, __hashes));
+                            __out.push_str(__val);
+                            __out.push('\n');
+                        } else {
+                            __out.push_str(#title);
+                            __out.push_str(": ");
+                            __out.push_str(__val);
+                            __out.push('\n');
+                        }
                     }
                 }
             }
@@ -869,17 +906,16 @@ fn derive_from_markdown_enum(input: DeriveInput) -> TokenStream {
 
     let mut variants: Vec<VariantInfo> = Vec::new();
     for v in variants_data {
-        let classified = extract_classified_docs(&v.attrs);
-        let doc = join_as_comment(classified.for_parse());
+        let docs = extract_doc_comments(&v.attrs);
+        let doc = join_as_comment(&docs);
         let snake_name = to_snake_case(&v.ident.to_string());
 
         let fields = match &v.fields {
             Fields::Named(named) => {
                 named.named.iter().map(|f| {
                     let fname = f.ident.as_ref().unwrap().to_string();
-                    let classified = extract_classified_docs(&f.attrs);
-                    let parse_docs = classified.for_parse();
-                    let fdoc = if parse_docs.is_empty() { fname.clone() } else { join_as_comment(parse_docs) };
+                    let docs = extract_doc_comments(&f.attrs);
+                    let fdoc = if docs.is_empty() { fname.clone() } else { join_as_comment(&docs) };
                     let (is_option, inner_type) = check_option_type(&f.ty);
                     let (is_vec, vec_inner_type, vec_inner_syn_type) = check_vec_type(&f.ty);
                     let is_required = has_markdown_required(&f.attrs);
@@ -1365,9 +1401,8 @@ fn derive_from_markdown_struct(input: DeriveInput) -> TokenStream {
     let mut field_infos: Vec<FromFieldInfo> = Vec::new();
     for f in fields.iter() {
         let fname = f.ident.as_ref().unwrap().to_string();
-        let classified = extract_classified_docs(&f.attrs);
-        let parse_docs = classified.for_parse();
-        let fdoc = if parse_docs.is_empty() { fname.clone() } else { join_as_comment(parse_docs) };
+        let docs = extract_doc_comments(&f.attrs);
+        let fdoc = if docs.is_empty() { fname.clone() } else { join_as_comment(&docs) };
         let (is_option, inner_type) = check_option_type(&f.ty);
         let (is_vec, vec_inner_type, vec_inner_syn_type) = check_vec_type(&f.ty);
         let is_required = has_markdown_required(&f.attrs);
@@ -1693,26 +1728,6 @@ fn is_numeric_inner_type(inner: &str) -> bool {
                     "f32" | "f64")
 }
 
-/// Extract doc comments from attributes.
-/// Classified doc comments by prefix.
-struct ClassifiedDocs {
-    parse: Vec<String>,
-    render: Vec<String>,
-    all: Vec<String>,
-}
-
-impl ClassifiedDocs {
-    /// Get docs for FromMarkdown (parse direction). Falls back to all if no @parse lines.
-    fn for_parse(&self) -> &[String] {
-        if self.parse.is_empty() { &self.all } else { &self.parse }
-    }
-
-    /// Get docs for ToMarkdown (render direction). Falls back to all if no @render lines.
-    fn for_render(&self) -> &[String] {
-        if self.render.is_empty() { &self.all } else { &self.render }
-    }
-}
-
 fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
     let mut docs = Vec::new();
     for attr in attrs {
@@ -1727,24 +1742,6 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
         }
     }
     docs
-}
-
-/// Extract doc comments classified by @parse/@render prefix.
-fn extract_classified_docs(attrs: &[syn::Attribute]) -> ClassifiedDocs {
-    let raw = extract_doc_comments(attrs);
-    let mut parse = Vec::new();
-    let mut render = Vec::new();
-    let mut all = Vec::new();
-    for line in &raw {
-        if let Some(rest) = line.strip_prefix("@parse ") {
-            parse.push(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("@render ") {
-            render.push(rest.to_string());
-        } else {
-            all.push(line.clone());
-        }
-    }
-    ClassifiedDocs { parse, render, all }
 }
 
 /// Join doc comments as comment lines with "// " prefix, preserving original line breaks.
@@ -1784,6 +1781,20 @@ fn has_markdown_flatten(attrs: &[syn::Attribute]) -> bool {
         if attr.path().is_ident("markdown") {
             if let Ok(nested) = attr.parse_args::<syn::Ident>() {
                 if nested == "flatten" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a field has `#[markdown(weak)]` attribute.
+fn has_markdown_weak(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("markdown") {
+            if let Ok(nested) = attr.parse_args::<syn::Ident>() {
+                if nested == "weak" {
                     return true;
                 }
             }
