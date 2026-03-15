@@ -266,7 +266,7 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
         {
             let mut v = ActionView::empty(
                 "20260311220000_a1b2c3".to_string(),
-                "[20260311220000_a1b2c3] 记录思考".to_string(),
+                "记录思考".to_string(),
             );
             v.content = Some("进化之王要求写一个集成测试，构造丰富的mock BeatRequest，调用build_prompt拿到完整input prompt string，dump到文件。\n\n我之前已经写过一个test_full_beat_prompt_sample测试，但数据不够丰富。现在需要大幅扩充mock数据。".to_string());
             v
@@ -274,7 +274,7 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
         {
             let mut v = ActionView::empty(
                 "20260311220100_d4e5f6".to_string(),
-                "[20260311220100_d4e5f6] execute script".to_string(),
+                "execute script".to_string(),
             );
             v.content = Some("cd /opt/alice/testing/instances/ebc381/workspace/alice-dev/engine\ngrep -n \"test_full_beat_prompt_sample\" src/prompt/mod.rs".to_string());
             v.stdout = Some("---exec result (0.3s)---\n359:    fn test_full_beat_prompt_sample() {\n71:pub fn build_beat_request(".to_string());
@@ -285,7 +285,7 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
         {
             let mut v = ActionView::empty(
                 "20260311220200_789abc".to_string(),
-                "[20260311220200_789abc] 你打开了收件箱，开始阅读来信。".to_string(),
+                "你打开了收件箱，开始阅读来信。".to_string(),
             );
             v.messages = Some("system [MSG:20260311220150]发来一条消息：\n\n知识更新完成（33 KB → 36 KB）".to_string());
             v
@@ -293,7 +293,7 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
         {
             let mut v = ActionView::empty(
                 "20260311220300_def012".to_string(),
-                "[20260311220300_def012] 记录思考".to_string(),
+                "记录思考".to_string(),
             );
             v.content = Some("知识更新成功。继续写集成测试。需要构造极其丰富真实的mock数据，让章邯看到\"假如部署了，agent的推理prompt长啥样\"。".to_string());
             v

@@ -164,11 +164,13 @@ pub enum ActionStatus {
 /// Fields are detailed Option<T> — no big concatenated strings.
 #[derive(Debug, ToMarkdown)]
 pub struct ActionView {
-    #[markdown(skip)]
-    pub action_id: String,
+        pub action_id: String,
 
     /// description
     pub description: String,
+
+    /// started_at
+    pub started_at: Option<String>,
 
     // -- input side --
 
@@ -279,6 +281,7 @@ impl ActionView {
         ActionView {
             action_id,
             description,
+            started_at: None,
             content: None,
             recipient: None,
             message: None,
@@ -425,14 +428,20 @@ impl ActionView {
         // Generate description
         let action_label = action.as_ref().map(|a| format!("{}", a)).unwrap_or_else(|| row.action_type.clone());
         let description = if status == ActionStatus::Distilled {
-            format!("[已提炼] [{}] {}", row.action_id, action_label)
+            format!("[已提炼] {}", action_label)
         } else if status == ActionStatus::Executing {
-            format!("[{}] {}\n---action executing, result pending---", row.action_id, action_label)
+            action_label.clone()
         } else {
-            format!("[{}] {}", row.action_id, action_label)
+            action_label.clone()
         };
 
         let mut view = ActionView::empty(row.action_id.clone(), description);
+        view.started_at = Some(row.created_at.clone());
+
+        // Executing status marker in note field
+        if status == ActionStatus::Executing {
+            view.note = Some("---action executing, result pending---".to_string());
+        }
 
         // Distilled: only show distill_text
         if status == ActionStatus::Distilled {
