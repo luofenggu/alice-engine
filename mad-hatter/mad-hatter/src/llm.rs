@@ -24,6 +24,22 @@ pub trait StructInput {}
 /// Used to enforce struct-only constraint on infer/stream_infer output
 pub trait StructOutput {}
 
+/// Find `pattern` appearing as a complete line (after trimming) in `text`.
+/// Returns the byte offset where the pattern starts (not line start).
+/// This prevents substring matches inside content lines.
+fn find_line_match(text: &str, pattern: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if trimmed == pattern {
+            let leading = line.find(pattern).unwrap_or(0);
+            return Some(offset + leading);
+        }
+        offset += line.len() + 1;
+    }
+    None
+}
+
 /// LlmChannel: abstraction for LLM text streaming (async)
 ///
 /// Returns an unbounded receiver that yields text chunks from the LLM stream.
@@ -299,8 +315,8 @@ impl<T: FromMarkdown> StreamInfer<T> {
             }
 
             // Early preamble detection: check completed lines before first separator
-            // Instead of waiting for separator to appear, check each completed line immediately
-            if self.parsed_count == 0 && !self.buffer.contains(&separator) {
+            // Uses line-level matching to avoid substring false positives
+            if self.parsed_count == 0 && find_line_match(&self.buffer, &separator).is_none() {
                 if let Some(last_newline) = self.buffer.rfind('\n') {
                     let completed = &self.buffer[..last_newline];
                     for line in completed.lines() {
@@ -312,27 +328,29 @@ impl<T: FromMarkdown> StreamInfer<T> {
                         self.done = true;
                         let display = if t.len() > 200 { &t[..200] } else { t };
                         return Some(Err(format!(
-                            "Unexpected content before first action separator: {}",
-                            display
+                            "Unexpected content before first element separator.\n  Found: {}\n  Expected separator: {}",
+                            display, separator
                         )));
                     }
                 }
             }
 
             // Priority 1: Try to extract a complete element between two separators
-            let first_sep = self.buffer.find(&separator);
+            // Uses line-level matching to prevent substring matches in content
+            let first_sep = find_line_match(&self.buffer, &separator);
             if let Some(first_pos) = first_sep {
                 if self.parsed_count == 0 && first_pos > 0 {
-                    // Fallback preamble check for content on same line as separator (no \n between)
+                    // Fallback preamble check for content before first separator
                     let before = self.buffer[..first_pos].trim();
                     if !before.is_empty() && !before.lines().all(|l| {
                         let t = l.trim();
                         t.is_empty() || t.starts_with("```")
                     }) {
                         self.done = true;
+                        let display = if before.len() > 200 { &before[..200] } else { before };
                         return Some(Err(format!(
-                            "Unexpected content before first action separator: {}",
-                            if before.len() > 200 { &before[..200] } else { before }
+                            "Unexpected content before first element separator.\n  Found: {}\n  Expected separator: {}",
+                            display, separator
                         )));
                     }
                     self.buffer = self.buffer[first_pos..].to_string();
@@ -340,8 +358,8 @@ impl<T: FromMarkdown> StreamInfer<T> {
                 }
 
                 let after_first = first_pos + separator.len();
-                let next_sep = self.buffer[after_first..].find(&separator);
-                let next_end = self.buffer[after_first..].find(&end_marker);
+                let next_sep = find_line_match(&self.buffer[after_first..], &separator);
+                let next_end = find_line_match(&self.buffer[after_first..], &end_marker);
 
                 let boundary = match (next_sep, next_end) {
                     (Some(s), Some(e)) => {
@@ -413,7 +431,7 @@ impl<T: FromMarkdown> StreamInfer<T> {
                 None => {
                     // Channel closed — stream ended
                     self.done = true;
-                    if self.buffer.contains(&end_marker) {
+                    if find_line_match(&self.buffer, &end_marker).is_some() {
                         return None;
                     }
                     let tail: String = if self.buffer.len() > 200 {
@@ -467,5 +485,81 @@ where
         results.push(item?);
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_line_match_exact_line() {
+        let text = "hello\nAction-f54ce2\nworld";
+        assert_eq!(find_line_match(text, "Action-f54ce2"), Some(6));
+    }
+
+    #[test]
+    fn test_find_line_match_substring_no_match() {
+        // Key scenario: separator appears as substring within a line, should NOT match
+        let text = "hello\nsome text Action-f54ce2 more text\nworld";
+        assert_eq!(find_line_match(text, "Action-f54ce2"), None);
+    }
+
+    #[test]
+    fn test_find_line_match_with_whitespace() {
+        let text = "hello\n  Action-f54ce2  \nworld";
+        // trim() should match, returns offset of pattern within the line
+        assert!(find_line_match(text, "Action-f54ce2").is_some());
+    }
+
+    #[test]
+    fn test_find_line_match_first_line() {
+        let text = "Action-f54ce2\nhello\nworld";
+        assert_eq!(find_line_match(text, "Action-f54ce2"), Some(0));
+    }
+
+    #[test]
+    fn test_find_line_match_last_line_no_newline() {
+        let text = "hello\nAction-f54ce2";
+        assert_eq!(find_line_match(text, "Action-f54ce2"), Some(6));
+    }
+
+    #[test]
+    fn test_find_line_match_no_match() {
+        let text = "hello\nworld\nfoo";
+        assert_eq!(find_line_match(text, "Action-f54ce2"), None);
+    }
+
+    #[test]
+    fn test_find_line_match_empty_text() {
+        assert_eq!(find_line_match("", "Action-f54ce2"), None);
+    }
+
+    #[test]
+    fn test_find_line_match_multiple_occurrences() {
+        // Should return the first match
+        let text = "Action-f54ce2\nhello\nAction-f54ce2";
+        assert_eq!(find_line_match(text, "Action-f54ce2"), Some(0));
+    }
+
+    #[test]
+    fn test_find_line_match_realistic_scenario() {
+        // Realistic: thinking content contains separator as substring
+        let text = "Action-abc123\nthinking\nseparator格式统一（Action-abc123 + 字段-abc123）✅\nAction-abc123\nsend_msg\n";
+        // First match should be at position 0 (the actual separator line)
+        let first = find_line_match(text, "Action-abc123");
+        assert_eq!(first, Some(0));
+
+        // After first separator + "thinking\n...", find next separator
+        // Skip past first separator line
+        let after_first = "Action-abc123\n".len();
+        let rest = &text[after_first..];
+        let second = find_line_match(rest, "Action-abc123");
+        // Should find the second real separator, NOT the substring in thinking
+        assert!(second.is_some());
+        // The substring line should be skipped
+        let matched_pos = second.unwrap();
+        let matched_line_start = after_first + matched_pos;
+        assert!(text[matched_line_start..].starts_with("Action-abc123\nsend_msg"));
+    }
 }
 

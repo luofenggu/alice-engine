@@ -1193,7 +1193,7 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
             let __first_trimmed = __first_chunk.trim();
             if !__first_trimmed.is_empty() {
                 return ::std::result::Result::Err(
-                    ::std::format!("[{}] Unexpected content before first element separator '{}': {}", #enum_name_str, __element_sep, __first_trimmed)
+                    ::std::format!("[{}] Unexpected content before first element separator.\n  Found: {}\n  Expected separator: {}", #enum_name_str, __first_trimmed, __element_sep)
                 );
             }
         }
@@ -1214,7 +1214,7 @@ fn gen_from_markdown(enum_name: &syn::Ident, enum_name_str: &str, variants: &[Va
                 #(#match_arms)*
                 _ => {
                     return ::std::result::Result::Err(
-                        ::std::format!("[{}] Unknown variant '{}'. Parsed {} element(s) successfully. Expected one of: {}", #enum_name_str, __variant_line, __parsed_count, #variant_list_str)
+                        ::std::format!("[{}] Unknown variant.\n  Found: '{}'\n  Expected one of: {}\n  ({} element(s) parsed successfully before this error)", #enum_name_str, __variant_line, #variant_list_str, __parsed_count)
                     );
                 }
             }
