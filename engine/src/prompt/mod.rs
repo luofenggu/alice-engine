@@ -35,8 +35,6 @@ pub fn extract_session_blocks_from_entries(
             if let Ok(db_messages) = alice
                 .instance
                 .chat
-                .lock()
-                .unwrap()
                 .read_messages_in_range(&entry.first_msg, &entry.last_msg)
             {
                 for msg in &db_messages {
@@ -249,15 +247,11 @@ mod tests {
         alice
             .instance
             .chat
-            .lock()
-            .unwrap()
             .write_user_message("hello world", "20260223155500")
             .unwrap();
         alice
             .instance
             .chat
-            .lock()
-            .unwrap()
             .write_agent_reply("alice", "hi back", "20260223155600", "")
             .unwrap();
 
@@ -312,8 +306,6 @@ mod tests {
         alice
             .instance
             .chat
-            .lock()
-            .unwrap()
             .write_user_message("hi there", "20260223120000")
             .unwrap();
         alice

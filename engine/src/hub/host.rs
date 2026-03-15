@@ -294,8 +294,7 @@ impl ExtensionHandler for HostLocalHandler {
     ) -> Result<(), String> {
         // Try local delivery first
         if let Ok(instance) = self.instance_store.open(&to_instance_id) {
-            let mut ch = instance.chat.lock()
-                .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+            let ch = &instance.chat;
             let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
             ch.write_agent_reply(&from_instance_id, &content, &timestamp, "")
                 .map(|_| {

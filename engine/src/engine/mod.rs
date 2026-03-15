@@ -615,9 +615,7 @@ impl AliceEngine {
                                     };
                                     // Notify via system message
                                     let ts = crate::persist::chat::ChatHistory::now_timestamp();
-                                    if let Ok(mut chat) = chat.lock() {
-                                        let _ = chat.write_system_message(&notify_msg, &ts);
-                                    }
+                                    let _ = chat.write_system_message(&notify_msg, &ts);
                                     rolling.store(false, Ordering::Relaxed);
                                 });
                             }

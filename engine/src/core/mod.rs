@@ -712,8 +712,6 @@ impl Alice {
     pub fn count_unread_messages(&self) -> i64 {
         self.instance
             .chat
-            .lock()
-            .unwrap()
             .count_unread_user_messages(&self.instance.id)
             .unwrap_or(0)
     }
@@ -772,8 +770,6 @@ impl Alice {
         let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
         self.instance
             .chat
-            .lock()
-            .unwrap()
             .write_system_message(message, &timestamp)
             .ok();
 
@@ -1300,9 +1296,7 @@ pub fn spawn_capture_task(alice: &Alice, summary_content: &str, log_dir: &std::p
             }
         };
         let ts = crate::persist::chat::ChatHistory::now_timestamp();
-        if let Ok(mut chat) = chat.lock() {
-            let _ = chat.write_system_message(&notify_msg, &ts);
-        }
+        let _ = chat.write_system_message(&notify_msg, &ts);
     });
 }
 

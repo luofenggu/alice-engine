@@ -70,8 +70,6 @@ async fn execute_read_msg(alice: &mut Alice, tx: &mut Transaction) -> Result<Act
     let messages = alice
         .instance
         .chat
-        .lock()
-        .unwrap()
         .read_unread_user_messages(&alice.instance.id)
         .context("Failed to read unread messages")?;
 
@@ -146,8 +144,6 @@ async fn execute_send_msg(
         alice
             .instance
             .chat
-            .lock()
-            .unwrap()
             .write_agent_reply(&alice.instance.id, content, &timestamp, "")
             .context("Failed to write agent reply")?;
         return Ok(ActionOutput::SendMsg { msg_id: timestamp });
@@ -218,8 +214,6 @@ async fn execute_send_msg(
             alice
                 .instance
                 .chat
-                .lock()
-                .unwrap()
                 .write_agent_reply(&alice.instance.id, content, &timestamp, &resolved)
                 .context("Failed to write relayed agent reply")?;
             Ok(ActionOutput::SendMsg { msg_id: timestamp })
@@ -754,15 +748,11 @@ mod tests {
         alice
             .instance
             .chat
-            .lock()
-            .unwrap()
             .write_user_message("hello agent", "20260220120000")
             .unwrap();
         alice
             .instance
             .chat
-            .lock()
-            .unwrap()
             .write_user_message("how are you?", "20260220120001")
             .unwrap();
 
@@ -782,8 +772,6 @@ mod tests {
             alice
                 .instance
                 .chat
-                .lock()
-                .unwrap()
                 .count_unread_user_messages("test_instance")
                 .unwrap(),
             0
@@ -808,8 +796,6 @@ mod tests {
         let replies = alice
             .instance
             .chat
-            .lock()
-            .unwrap()
             .read_unread_agent_replies()
             .unwrap();
         assert_eq!(replies.len(), 1);

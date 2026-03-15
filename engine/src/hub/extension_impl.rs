@@ -56,8 +56,7 @@ impl HubExtensionHandler {
     fn local_relay(&self, from: &str, to: &str, content: &str) -> Result<(), String> {
         let instance = self.instance_store.open(to)
             .map_err(|e| format!("Instance {} not found: {}", to, e))?;
-        let mut ch = instance.chat.lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+        let ch = &instance.chat;
         let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
         ch.write_agent_reply(from, content, &timestamp, "")
             .map(|_| ())
@@ -211,8 +210,7 @@ impl SlaveLocalHandler {
     fn local_relay(&self, from: &str, to: &str, content: &str) -> Result<(), String> {
         let instance = self.instance_store.open(to)
             .map_err(|e| format!("Instance {} not found: {}", to, e))?;
-        let mut ch = instance.chat.lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+        let ch = &instance.chat;
         let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
         ch.write_agent_reply(from, content, &timestamp, "")
             .map(|_| ())

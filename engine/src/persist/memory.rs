@@ -22,7 +22,7 @@ use chrono::Local;
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use diesel::r2d2::{ConnectionManager, Pool};
 
 /// A single entry in a session block JSONL file.
 /// This struct is the single source of truth for session block format.
@@ -50,7 +50,7 @@ pub struct Memory {
     /// Sessions directory (memory_dir/sessions)
     sessions_dir: PathBuf,
     /// Database connection for memory tables
-    pub db: Arc<Mutex<SqliteConnection>>,
+    pub db: Pool<ConnectionManager<SqliteConnection>>,
     /// Instance ID for scoping DB queries
     instance_id: String,
 }
@@ -73,10 +73,15 @@ impl Memory {
 
         // Initialize memory database
         let db_path = memory_dir.join("memory.db");
-        let mut conn = SqliteConnection::establish(
+        let manager = ConnectionManager::<SqliteConnection>::new(
             db_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid db path"))?,
-        )
-        .with_context(|| format!("Failed to open memory db: {}", db_path.display()))?;
+        );
+        let pool = Pool::builder()
+            .max_size(2)
+            .build(manager)
+            .with_context(|| format!("Failed to create memory pool: {}", db_path.display()))?;
+        let mut conn = pool.get()
+            .with_context(|| format!("Failed to get memory connection: {}", db_path.display()))?;
 
         // Create tables
         diesel::sql_query(db::CREATE_ACTION_LOG_TABLE)
@@ -110,7 +115,7 @@ impl Memory {
         Ok(Self {
             memory_dir,
             sessions_dir,
-            db: Arc::new(Mutex::new(conn)),
+            db: pool,
             instance_id: instance_id.to_string(),
         })
     }
@@ -252,7 +257,7 @@ impl Memory {
             created_at,
         };
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         diesel::insert_into(action_log::table)
             .values(&new_row)
             .execute(conn)
@@ -285,7 +290,7 @@ impl Memory {
             created_at,
         };
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         diesel::insert_into(action_log::table)
             .values(&new_row)
             .execute(conn)
@@ -307,7 +312,7 @@ impl Memory {
         let output_json = serde_json::to_string(output)
             .with_context(|| format!("[MEMORY-DB] Failed to serialize ActionOutput for {}", action_id))?;
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         let updated = diesel::update(
             action_log::table
                 .filter(action_log::instance_id.eq(&self.instance_id))
@@ -331,7 +336,7 @@ impl Memory {
     pub fn distill_action_log(&self, action_id: &str, summary: &str) -> Result<(usize, usize)> {
         use crate::bindings::db::{action_log, ActionLogRow, ACTION_STATUS_DISTILLED};
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
 
         // Read current action_output length for logging
         let row: Option<ActionLogRow> = action_log::table
@@ -371,7 +376,7 @@ impl Memory {
     pub fn render_current_from_db(&self) -> Result<String> {
         use crate::bindings::db::{action_log, ActionLogRow};
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
 
         let cursor = self.get_cursor_inner(conn)?;
 
@@ -397,7 +402,7 @@ impl Memory {
     pub fn advance_cursor(&self) -> Result<()> {
         use crate::bindings::db::action_log;
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
 
         let max_id: Option<i64> = action_log::table
             .filter(action_log::instance_id.eq(&self.instance_id))
@@ -415,7 +420,7 @@ impl Memory {
     /// Query message ID range from action_log entries after cursor.
     /// Extracts msg_id from send_msg output JSON and entry timestamps from read_msg output JSON.
     pub fn query_msg_range(&self) -> Result<(Option<String>, Option<String>)> {
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         let cursor = self.get_cursor_inner(conn)?;
 
         // Query all msg_ids: send_msg's $.msg_id and read_msg's entries[*].timestamp
@@ -454,7 +459,7 @@ impl Memory {
         use diesel::dsl::sql;
         use diesel::sql_types::BigInt;
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         let cursor = self.get_cursor_inner(conn)?;
 
         let count: i64 = action_log::table
@@ -475,7 +480,7 @@ impl Memory {
     pub fn write_knowledge(&self, content: &str) -> Result<()> {
         use crate::bindings::db::knowledge_store;
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         let now = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
         diesel::replace_into(knowledge_store::table)
             .values(&KnowledgeRow {
@@ -492,7 +497,7 @@ impl Memory {
     pub fn read_knowledge(&self) -> String {
         use crate::bindings::db::knowledge_store;
 
-        let conn = &mut *match self.db.lock() {
+        let conn = &mut *match self.db.get() {
             Ok(c) => c,
             Err(_) => return String::new(),
         };
@@ -509,7 +514,7 @@ impl Memory {
     pub fn write_history(&self, content: &str) -> Result<()> {
         use crate::bindings::db::history_store;
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         let now = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
         diesel::replace_into(history_store::table)
             .values(&HistoryRow {
@@ -526,7 +531,7 @@ impl Memory {
     pub fn read_history(&self) -> String {
         use crate::bindings::db::history_store;
 
-        let conn = &mut *match self.db.lock() {
+        let conn = &mut *match self.db.get() {
             Ok(c) => c,
             Err(_) => return String::new(),
         };
@@ -543,7 +548,7 @@ impl Memory {
     pub fn list_session_blocks_db(&self) -> Result<Vec<String>> {
         use crate::bindings::db::session_blocks;
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         let names: Vec<String> = session_blocks::table
             .filter(session_blocks::instance_id.eq(&self.instance_id))
             .select(session_blocks::block_name)
@@ -558,7 +563,7 @@ impl Memory {
     pub fn read_session_entries_db(&self, block_name: &str) -> Result<Vec<SessionBlockEntry>> {
         use crate::bindings::db::session_blocks;
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         let rows: Vec<SessionBlockRow> = session_blocks::table
             .filter(session_blocks::instance_id.eq(&self.instance_id))
             .filter(session_blocks::block_name.eq(block_name))
@@ -584,7 +589,7 @@ impl Memory {
     ) -> Result<()> {
         use crate::bindings::db::session_blocks;
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         let now = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
         diesel::insert_into(session_blocks::table)
             .values(&NewSessionBlock {
@@ -614,7 +619,7 @@ impl Memory {
             return Ok(());
         }
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         let now = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
 
         conn.transaction(|conn| {
@@ -646,7 +651,7 @@ impl Memory {
     pub fn delete_session_block_db(&self, block_name: &str) -> Result<()> {
         use crate::bindings::db::session_blocks;
 
-        let conn = &mut *self.db.lock().map_err(|e| anyhow::anyhow!("DB lock: {}", e))?;
+        let conn = &mut *self.db.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))?;
         diesel::delete(
             session_blocks::table
                 .filter(session_blocks::instance_id.eq(&self.instance_id))
@@ -663,7 +668,7 @@ impl Memory {
         use diesel::dsl::sql;
         use diesel::sql_types::BigInt;
 
-        let conn = &mut *match self.db.lock() {
+        let conn = &mut *match self.db.get() {
             Ok(c) => c,
             Err(_) => return 0,
         };

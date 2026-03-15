@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::{debug, info};
 
 use super::chat::ChatHistory;
@@ -38,7 +38,7 @@ pub struct Instance {
     /// Memory subsystem (knowledge, history, current, sessions).
     pub memory: Memory,
     /// Chat history (SQLite connection, shared via Arc for reuse).
-    pub chat: Arc<Mutex<ChatHistory>>,
+    pub chat: ChatHistory,
     /// Workspace root path (instance_dir/workspace).
     pub workspace: PathBuf,
     /// Skill file (fixed knowledge, not managed by memory/capture).
@@ -135,7 +135,7 @@ impl Instance {
             instance_dir,
             settings,
             memory,
-            chat: Arc::new(Mutex::new(chat)),
+            chat,
             workspace,
             skill,
         })
@@ -223,14 +223,14 @@ impl Instance {
             instance_dir: instance_dir.to_path_buf(),
             settings,
             memory,
-            chat: Arc::new(Mutex::new(chat)),
+            chat,
             workspace,
             skill,
         })
     }
 
     /// Open with injected (cached) chat connection and memory handle.
-    pub fn open_with_resources(instance_dir: &Path, chat: Arc<Mutex<ChatHistory>>, memory: Memory) -> Result<Self> {
+    pub fn open_with_resources(instance_dir: &Path, chat: ChatHistory, memory: Memory) -> Result<Self> {
         let id = instance_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -297,7 +297,7 @@ impl Instance {
 pub struct InstanceStore {
     instances_dir: PathBuf,
     /// SQLite connections — the only resource that needs reuse.
-    connections: Arc<std::sync::RwLock<HashMap<String, Arc<Mutex<ChatHistory>>>>>,
+    connections: Arc<std::sync::RwLock<HashMap<String, ChatHistory>>>,
     /// Memory handles — cached to avoid repeated open.
     memories: Arc<std::sync::RwLock<HashMap<String, Memory>>>,
 }
@@ -333,7 +333,7 @@ impl InstanceStore {
     }
 
     /// Get or create a cached SQLite connection for an instance.
-    pub(crate) fn get_connection(&self, id: &str) -> Result<Arc<Mutex<ChatHistory>>> {
+    pub(crate) fn get_connection(&self, id: &str) -> Result<ChatHistory> {
         // Fast path: read lock
         {
             let cache = self.connections.read().unwrap();
@@ -350,9 +350,9 @@ impl InstanceStore {
         let instance_dir = self.instances_dir.join(id);
         let chat_db_path = instance_dir.join("data").join("chat.db");
         let ch = ChatHistory::open(&chat_db_path)?;
-        let arc = Arc::new(Mutex::new(ch));
-        cache.insert(id.to_string(), arc.clone());
-        Ok(arc)
+        
+        cache.insert(id.to_string(), ch.clone());
+        Ok(ch)
     }
 
     /// Get or create a cached Memory handle for an instance.

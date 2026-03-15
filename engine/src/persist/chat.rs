@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use diesel::r2d2::{ConnectionManager, Pool};
 use tracing::info;
 
 use crate::bindings::db::{self, messages, MessageRow, NewMessage};
@@ -146,11 +147,17 @@ pub struct QueryResult {
 ///
 /// Chat history and message channel.
 /// All queries go directly to SQLite via Diesel — no in-memory caching.
+#[derive(Clone)]
 pub struct ChatHistory {
-    conn: SqliteConnection,
+    pool: Pool<ConnectionManager<SqliteConnection>>,
 }
 
 impl ChatHistory {
+    /// Get a connection from the pool.
+    fn conn(&self) -> Result<diesel::r2d2::PooledConnection<ConnectionManager<SqliteConnection>>> {
+        self.pool.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))
+    }
+
     /// Open (or create) the chat database at the given path.
     ///
     /// @TRACE: MSG — `[MSG] ChatHistory initialized: {path}`
@@ -159,8 +166,13 @@ impl ChatHistory {
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("invalid db path: {}", db_path.display()))?;
 
-        let mut conn = SqliteConnection::establish(path_str)
-            .map_err(|e| anyhow::anyhow!("failed to open chat db {}: {}", db_path.display(), e))?;
+        let manager = ConnectionManager::<SqliteConnection>::new(path_str);
+        let pool = Pool::builder()
+            .max_size(2)
+            .build(manager)
+            .map_err(|e| anyhow::anyhow!("failed to create chat pool {}: {}", db_path.display(), e))?;
+        let mut conn = pool.get()
+            .map_err(|e| anyhow::anyhow!("failed to get chat connection {}: {}", db_path.display(), e))?;
 
         // Create table if not exists
         diesel::sql_query(db::CREATE_MESSAGES_TABLE)
@@ -187,14 +199,14 @@ impl ChatHistory {
             "[MSG] ChatHistory initialized: {:?} ({} messages)",
             db_path, count
         );
-        Ok(Self { conn })
+        Ok(Self { pool })
     }
 
     /// Append a message to history (marked as read, for display).
     ///
     /// @TRACE: MSG
     pub fn append(
-        &mut self,
+        &self,
         role: &str,
         sender: &str,
         content: &str,
@@ -216,10 +228,10 @@ impl ChatHistory {
     /// Query messages with pagination.
     ///
     /// @TRACE: MSG
-    pub fn query(&mut self, limit: i64, before: Option<i64>) -> Result<QueryResult> {
+    pub fn query(&self, limit: i64, before: Option<i64>) -> Result<QueryResult> {
         let total: i64 = messages::table
             .count()
-            .get_result(&mut self.conn)
+            .get_result(&mut *self.conn()?)
             .context("failed to count messages")?;
 
         if total == 0 {
@@ -236,7 +248,7 @@ impl ChatHistory {
                 messages::table
                     .order(messages::id.desc())
                     .limit(limit)
-                    .load(&mut self.conn)
+                    .load(&mut *self.conn()?)
                     .context("failed to query messages")?
             }
             Some(before_id) => {
@@ -244,7 +256,7 @@ impl ChatHistory {
                     .filter(messages::id.lt(before_id))
                     .order(messages::id.desc())
                     .limit(limit)
-                    .load(&mut self.conn)
+                    .load(&mut *self.conn()?)
                     .context("failed to query messages with before")?
             }
         };
@@ -255,7 +267,7 @@ impl ChatHistory {
             let older_count: i64 = messages::table
                 .filter(messages::id.lt(start_id))
                 .count()
-                .get_result(&mut self.conn)
+                .get_result(&mut *self.conn()?)
                 .unwrap_or(0);
             older_count > 0
         } else {
@@ -273,11 +285,11 @@ impl ChatHistory {
     }
 
     /// Get the timestamp of the last message (as epoch millis, 0 if empty).
-    pub fn get_last_message_time(&mut self) -> Result<i64> {
+    pub fn get_last_message_time(&self) -> Result<i64> {
         let result: Option<String> = messages::table
             .select(messages::timestamp)
             .order(messages::id.desc())
-            .first::<String>(&mut self.conn)
+            .first::<String>(&mut *self.conn()?)
             .optional()
             .context("failed to get last message time")?;
 
@@ -295,7 +307,7 @@ impl ChatHistory {
     /// Unified message write function.
     /// All message types (user/agent/system) go through this single entry point.
     pub fn write_message(
-        &mut self,
+        &self,
         role: &str,
         sender: &str,
         content: &str,
@@ -315,7 +327,7 @@ impl ChatHistory {
     }
 
     pub fn write_user_message(
-        &mut self,
+        &self,
         content: &str,
         timestamp: &str,
     ) -> Result<i64> {
@@ -326,7 +338,7 @@ impl ChatHistory {
     /// Reads all unread messages except agent messages sent by self.
     ///
     /// @TRACE: MSG
-    pub fn read_unread_user_messages(&mut self, self_instance_id: &str) -> Result<Vec<InboxMessage>> {
+    pub fn read_unread_user_messages(&self, self_instance_id: &str) -> Result<Vec<InboxMessage>> {
         // Filter: unread AND NOT (role='agent' AND sender=self)
         let rows: Vec<MessageRow> = messages::table
             .filter(
@@ -336,7 +348,7 @@ impl ChatHistory {
                             .and(messages::sender.eq(self_instance_id))
                     ))
             )
-            .load(&mut self.conn)
+            .load(&mut *self.conn()?)
             .context("failed to read unread messages")?;
 
         let msgs: Vec<Message> = rows.into_iter().map(Message::from).collect();
@@ -354,7 +366,7 @@ impl ChatHistory {
                 )
             )
             .set(messages::read_status.eq(Message::STATUS_READ))
-            .execute(&mut self.conn)
+            .execute(&mut *self.conn()?)
             .context("failed to mark messages as read")?;
         }
 
@@ -362,7 +374,7 @@ impl ChatHistory {
     }
 
     /// Count unread inbox messages (excluding agent messages sent by self).
-    pub fn count_unread_user_messages(&mut self, self_instance_id: &str) -> Result<i64> {
+    pub fn count_unread_user_messages(&self, self_instance_id: &str) -> Result<i64> {
         let count: i64 = messages::table
             .filter(
                 messages::read_status.eq(Message::STATUS_UNREAD)
@@ -372,7 +384,7 @@ impl ChatHistory {
                     ))
             )
             .count()
-            .get_result(&mut self.conn)
+            .get_result(&mut *self.conn()?)
             .context("failed to count unread messages")?;
         Ok(count)
     }
@@ -381,7 +393,7 @@ impl ChatHistory {
     ///
     /// @TRACE: MSG
     pub fn write_agent_reply(
-        &mut self,
+        &self,
         instance_id: &str,
         content: &str,
         timestamp: &str,
@@ -401,7 +413,7 @@ impl ChatHistory {
     /// Write a system message (role=system, read_status=unread).
     /// System messages are delivered to the agent's inbox alongside user messages.
     pub fn write_system_message(
-        &mut self,
+        &self,
         content: &str,
         timestamp: &str,
     ) -> Result<i64> {
@@ -410,13 +422,13 @@ impl ChatHistory {
 
     /// Read all unread agent replies and mark them as read.
     /// Returns Vec<(id, content, timestamp)> for deduplication on frontend.
-    pub fn read_unread_agent_replies(&mut self) -> Result<Vec<(i64, String, String)>> {
+    pub fn read_unread_agent_replies(&self) -> Result<Vec<(i64, String, String)>> {
         let rows: Vec<MessageRow> = messages::table
             .filter(
                 messages::role.eq(Message::ROLE_AGENT)
                     .and(messages::read_status.eq(Message::STATUS_UNREAD))
             )
-            .load(&mut self.conn)
+            .load(&mut *self.conn()?)
             .context("failed to read unread agent replies")?;
 
         let result: Vec<(i64, String, String)> = rows
@@ -432,7 +444,7 @@ impl ChatHistory {
                 )
             )
             .set(messages::read_status.eq(Message::STATUS_READ))
-            .execute(&mut self.conn)
+            .execute(&mut *self.conn()?)
             .context("failed to mark agent replies as read")?;
         }
 
@@ -442,7 +454,7 @@ impl ChatHistory {
     /// Get agent replies with id > after_id (for polling without read_status).
     /// Returns Vec<(id, sender, role, content, timestamp, recipient)>.
     pub fn get_agent_replies_after(
-        &mut self,
+        &self,
         after_id: i64,
     ) -> Result<Vec<(i64, String, String, String, String, String)>> {
         let rows: Vec<MessageRow> = messages::table
@@ -451,7 +463,7 @@ impl ChatHistory {
                     .and(messages::id.gt(after_id))
             )
             .order(messages::id.asc())
-            .load(&mut self.conn)
+            .load(&mut *self.conn()?)
             .context("failed to get agent replies after")?;
 
         Ok(rows
@@ -462,7 +474,7 @@ impl ChatHistory {
 
     /// Get messages (any role) after a given id, with limit for pagination
     pub fn get_messages_after(
-        &mut self,
+        &self,
         after_id: i64,
         limit: i64,
     ) -> Result<Vec<(i64, String, String, String, String, String)>> {
@@ -470,7 +482,7 @@ impl ChatHistory {
             .filter(messages::id.gt(after_id))
             .order(messages::id.asc())
             .limit(limit)
-            .load(&mut self.conn)
+            .load(&mut *self.conn()?)
             .context("failed to get messages after")?;
 
         Ok(rows
@@ -481,7 +493,7 @@ impl ChatHistory {
 
     /// Read all messages within a timestamp range (inclusive).
     /// Timestamps are in "yyyyMMddHHmmss" format.
-    pub fn read_messages_in_range(&mut self, start: &str, end: &str) -> Result<Vec<RangeMessage>> {
+    pub fn read_messages_in_range(&self, start: &str, end: &str) -> Result<Vec<RangeMessage>> {
         let rows: Vec<MessageRow> = messages::table
             .filter(
                 messages::timestamp.ge(start)
@@ -489,7 +501,7 @@ impl ChatHistory {
             )
             .order(messages::id.asc())
             .limit(50)
-            .load(&mut self.conn)
+            .load(&mut *self.conn()?)
             .context("failed to read messages in range")?;
 
         let msgs: Vec<Message> = rows.into_iter().map(Message::from).collect();
@@ -501,7 +513,7 @@ impl ChatHistory {
     // -----------------------------------------------------------------------
 
     fn insert_message(
-        &mut self,
+        &self,
         sender: &str,
         role: &str,
         content: &str,
@@ -522,7 +534,7 @@ impl ChatHistory {
 
         diesel::insert_into(messages::table)
             .values(&new_msg)
-            .execute(&mut self.conn)
+            .execute(&mut *self.conn()?)
             .context("failed to insert message")?;
 
         // Get the auto-generated id
@@ -534,7 +546,7 @@ impl ChatHistory {
         }
 
         let last_id = diesel::sql_query(db::SELECT_LAST_INSERT_ROWID)
-            .get_result::<LastId>(&mut self.conn)
+            .get_result::<LastId>(&mut *self.conn()?)
             .map(|r| r.id)
             .unwrap_or(0);
 

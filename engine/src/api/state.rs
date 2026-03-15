@@ -184,7 +184,7 @@ impl EngineState {
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
-            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
+            let ch = &instance.chat;
             if let Some(after) = after_id {
                 let rows = ch.get_messages_after(after, limit)?;
                 let messages: Vec<MessageInfo> = rows
@@ -248,7 +248,7 @@ impl EngineState {
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&name)?;
-            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
+            let ch = &instance.chat;
             let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
             let id = ch.write_user_message(&content, &timestamp)?;
             info!("[MSG] API: user message sent to {}, id={}", name, id);
@@ -279,7 +279,7 @@ impl EngineState {
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&name)?;
-            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
+            let ch = &instance.chat;
             let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
             let id = ch.write_agent_reply(&sender, &content, &timestamp, "")?;
             info!("[MSG] API: relay message sent to {} from {}, id={}", name, sender, id);
@@ -310,7 +310,7 @@ impl EngineState {
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&name)?;
-            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
+            let ch = &instance.chat;
             let timestamp = crate::persist::chat::ChatHistory::now_timestamp();
             let id = ch.write_system_message(&content, &timestamp)?;
             info!("[MSG] API: system message sent to {}, id={}", name, id);
@@ -331,7 +331,7 @@ impl EngineState {
 
         let result = tokio::task::spawn_blocking(move || {
             let instance = store.open(&instance_id)?;
-            let mut ch = instance.chat.lock().unwrap_or_else(|e| e.into_inner());
+            let ch = &instance.chat;
             ch.get_messages_after(after_id, 100)
         })
         .await;
@@ -744,9 +744,7 @@ fn build_instance_info(id: String, instance: &crate::persist::instance::Instance
 
     let last_active = instance
         .chat
-        .lock()
-        .ok()
-        .and_then(|mut chat| chat.get_last_message_time().ok())
+        .get_last_message_time()
         .unwrap_or(0);
 
     InstanceInfo {
@@ -793,9 +791,7 @@ fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>>
         // Get last_active from cached chat connection
         let last_active = match store.get_connection(&id) {
             Ok(chat) => chat
-                .lock()
-                .ok()
-                .and_then(|mut ch| ch.get_last_message_time().ok())
+                .get_last_message_time()
                 .unwrap_or(0),
             Err(_) => 0,
         };
