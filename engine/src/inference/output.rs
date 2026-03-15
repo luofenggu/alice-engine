@@ -162,7 +162,7 @@ pub enum ActionStatus {
 /// Built from DB rows (action_input + action_output JSON).
 /// Only derives ToMarkdown — never used for parsing.
 /// Fields are detailed Option<T> — no big concatenated strings.
-#[derive(ToMarkdown)]
+#[derive(Debug, ToMarkdown)]
 pub struct ActionView {
     #[markdown(skip)]
     pub action_id: String,
@@ -275,7 +275,7 @@ pub struct ActionView {
 
 impl ActionView {
     /// Create an empty ActionView with only action_id and description set.
-    fn empty(action_id: String, description: String) -> Self {
+    pub(crate) fn empty(action_id: String, description: String) -> Self {
         ActionView {
             action_id,
             description,
@@ -407,7 +407,7 @@ impl ActionView {
 
     /// Build from a DB row. Falls back gracefully on deserialization failure.
     pub fn from_db_row(row: &ActionLogRow) -> Self {
-        use crate::bindings::db::{ACTION_STATUS_DISTILLED, ACTION_STATUS_DONE, ACTION_STATUS_EXECUTING};
+        use crate::bindings::db::{ACTION_STATUS_DISTILLED, ACTION_STATUS_DONE};
 
         let status = match row.status.as_str() {
             s if s == ACTION_STATUS_DONE => ActionStatus::Done,
@@ -423,12 +423,13 @@ impl ActionView {
         };
 
         // Generate description
+        let action_label = action.as_ref().map(|a| format!("{}", a)).unwrap_or_else(|| row.action_type.clone());
         let description = if status == ActionStatus::Distilled {
-            format!("[已提炼] {}", action.as_ref().map(|a| format!("{}", a)).unwrap_or_else(|| row.action_type.clone()))
+            format!("[已提炼] [{}] {}", row.action_id, action_label)
         } else if status == ActionStatus::Executing {
-            format!("{}\n---action executing, result pending---", action.as_ref().map(|a| format!("{}", a)).unwrap_or_else(|| row.action_type.clone()))
+            format!("[{}] {}\n---action executing, result pending---", row.action_id, action_label)
         } else {
-            action.as_ref().map(|a| format!("{}", a)).unwrap_or_else(|| row.action_type.clone())
+            format!("[{}] {}", row.action_id, action_label)
         };
 
         let mut view = ActionView::empty(row.action_id.clone(), description);

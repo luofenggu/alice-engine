@@ -7,6 +7,7 @@
 
 use crate::core::Alice;
 use crate::inference::beat::{self, BeatRequest, SessionBlock, SessionMessage};
+use crate::inference::output::ActionView;
 use crate::inference::capture::CaptureRequest;
 use crate::policy::messages;
 use mad_hatter::llm::ToMarkdown;
@@ -80,7 +81,7 @@ pub fn build_beat_request(
     let knowledge_content = load_knowledge_raw(alice);
     let history_content = alice.instance.memory.read_history();
     let session_blocks = extract_all_session_blocks(alice);
-    let current_content = alice.instance.memory.render_current_from_db().unwrap_or_default();
+    let current_content: Vec<ActionView> = alice.instance.memory.render_current_from_db().unwrap_or_default();
     let skill_content = alice.instance.skill.read().unwrap_or_default();
     let unread_count: usize = alice.count_unread_messages().try_into().unwrap_or(0);
 
@@ -120,11 +121,7 @@ pub fn build_beat_request(
         host,
     );
 
-    let current = if current_content.is_empty() {
-        messages::empty_placeholder().to_string()
-    } else {
-        current_content.clone()
-    };
+    let current = current_content;
 
     let status = beat::build_status(
         &alice.instance.id,
@@ -133,7 +130,7 @@ pub fn build_beat_request(
         unread_count,
         history.len(),
         sessions_size,
-        current.len(),
+        current.iter().map(|v| v.to_markdown().len()).sum::<usize>(),
         knowledge.len(),
         skill.len() + extra_skill.len(),
     );
@@ -174,7 +171,8 @@ pub fn build_capture_request(alice: &Alice, summary_content: &str) -> CaptureReq
         }
     };
 
-    let current_content = alice.instance.memory.render_current_from_db().unwrap_or_default();
+    let current_views: Vec<ActionView> = alice.instance.memory.render_current_from_db().unwrap_or_default();
+    let current_content = current_views.iter().map(|v| v.to_markdown()).collect::<Vec<_>>().join("\n\n");
 
     CaptureRequest {
         knowledge_content,
@@ -216,7 +214,6 @@ fn extract_all_session_blocks(alice: &Alice) -> Vec<SessionBlock> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persist::SessionBlockEntry;
     use mad_hatter::llm::ToMarkdown;
     use tempfile::TempDir;
 

@@ -250,6 +250,7 @@ fn rename_migrated(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mad_hatter::llm::ToMarkdown;
     use std::fs;
     use tempfile::TempDir;
 
@@ -378,7 +379,8 @@ mod tests {
 
         // Verify it was inserted as a legacy_import note
         let rendered = memory.render_current_from_db();
-        assert!(rendered.unwrap().contains(content));
+        let rendered_text: String = rendered.unwrap().iter().map(|v| v.to_markdown()).collect::<Vec<_>>().join("\n");
+        assert!(rendered_text.contains(content));
         assert!(sessions_dir.join("current.txt.migrated").exists());
     }
 
@@ -533,7 +535,8 @@ this is not valid json
         assert_eq!(entries.len(), 1);
 
         let rendered = memory.render_current_from_db().unwrap();
-        assert!(rendered.contains(current));
+        let rendered_text: String = rendered.iter().map(|v| v.to_markdown()).collect::<Vec<_>>().join("\n");
+        assert!(rendered_text.contains(current));
 
         // All files renamed
         assert!(memory_dir.join("knowledge.md.migrated").exists());

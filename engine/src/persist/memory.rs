@@ -16,7 +16,6 @@ use crate::bindings::db::{
 };
 
 use crate::inference::output::{ActionOutput, ActionView};
-use mad_hatter::llm::ToMarkdown;
 use anyhow::{Context, Result};
 use chrono::Local;
 use diesel::prelude::*;
@@ -367,7 +366,7 @@ impl Memory {
 
     /// Render current memory from action_log (all entries after cursor).
     /// Uses ActionView for structured rendering.
-    pub fn render_current_from_db(&self) -> Result<String> {
+    pub fn render_current_from_db(&self) -> Result<Vec<ActionView>> {
         use crate::bindings::db::{action_log, ActionLogRow};
 
         let conn = &mut *self.db.conn().map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -382,22 +381,8 @@ impl Memory {
             .load(conn)
             .context("[MEMORY-DB] Failed to load action_log for render")?;
 
-        let mut parts: Vec<String> = Vec::new();
-        for row in &rows {
-            let view = ActionView::from_db_row(row);
-            let action_id = &view.action_id;
-            let mut block = String::new();
-            block.push_str(&format!("---------行为编号[{}]开始---------\n", action_id));
-            let content = view.to_markdown();
-            if !content.is_empty() {
-                block.push_str(&content);
-                block.push_str("\n");
-            }
-            block.push_str(&format!("---------行为编号[{}]结束---------", action_id));
-            parts.push(block);
-        }
-
-        Ok(parts.join("\n"))
+        let views: Vec<ActionView> = rows.iter().map(|row| ActionView::from_db_row(row)).collect();
+        Ok(views)
     }
 
     /// Advance cursor to the current maximum action_log id.
@@ -742,7 +727,7 @@ mod tests {
         let (_tmp, memory) = setup();
         assert_eq!(memory.read_knowledge(), "");
         assert_eq!(memory.read_history(), "");
-        assert_eq!(memory.render_current_from_db().unwrap(), "");
+        assert!(memory.render_current_from_db().unwrap().is_empty());
     }
 
     #[test]

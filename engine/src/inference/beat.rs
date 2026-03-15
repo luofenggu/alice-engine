@@ -8,6 +8,7 @@
 use crate::policy::messages;
 
 use mad_hatter::ToMarkdown;
+use crate::inference::output::ActionView;
 
 const RESERVED_SKILL_TEMPLATE: &str = r#"### knowledge: app-development ###
 # App 开发指南
@@ -188,7 +189,7 @@ pub struct BeatRequest {
     /// @render 环境信息
     pub environment: EnvironmentInfo,
     /// @render current
-    pub current: String,
+    pub current: Vec<ActionView>,
     /// @render 当前状态
     pub status: StatusInfo,
 }
@@ -536,7 +537,7 @@ mod tests {
                 shell_env: "Linux".to_string(),
                 host: None,
             },
-            current: "(空)".to_string(),
+            current: vec![],
             status: StatusInfo {
                 current_time: "[20260311120000]".to_string(),
                 start_time: "[20260311100000]".to_string(),
@@ -551,7 +552,8 @@ mod tests {
         assert!(!output.contains("### 知识 ###"));
         // Single-line fields should use inline format (smart rendering)
         assert!(output.contains("经历: (空)"));
-        assert!(output.contains("current: (空)"));
+        // Empty Vec → current section not rendered
+        assert!(!output.contains("### current ###"));
         // Nested structs should render with section titles
         assert!(output.contains("### 环境信息 ###"));
         assert!(output.contains("### 当前状态 ###"));

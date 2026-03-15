@@ -7,6 +7,7 @@
 //!   cargo test prompt_dump_test::test_real_inference -- --ignored --nocapture
 
 use crate::inference::beat::{BeatRequest, EnvironmentInfo, SessionBlock, SessionMessage, StatusInfo};
+use crate::inference::output::ActionView;
 use crate::inference::Action;
 use mad_hatter::llm::{FromMarkdown, ToMarkdown};
 
@@ -261,51 +262,43 @@ curl -s -X POST http://localhost:8081/api/instances/ebc381/vision \
         host: Some("8.149.243.230:8081".to_string()),
     };
 
-    let current = r#"---------行为编号[20260311220000_a1b2c3]开始---------
-记录思考: 进化之王要求写一个集成测试，构造丰富的mock BeatRequest，调用build_prompt拿到完整input prompt string，dump到文件。如果能配LLM通道就真正调一次推理。
-
-我之前已经写过一个test_full_beat_prompt_sample测试，但数据不够丰富。现在需要大幅扩充mock数据。
-
-关于LLM通道：测试环境配置了endpoint=http://localhost:9876/v1/chat/completions, model=claude-opus-4-6。
-
----action executing, result pending---
-
----------行为编号[20260311220000_a1b2c3]结束---------
-
----------行为编号[20260311220100_d4e5f6]开始---------
-execute script: 
-cd /opt/alice/testing/instances/ebc381/workspace/alice-dev/engine
-grep -n "test_full_beat_prompt_sample" src/prompt/mod.rs
-sed -n '71,130p' src/prompt/mod.rs
----action executing, result pending---
-
----exec result (0.3s)---
-359:    fn test_full_beat_prompt_sample() {
-71:pub fn build_beat_request(
-85:    let skill = beat::build_skill_content(
-93:    let knowledge = beat::build_knowledge_content(&knowledge_content);
-103:    let environment = beat::build_environment(
-117:    let status = beat::build_status(
-
----------行为编号[20260311220100_d4e5f6]结束---------
-
----------行为编号[20260311220200_789abc]开始---------
-你打开了收件箱，开始阅读来信。
----action executing, result pending---
-
-⚠️ 此消息来自未知发送者：system
-system [MSG:20260311220150]发来一条消息：
-
-知识更新完成（33 KB → 36 KB）
-
----------行为编号[20260311220200_789abc]结束---------
-
----------行为编号[20260311220300_def012]开始---------
-记录思考: 知识更新成功。继续写集成测试。需要构造极其丰富真实的mock数据，让章邯看到"假如部署了，agent的推理prompt长啥样"。
-
----action executing, result pending---
-
----------行为编号[20260311220300_def012]结束---------"#.to_string();
+    let current = vec![
+        {
+            let mut v = ActionView::empty(
+                "20260311220000_a1b2c3".to_string(),
+                "[20260311220000_a1b2c3] 记录思考".to_string(),
+            );
+            v.content = Some("进化之王要求写一个集成测试，构造丰富的mock BeatRequest，调用build_prompt拿到完整input prompt string，dump到文件。\n\n我之前已经写过一个test_full_beat_prompt_sample测试，但数据不够丰富。现在需要大幅扩充mock数据。".to_string());
+            v
+        },
+        {
+            let mut v = ActionView::empty(
+                "20260311220100_d4e5f6".to_string(),
+                "[20260311220100_d4e5f6] execute script".to_string(),
+            );
+            v.content = Some("cd /opt/alice/testing/instances/ebc381/workspace/alice-dev/engine\ngrep -n \"test_full_beat_prompt_sample\" src/prompt/mod.rs".to_string());
+            v.stdout = Some("---exec result (0.3s)---\n359:    fn test_full_beat_prompt_sample() {\n71:pub fn build_beat_request(".to_string());
+            v.exit_code = Some(0);
+            v.elapsed_secs = Some(0.3);
+            v
+        },
+        {
+            let mut v = ActionView::empty(
+                "20260311220200_789abc".to_string(),
+                "[20260311220200_789abc] 你打开了收件箱，开始阅读来信。".to_string(),
+            );
+            v.messages = Some("system [MSG:20260311220150]发来一条消息：\n\n知识更新完成（33 KB → 36 KB）".to_string());
+            v
+        },
+        {
+            let mut v = ActionView::empty(
+                "20260311220300_def012".to_string(),
+                "[20260311220300_def012] 记录思考".to_string(),
+            );
+            v.content = Some("知识更新成功。继续写集成测试。需要构造极其丰富真实的mock数据，让章邯看到\"假如部署了，agent的推理prompt长啥样\"。".to_string());
+            v
+        },
+    ];
 
     let status = StatusInfo {
         current_time: "[20260311222500]".to_string(),
@@ -367,7 +360,7 @@ fn test_full_beat_prompt_sample() {
     assert!(full_prompt.contains("ac56b3"), "sessions should contain agent sender ids");
     assert!(full_prompt.contains("summary"), "sessions should contain summary fields");
     assert!(full_prompt.contains("进化二号（引擎）"), "environment should contain instance name");
-    assert!(full_prompt.contains("行为编号"), "current should contain action blocks");
+    assert!(full_prompt.contains("20260311220000"), "current should contain action ids");
     assert!(full_prompt.contains("exec result"), "current should contain script results");
     assert!(full_prompt.contains("未读来信"), "status should contain unread count");
 

@@ -447,7 +447,7 @@ fn execute_summary(alice: &mut Alice, tx: &mut Transaction, raw_output: &str) ->
     info!("[ACTION-{}] summary", tx.instance_id);
 
     let current = alice.instance.memory.render_current_from_db().unwrap_or_default();
-    if current.trim().is_empty() {
+    if current.is_empty() {
         return Ok(ActionOutput::SummaryEmpty);
     }
 
@@ -900,7 +900,7 @@ mod tests {
 
         // current should be cleared (DB view: render_current_from_db returns empty after advance_cursor)
         let current = alice.instance.memory.render_current_from_db().unwrap_or_default();
-        assert!(current.is_empty(), "render_current_from_db should be empty after summary, got: {}", current);
+        assert!(current.is_empty(), "render_current_from_db should be empty after summary, got: {:?}", current);
 
         // session block should exist in DB
         let blocks = alice.instance.memory.list_session_blocks_db().unwrap_or_default();
