@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tracing::info;
+use tracing::{debug, info};
 
 use super::chat::ChatHistory;
 use super::memory::Memory;
@@ -229,8 +229,8 @@ impl Instance {
         })
     }
 
-    /// Open with an injected (cached) chat connection.
-    pub fn open_with_chat(instance_dir: &Path, chat: Arc<Mutex<ChatHistory>>) -> Result<Self> {
+    /// Open with injected (cached) chat connection and memory handle.
+    pub fn open_with_resources(instance_dir: &Path, chat: Arc<Mutex<ChatHistory>>, memory: Memory) -> Result<Self> {
         let id = instance_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -262,14 +262,12 @@ impl Instance {
         let settings = Document::open(&settings_path)
             .with_context(|| format!("Failed to open settings: {}", settings_path.display()))?;
 
-        let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
-
         // One-time legacy migration: files → DB
         let sessions_dir = memory_dir.join("sessions");
         crate::legacy::migrate::migrate_all(&memory, &memory_dir, &sessions_dir)
             .unwrap_or_else(|e| tracing::warn!("[INSTANCE-{}] Legacy migration: {}", id, e));
 
-        info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
+        debug!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
 
         let skill =
             TextFile::open(instance_dir.join(SKILL_FILE)).context("Failed to open skill file")?;
@@ -300,6 +298,8 @@ pub struct InstanceStore {
     instances_dir: PathBuf,
     /// SQLite connections — the only resource that needs reuse.
     connections: Arc<std::sync::RwLock<HashMap<String, Arc<Mutex<ChatHistory>>>>>,
+    /// Memory handles — cached to avoid repeated open.
+    memories: Arc<std::sync::RwLock<HashMap<String, Memory>>>,
 }
 
 impl Clone for InstanceStore {
@@ -307,6 +307,7 @@ impl Clone for InstanceStore {
         Self {
             instances_dir: self.instances_dir.clone(),
             connections: self.connections.clone(),
+            memories: self.memories.clone(),
         }
     }
 }
@@ -317,6 +318,7 @@ impl InstanceStore {
         Self {
             instances_dir,
             connections: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            memories: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -331,7 +333,7 @@ impl InstanceStore {
     }
 
     /// Get or create a cached SQLite connection for an instance.
-    fn get_connection(&self, id: &str) -> Result<Arc<Mutex<ChatHistory>>> {
+    pub(crate) fn get_connection(&self, id: &str) -> Result<Arc<Mutex<ChatHistory>>> {
         // Fast path: read lock
         {
             let cache = self.connections.read().unwrap();
@@ -353,6 +355,28 @@ impl InstanceStore {
         Ok(arc)
     }
 
+    /// Get or create a cached Memory handle for an instance.
+    fn get_memory(&self, id: &str) -> Result<Memory> {
+        // Fast path: read lock
+        {
+            let cache = self.memories.read().unwrap();
+            if let Some(m) = cache.get(id) {
+                return Ok(m.clone());
+            }
+        }
+        // Slow path: write lock, open memory
+        let mut cache = self.memories.write().unwrap();
+        // Double-check after acquiring write lock
+        if let Some(m) = cache.get(id) {
+            return Ok(m.clone());
+        }
+        let instance_dir = self.instances_dir.join(id);
+        let memory_dir = instance_dir.join("memory");
+        let memory = Memory::open(&memory_dir, id)?;
+        cache.insert(id.to_string(), memory.clone());
+        Ok(memory)
+    }
+
     /// Create a new instance atomically.
     pub fn create(
         &self,
@@ -369,6 +393,9 @@ impl InstanceStore {
         // Cache the connection from the newly created instance
         let mut cache = self.connections.write().unwrap();
         cache.insert(instance.id.clone(), instance.chat.clone());
+        // Cache memory handle
+        let mut mem_cache = self.memories.write().unwrap();
+        mem_cache.insert(instance.id.clone(), instance.memory.clone());
         Ok(instance)
     }
 
@@ -379,7 +406,8 @@ impl InstanceStore {
             anyhow::bail!("Instance not found: {}", id);
         }
         let chat = self.get_connection(id)?;
-        let instance = Instance::open_with_chat(&instance_dir, chat)?;
+        let memory = self.get_memory(id)?;
+        let instance = Instance::open_with_resources(&instance_dir, chat, memory)?;
         Ok(instance)
     }
 
@@ -408,8 +436,11 @@ impl InstanceStore {
         std::fs::rename(&instance_dir, &trash_path)
             .with_context(|| format!("Failed to move {} to trash", id))?;
 
-        // Clear cached connection
+        // Clear cached connection and memory
         if let Ok(mut cache) = self.connections.write() {
+            cache.remove(id);
+        }
+        if let Ok(mut cache) = self.memories.write() {
             cache.remove(id);
         }
 

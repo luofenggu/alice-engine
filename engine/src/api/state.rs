@@ -760,16 +760,54 @@ fn build_instance_info(id: String, instance: &crate::persist::instance::Instance
 }
 
 /// Collect all instance info from the store.
+///
+/// Lightweight: reads settings.json directly + uses cached chat connection.
+/// Does NOT open full Instance (no Memory, no legacy migration, no create_dir_all).
 fn collect_instances(store: &InstanceStore) -> anyhow::Result<Vec<InstanceInfo>> {
     let mut instances = Vec::new();
     let ids = store.list_ids()?;
 
-    for name in ids {
-        let instance = match store.open(&name) {
-            Ok(i) => i,
-            Err(_) => continue,
+    for id in ids {
+        let instance_dir = store.instances_dir().join(&id);
+        let settings_path = instance_dir.join("settings.json");
+
+        // Read settings directly from file
+        let mut display_name = id.clone();
+        let mut color = String::new();
+        let mut avatar = String::new();
+        let mut privileged = false;
+
+        if let Ok(text) = std::fs::read_to_string(&settings_path) {
+            if let Ok(settings) = serde_json::from_str::<crate::persist::Settings>(&text) {
+                if let Some(n) = &settings.name {
+                    if !n.is_empty() {
+                        display_name = n.clone();
+                    }
+                }
+                color = settings.color.clone().unwrap_or_default();
+                avatar = settings.avatar.clone().unwrap_or_default();
+                privileged = settings.privileged_or_default();
+            }
+        }
+
+        // Get last_active from cached chat connection
+        let last_active = match store.get_connection(&id) {
+            Ok(chat) => chat
+                .lock()
+                .ok()
+                .and_then(|mut ch| ch.get_last_message_time().ok())
+                .unwrap_or(0),
+            Err(_) => 0,
         };
-        instances.push(build_instance_info(name, &instance));
+
+        instances.push(InstanceInfo {
+            id,
+            name: display_name,
+            avatar,
+            color,
+            privileged,
+            last_active,
+        });
     }
 
     Ok(instances)
