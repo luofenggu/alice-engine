@@ -466,7 +466,7 @@ impl ActionView {
                     if let Ok(ActionOutput::Note { text }) = serde_json::from_str::<ActionOutput>(output_str) {
                         view.note = Some(text);
                     } else {
-                        view.note = Some(truncate_for_display(output_str, 200));
+                        view.note = Some(output_str.clone());
                     }
                 }
             }
