@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
-use diesel::r2d2::{ConnectionManager, Pool};
+use crate::bindings::db::ChatDb;
 use tracing::info;
 
 use crate::bindings::db::{self, messages, MessageRow, NewMessage};
@@ -149,30 +149,23 @@ pub struct QueryResult {
 /// All queries go directly to SQLite via Diesel — no in-memory caching.
 #[derive(Clone)]
 pub struct ChatHistory {
-    pool: Pool<ConnectionManager<SqliteConnection>>,
+    db: ChatDb,
 }
 
 impl ChatHistory {
     /// Get a connection from the pool.
-    fn conn(&self) -> Result<diesel::r2d2::PooledConnection<ConnectionManager<SqliteConnection>>> {
-        self.pool.get().map_err(|e| anyhow::anyhow!("DB pool: {}", e))
+    fn conn(&self) -> Result<diesel::r2d2::PooledConnection<diesel::r2d2::ConnectionManager<SqliteConnection>>> {
+        self.db.conn().map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    /// Open (or create) the chat database at the given path.
+    /// Open (or create) the chat database.
     ///
-    /// @TRACE: MSG — `[MSG] ChatHistory initialized: {path}`
-    pub fn open(db_path: &std::path::Path) -> Result<Self> {
-        let path_str = db_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("invalid db path: {}", db_path.display()))?;
-
-        let manager = ConnectionManager::<SqliteConnection>::new(path_str);
-        let pool = Pool::builder()
-            .max_size(2)
-            .build(manager)
-            .map_err(|e| anyhow::anyhow!("failed to create chat pool {}: {}", db_path.display(), e))?;
-        let mut conn = pool.get()
-            .map_err(|e| anyhow::anyhow!("failed to get chat connection {}: {}", db_path.display(), e))?;
+    /// `instance_dir` is the instance root directory; the DB path is declared in bindings.
+    ///
+    /// @TRACE: MSG — `[MSG] ChatHistory initialized: {instance_dir}`
+    pub fn open(instance_dir: &std::path::Path) -> Result<Self> {
+        let db = ChatDb::open(instance_dir).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let mut conn = db.conn().map_err(|e| anyhow::anyhow!("{}", e))?;
 
         // Create table if not exists
         diesel::sql_query(db::CREATE_MESSAGES_TABLE)
@@ -197,9 +190,9 @@ impl ChatHistory {
 
         info!(
             "[MSG] ChatHistory initialized: {:?} ({} messages)",
-            db_path, count
+            instance_dir, count
         );
-        Ok(Self { pool })
+        Ok(Self { db })
     }
 
     /// Append a message to history (marked as read, for display).
@@ -581,18 +574,15 @@ fn parse_timestamp_to_millis(ts: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
-    fn setup() -> ChatHistory {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!("chat_test_diesel_{}.db", n));
-        // Clean up any previous test file
-        let _ = std::fs::remove_file(&path);
-        ChatHistory::open(&path).unwrap()
+    fn setup() -> (tempfile::TempDir, ChatHistory) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ch = ChatHistory::open(tmp.path()).unwrap();
+        (tmp, ch)
     }
 
     #[test]
     fn test_append_and_query() {
-        let mut ch = setup();
+        let (_tmp, mut ch) = setup();
         ch.append("user", "user", "hello", "20250101120000", "").unwrap();
         ch.append("agent", "bot1", "hi there", "20250101120001", "").unwrap();
         let result = ch.query(10, None).unwrap();
@@ -604,7 +594,7 @@ mod tests {
 
     #[test]
     fn test_query_pagination() {
-        let mut ch = setup();
+        let (_tmp, mut ch) = setup();
         for i in 0..5 {
             ch.append("user", "user", &format!("msg{}", i), "20250101120000", "").unwrap();
         }
@@ -618,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_user_message_inbox() {
-        let mut ch = setup();
+        let (_tmp, mut ch) = setup();
         let id = ch.write_user_message("hello from user", "20250101120000").unwrap();
         assert!(id > 0);
         let unread = ch.count_unread_user_messages("bot1").unwrap();
@@ -632,7 +622,7 @@ mod tests {
 
     #[test]
     fn test_agent_reply_outbox() {
-        let mut ch = setup();
+        let (_tmp, mut ch) = setup();
         ch.write_agent_reply("bot1", "reply content", "20250101120000", "").unwrap();
         let replies = ch.read_unread_agent_replies().unwrap();
         assert_eq!(replies.len(), 1);
@@ -643,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_get_last_message_time() {
-        let mut ch = setup();
+        let (_tmp, mut ch) = setup();
         let t = ch.get_last_message_time().unwrap();
         assert_eq!(t, 0);
         ch.append("user", "user", "msg", "20250601120000", "").unwrap();
@@ -653,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_get_messages_after() {
-        let mut ch = setup();
+        let (_tmp, mut ch) = setup();
         ch.append("user", "user", "msg1", "20250101120000", "").unwrap();
         ch.append("agent", "bot1", "msg2", "20250101120001", "").unwrap();
         ch.append("user", "user", "msg3", "20250101120002", "").unwrap();

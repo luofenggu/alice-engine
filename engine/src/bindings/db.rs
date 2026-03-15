@@ -4,6 +4,14 @@
 //! 数据库相关的所有声明集中在此，bindings外禁止SQL字面量。
 
 use diesel::prelude::*;
+use mad_hatter::dao;
+
+// ---------------------------------------------------------------------------
+// Database pool declarations — dao! macro manages connection pools
+// ---------------------------------------------------------------------------
+
+dao!(ChatDb, "data/chat.db");
+dao!(MemoryDb, "memory/memory.db");
 
 // ---------------------------------------------------------------------------
 // Schema — Diesel table! 宏定义

@@ -111,7 +111,7 @@ impl Instance {
         // Open all persistent handles
         let settings =
             Document::open(&settings_path).context("Failed to open settings document")?;
-        let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
+        let memory = Memory::open(&instance_dir, &id).context("Failed to open memory")?;
 
         // Write initial knowledge to DB if provided
         if let Some(k) = knowledge {
@@ -119,8 +119,7 @@ impl Instance {
                 memory.write_knowledge(k)?;
             }
         }
-        let chat_db_path = data_dir.join("chat.db");
-        let chat = ChatHistory::open(&chat_db_path).context("Failed to open chat history")?;
+        let chat = ChatHistory::open(&instance_dir).context("Failed to open chat history")?;
 
         info!(
             "[INSTANCE-{}] Created at {}",
@@ -203,7 +202,7 @@ impl Instance {
             .with_context(|| format!("Failed to open settings: {}", settings_path.display()))?;
 
         // Open memory (DB-backed)
-        let memory = Memory::open(&memory_dir, &id).context("Failed to open memory")?;
+        let memory = Memory::open(&instance_dir, &id).context("Failed to open memory")?;
 
         // One-time legacy migration: files → DB
         let sessions_dir = memory_dir.join("sessions");
@@ -211,8 +210,7 @@ impl Instance {
             .unwrap_or_else(|e| tracing::warn!("[INSTANCE-{}] Legacy migration: {}", id, e));
 
         // Open chat history
-        let chat_db_path = data_dir.join("chat.db");
-        let chat = ChatHistory::open(&chat_db_path).context("Failed to open chat history")?;
+        let chat = ChatHistory::open(&instance_dir).context("Failed to open chat history")?;
 
         info!("[INSTANCE-{}] Opened at {}", id, instance_dir.display());
 
@@ -348,8 +346,7 @@ impl InstanceStore {
             return Ok(ch.clone());
         }
         let instance_dir = self.instances_dir.join(id);
-        let chat_db_path = instance_dir.join("data").join("chat.db");
-        let ch = ChatHistory::open(&chat_db_path)?;
+        let ch = ChatHistory::open(&instance_dir)?;
         
         cache.insert(id.to_string(), ch.clone());
         Ok(ch)
@@ -371,8 +368,7 @@ impl InstanceStore {
             return Ok(m.clone());
         }
         let instance_dir = self.instances_dir.join(id);
-        let memory_dir = instance_dir.join("memory");
-        let memory = Memory::open(&memory_dir, id)?;
+        let memory = Memory::open(&instance_dir, id)?;
         cache.insert(id.to_string(), memory.clone());
         Ok(memory)
     }

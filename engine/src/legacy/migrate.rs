@@ -261,7 +261,7 @@ mod tests {
         fs::create_dir_all(&memory_dir).unwrap();
         fs::write(memory_dir.join("knowledge.md"), "test knowledge content").unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
         migrate_knowledge(&memory, &memory_dir).unwrap();
 
         assert_eq!(memory.read_knowledge(), "test knowledge content");
@@ -275,7 +275,7 @@ mod tests {
         let memory_dir = tmp.path().join("memory");
         fs::create_dir_all(&memory_dir).unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
         // Pre-populate DB
         memory.write_knowledge("existing knowledge").unwrap();
 
@@ -297,7 +297,7 @@ mod tests {
         fs::create_dir_all(&sessions_dir).unwrap();
         fs::write(sessions_dir.join("history.txt"), "test history").unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
         migrate_history(&memory, &sessions_dir).unwrap();
 
         assert_eq!(memory.read_history(), "test history");
@@ -316,7 +316,7 @@ mod tests {
 {"first_msg":"msg3","last_msg":"msg4","summary":"block summary 2"}"#;
         fs::write(sessions_dir.join("20260301120000.jsonl"), jsonl).unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
         migrate_sessions(&memory, &sessions_dir).unwrap();
 
         let blocks = memory.list_session_blocks_db().unwrap();
@@ -337,7 +337,7 @@ mod tests {
         let sessions_dir = memory_dir.join("sessions");
         fs::create_dir_all(&sessions_dir).unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
 
         // Pre-populate DB with a session block
         memory
@@ -373,7 +373,7 @@ mod tests {
         let content = "---行为编号[test]开始---\nsome action content\n---行为编号[test]结束---";
         fs::write(sessions_dir.join("current.txt"), content).unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
         migrate_current(&memory, &sessions_dir).unwrap();
 
         // Verify it was inserted as a legacy_import note
@@ -389,7 +389,7 @@ mod tests {
         let sessions_dir = memory_dir.join("sessions");
         fs::create_dir_all(&sessions_dir).unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
         // Should succeed with no files to migrate
         migrate_all(&memory, &memory_dir, &sessions_dir).unwrap();
     }
@@ -423,7 +423,7 @@ mod tests {
         fs::write(sessions_dir.join("20260302000000.jsonl"), jsonl_b).unwrap();
         fs::write(sessions_dir.join("20260303000000.jsonl"), jsonl_c).unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
         migrate_sessions(&memory, &sessions_dir).unwrap();
 
         let blocks = memory.list_session_blocks_db().unwrap();
@@ -455,7 +455,7 @@ mod tests {
         let sessions_dir = memory_dir.join("sessions");
         fs::create_dir_all(&sessions_dir).unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
 
         // Pre-populate DB with an action_log entry
         memory
@@ -490,7 +490,7 @@ this is not valid json
 "#;
         fs::write(sessions_dir.join("20260301000000.jsonl"), jsonl).unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
         migrate_sessions(&memory, &sessions_dir).unwrap();
 
         // Only valid lines should be imported
@@ -520,7 +520,7 @@ this is not valid json
         let current = "action content from current.txt";
         fs::write(sessions_dir.join("current.txt"), current).unwrap();
 
-        let memory = Memory::open(&memory_dir, "test").unwrap();
+        let memory = Memory::open(tmp.path(), "test").unwrap();
         migrate_all(&memory, &memory_dir, &sessions_dir).unwrap();
 
         // Verify all 4 data types migrated

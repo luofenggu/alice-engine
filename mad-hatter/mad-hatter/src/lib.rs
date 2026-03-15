@@ -110,3 +110,5 @@ impl IntoResponse for HttpError {
 /// Result type alias for service handlers.
 pub type Result<T> = std::result::Result<T, HttpError>;
 
+
+pub mod dao;
