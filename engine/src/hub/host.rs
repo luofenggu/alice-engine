@@ -50,7 +50,7 @@ impl HostState {
         // Wait for register message
         let (registered_engine_id, engine_endpoint, instances) = match ws_receiver.next().await {
             Some(Ok(Message::Text(text))) => {
-                match serde_json::from_str::<TunnelMessage>(&text) {
+                match TunnelMessage::decode(&text) {
                     Ok(TunnelMessage::Register { engine_id: eid, engine_endpoint, instances }) => {
                         info!("[HUB-HOST] Slave registered: engine_id={}, instances={:?}",
                             eid, instances.iter().map(|i| &i.id).collect::<Vec<_>>());
@@ -121,7 +121,7 @@ impl HostState {
                 if !hb_connected.load(Ordering::Relaxed) {
                     break;
                 }
-                let hb = serde_json::to_string(&TunnelMessage::Heartbeat).unwrap();
+                let hb = TunnelMessage::Heartbeat.encode();
                 let mut sender = hb_sender.lock().await;
                 if sender.send(Message::Text(hb.into())).await.is_err() {
                     warn!("[HUB-HOST] Heartbeat send failed for {}, marking disconnected", hb_engine_id);
@@ -137,9 +137,9 @@ impl HostState {
                 msg = ws_receiver.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            match serde_json::from_str::<TunnelMessage>(&text) {
+                            match TunnelMessage::decode(&text) {
                                 Ok(TunnelMessage::Heartbeat) => {
-                                    let hb = serde_json::to_string(&TunnelMessage::Heartbeat).unwrap();
+                                    let hb = TunnelMessage::Heartbeat.encode();
                                     let mut sender = ws_sender.lock().await;
                                     let _ = sender.send(Message::Text(hb.into())).await;
                                 }
@@ -177,7 +177,7 @@ impl HostState {
                 Some(rpc_payload) = tunnel_to_ws_rx.recv() => {
                     // TunnelEndpoint wants to send an RPC message → forward to WebSocket
                     let rpc_msg = TunnelMessage::Rpc { payload: rpc_payload };
-                    let text = serde_json::to_string(&rpc_msg).unwrap();
+                    let text = rpc_msg.encode();
                     let mut sender = ws_sender.lock().await;
                     if sender.send(Message::Text(text.into())).await.is_err() {
                         warn!("[HUB-HOST] Failed to send RPC to WebSocket");

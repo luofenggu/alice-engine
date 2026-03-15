@@ -45,3 +45,15 @@ pub struct TunnelInstanceInfo {
 
 
 
+
+impl TunnelMessage {
+    /// Serialize to JSON string for WebSocket text frame
+    pub fn encode(&self) -> String {
+        serde_json::to_string(self).unwrap()
+    }
+
+    /// Deserialize from JSON string
+    pub fn decode(text: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(text)
+    }
+}

@@ -126,7 +126,7 @@ impl SlaveState {
 
         // Store engine_endpoint for later use (disconnect, instances update)
         *self.engine_endpoint.lock().await = Some(endpoint);
-        let msg = serde_json::to_string(&register).unwrap();
+        let msg = register.encode();
         {
             let mut s = self.ws_sender.lock().await;
             if let Some(ws) = s.as_mut() {
@@ -183,6 +183,7 @@ impl SlaveState {
         let engine_id = self.engine_id.clone();
         let reconnect_instances = self.reconnect_instances.clone();
         let self_local_port = self.local_port;
+        let self_auth_token = self.auth_token.clone();
         let tunnel_endpoint_shared = self.tunnel_endpoint.clone();
         let instance_store_clone = self.instance_store.clone();
 
@@ -264,7 +265,7 @@ impl SlaveState {
                                     .unwrap_or_else(|| format!("http://localhost:{}", self_local_port)),
                                 instances,
                             };
-                            let msg = serde_json::to_string(&register).unwrap();
+                            let msg = register.encode();
                             {
                                 let mut s = ws_sender_shared.lock().await;
                                 if let Some(ws) = s.as_mut() {
@@ -284,7 +285,8 @@ impl SlaveState {
                             let (ws_to_tunnel_tx, tunnel_to_ws_rx) = mpsc::unbounded_channel::<String>();
                             let (tunnel_to_ws_tx_new, tunnel_to_ws_rx_new) = mpsc::unbounded_channel::<String>();
                             let slave_handler = Arc::new(SlaveLocalHandler::new(instance_store_clone.clone()));
-                            let dispatchers: Vec<Box<dyn mad_hatter::tunnel::Dispatch>> = vec![ExtensionHandlerDispatcher::boxed(slave_handler)];
+                            let http_handler = Arc::new(SlaveHttpProxyHandler::new(self_local_port, self_auth_token.clone()));
+                            let dispatchers: Vec<Box<dyn mad_hatter::tunnel::Dispatch>> = vec![ExtensionHandlerDispatcher::boxed(slave_handler), HttpProxyDispatcher::boxed(http_handler)];
                             let endpoint = TunnelEndpoint::new(
                                 tunnel_to_ws_rx,
                                 tunnel_to_ws_tx_new,
@@ -332,9 +334,9 @@ impl SlaveState {
                 msg = ws_receiver.next() => {
                     match msg {
                         Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
-                            match serde_json::from_str::<TunnelMessage>(&text) {
+                            match TunnelMessage::decode(&text) {
                                 Ok(TunnelMessage::Heartbeat) => {
-                                    let hb = serde_json::to_string(&TunnelMessage::Heartbeat).unwrap();
+                                    let hb = TunnelMessage::Heartbeat.encode();
                                     let mut s = ws_sender_shared.lock().await;
                                     if let Some(ws) = s.as_mut() {
                                         let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(hb.into())).await;
@@ -367,7 +369,7 @@ impl SlaveState {
                 Some(rpc_payload) = tunnel_to_ws_rx.recv() => {
                     // TunnelEndpoint wants to send an RPC message → forward to WebSocket
                     let rpc_msg = TunnelMessage::Rpc { payload: rpc_payload };
-                    let text = serde_json::to_string(&rpc_msg).unwrap();
+                    let text = rpc_msg.encode();
                     let mut s = ws_sender_shared.lock().await;
                     if let Some(ws) = s.as_mut() {
                         if ws.send(tokio_tungstenite::tungstenite::Message::Text(text.into())).await.is_err() {
@@ -384,7 +386,7 @@ impl SlaveState {
     pub async fn disconnect(&self) {
         let mut s = self.ws_sender.lock().await;
         if let Some(ws) = s.as_mut() {
-            let msg = serde_json::to_string(&TunnelMessage::Leave).unwrap();
+            let msg = TunnelMessage::Leave.encode();
             let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await;
             let _ = ws.close().await;
             info!("[HUB-SLAVE] Sent Leave message and closed WebSocket");
@@ -408,7 +410,7 @@ impl SlaveState {
             engine_endpoint,
             instances,
         };
-        let msg = serde_json::to_string(&register).unwrap();
+        let msg = register.encode();
         let mut s = self.ws_sender.lock().await;
         if let Some(ws) = s.as_mut() {
             match ws.send(tokio_tungstenite::tungstenite::Message::Text(msg.into())).await {
