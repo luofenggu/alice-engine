@@ -45,7 +45,7 @@ use std::time::Instant;
 use tracing::{error, info, warn};
 
 use crate::action::execute::execute_action;
-use mad_hatter::llm::{stream_infer_with_on_text, infer_with_on_text, OpenAiChannel, ToMarkdown};
+use mad_hatter::llm::{stream_infer_with_on_text, infer_with_on_text, OpenAiChannel, ToMarkdown, InferError};
 use crate::external::llm::LlmConfig;
 use std::sync::atomic::AtomicU64;
 use std::sync::RwLock;
@@ -922,14 +922,14 @@ impl Alice {
                 let (backoff, rotation) = self.set_inference_backoff();
                 anyhow::anyhow!(
                     "{}",
-                    crate::policy::messages::inference_error(&e, backoff, rotation.as_ref())
+                    crate::policy::messages::inference_error(&e.to_string(), backoff, rotation.as_ref())
                 )
             })?;
 
         // 7. Stream actions: consume and execute (with sequence guard)
         self.last_was_idle = false;
         let mut guard = SequenceGuard::new(&self.instance.id);
-        let mut inference_error: Option<String> = None;
+        let mut inference_error: Option<InferError> = None;
 
         while let Some(result) = stream_iter.next().await {
             // Check for interrupt signal between actions
@@ -1057,23 +1057,22 @@ impl Alice {
 
         // Handle inference result
         if let Some(e) = inference_error {
-            // Preamble errors (format errors) should not trigger channel rotation
-            if e.contains("FORMAT VIOLATION") {
-                warn!(
-                    "[PREAMBLE-{}] LLM output preamble before first action, recording as inference error",
-                    self.instance.id
-                );
-                let note_text = e.clone();
-                let note_id = action_output::generate_action_id();
-                self.instance.memory.insert_done_note(&note_id, &ActionType::InferenceError, &note_text).ok();
-                // Don't advance channel, don't bail - let beat end normally
-                // Agent will see this in current on next inference
-            } else {
+            if e.code.is_channel() {
+                // Channel-level error: advance channel + backoff + bail
                 let (backoff, rotation) = self.set_inference_backoff();
                 anyhow::bail!(
                     "{}",
-                    crate::policy::messages::inference_error(&e, backoff, rotation.as_ref())
+                    crate::policy::messages::inference_error(&e.to_string(), backoff, rotation.as_ref())
                 );
+            } else {
+                // Output-level error (FormatViolation/ParseError/Truncated): record but don't rotate
+                warn!(
+                    "[INFER-ERR-{}] Output-level inference error: {}",
+                    self.instance.id, e
+                );
+                let note_text = e.to_string();
+                let note_id = action_output::generate_action_id();
+                self.instance.memory.insert_done_note(&note_id, &ActionType::InferenceError, &note_text).ok();
             }
         } else {
             // Inference completed successfully (iterator exhausted or normal break)
