@@ -45,7 +45,7 @@ pub use async_trait::async_trait;
 
 pub mod llm;
 pub mod tunnel;
-pub use llm::{LlmChannel, OpenAiChannel, StructInput, StructOutput, infer, infer_with_on_text, stream_infer, stream_infer_with_on_text, StreamInfer};
+pub use llm::{LlmChannel, OpenAiChannel, StructInput, StructOutput, infer, infer_with_on_text, stream_infer, stream_infer_with_on_text, StreamInfer, InferError, InferErrorCode};
 
 // Re-export axum types that generated code needs
 pub use axum;

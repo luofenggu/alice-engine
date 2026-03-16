@@ -1,4 +1,4 @@
-use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, infer, infer_with_on_text};
+use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, infer, infer_with_on_text, InferError};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -273,9 +273,9 @@ async fn test_infer_channel_error() {
         context: "".to_string(),
     };
 
-    let result: Result<Vec<SimpleAction>, String> = infer(&ErrorChannel, &request).await;
+    let result: Result<Vec<SimpleAction>, InferError> = infer(&ErrorChannel, &request).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("LLM service unavailable"));
+    assert!(result.unwrap_err().message.contains("LLM service unavailable"));
 }
 
 #[tokio::test]
@@ -298,10 +298,10 @@ async fn test_infer_missing_end_marker() {
         context: "".to_string(),
     };
 
-    let result: Result<Vec<SimpleAction>, String> = infer(&NoEndChannel, &request).await;
+    let result: Result<Vec<SimpleAction>, InferError> = infer(&NoEndChannel, &request).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("No valid element found") || err.contains("end marker"), "Error should mention missing element or end marker: {}", err);
+    assert!(err.message.contains("No valid element found") || err.message.contains("end marker"), "Error should mention missing element or end marker: {}", err);
 }
 
 #[tokio::test]
@@ -490,7 +490,7 @@ async fn test_infer_with_preamble_returns_error() {
 
     assert!(result.is_err(), "preamble should cause error");
     let err = result.unwrap_err();
-    assert!(err.contains("FORMAT VIOLATION"), "error should mention preamble: {}", err);
+    assert!(err.message.contains("FORMAT VIOLATION"), "error should mention preamble: {}", err);
 }
 
 // === Cancel tests ===

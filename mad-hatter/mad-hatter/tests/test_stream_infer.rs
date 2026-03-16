@@ -1,4 +1,4 @@
-use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, stream_infer, stream_infer_with_on_text};
+use mad_hatter::{ToMarkdown, FromMarkdown, LlmChannel, stream_infer, stream_infer_with_on_text, InferError};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -144,7 +144,7 @@ async fn test_stream_infer_missing_end_marker() {
     let err = result.unwrap();
     assert!(err.is_err());
     let err_msg = err.unwrap_err();
-    assert!(err_msg.contains("No valid element found") || err_msg.contains("end marker"), "Error should mention missing element or end marker: {}", err_msg);
+    assert!(err_msg.message.contains("No valid element found") || err_msg.message.contains("end marker"), "Error should mention missing element or end marker: {}", err_msg);
 }
 
 #[tokio::test]
@@ -161,7 +161,7 @@ async fn test_stream_infer_channel_error() {
     let result = stream_infer::<StreamReq, StreamAction>(&FailChannel, &request).await;
     assert!(result.is_err());
     match result {
-        Err(e) => assert!(e.contains("Connection refused"), "unexpected error: {}", e),
+        Err(e) => assert!(e.message.contains("Connection refused"), "unexpected error: {}", e),
         Ok(_) => panic!("expected error but got Ok"),
     }
 }
@@ -389,7 +389,7 @@ async fn test_stream_infer_preamble_returns_error() {
     assert!(result.is_some(), "should return an error result");
     let err = result.unwrap();
     assert!(err.is_err(), "preamble should cause error");
-    assert!(err.unwrap_err().contains("FORMAT VIOLATION"), "error should mention unexpected content");
+    assert!(err.unwrap_err().message.contains("FORMAT VIOLATION"), "error should mention unexpected content");
 
     // Stream should be done after preamble error
     assert!(stream.next().await.is_none(), "stream should be done after preamble error");

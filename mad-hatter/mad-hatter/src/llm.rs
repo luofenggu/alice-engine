@@ -24,6 +24,82 @@ pub trait StructInput {}
 /// Used to enforce struct-only constraint on infer/stream_infer output
 pub trait StructOutput {}
 
+// ============================================================
+// InferError: structured error type for LLM inference
+// ============================================================
+
+/// Error code for LLM inference errors.
+///
+/// Two categories:
+/// - **Channel-level** (`is_channel() == true`): network/provider issues, caller should switch channel and retry
+/// - **Output-level** (`is_channel() == false`): LLM output quality issues, channel is working normally
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferErrorCode {
+    // Channel-level errors (switch channel)
+    /// Network failure: connection refused, DNS resolution, timeout
+    HttpRequestFailed,
+    /// Non-200 HTTP response: 402 Payment Required, 429 Rate Limited, 5xx Server Error
+    HttpStatus,
+    /// LlmChannel::start_stream() returned Err
+    StartStreamFailed,
+
+    // Output-level errors (channel is fine, output is bad)
+    /// LLM output preamble before first separator (zero tolerance)
+    FormatViolation,
+    /// FromMarkdown parsing failed: unknown variant, field mismatch
+    ParseError,
+    /// Stream ended without end marker (truncated output)
+    Truncated,
+}
+
+impl InferErrorCode {
+    /// Returns true if this is a channel/network-level error.
+    /// Caller should switch to a different LLM channel and retry.
+    pub fn is_channel(&self) -> bool {
+        matches!(self, Self::HttpRequestFailed | Self::HttpStatus | Self::StartStreamFailed)
+    }
+}
+
+impl std::fmt::Display for InferErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HttpRequestFailed => write!(f, "HttpRequestFailed"),
+            Self::HttpStatus => write!(f, "HttpStatus"),
+            Self::StartStreamFailed => write!(f, "StartStreamFailed"),
+            Self::FormatViolation => write!(f, "FormatViolation"),
+            Self::ParseError => write!(f, "ParseError"),
+            Self::Truncated => write!(f, "Truncated"),
+        }
+    }
+}
+
+/// Structured error type for LLM inference.
+///
+/// Contains an error code (for programmatic matching) and a human-readable message.
+#[derive(Debug)]
+pub struct InferError {
+    pub code: InferErrorCode,
+    pub message: String,
+}
+
+impl InferError {
+    pub fn new(code: InferErrorCode, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+}
+
+impl std::fmt::Display for InferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for InferError {}
+
+// ============================================================
+// Utilities
+// ============================================================
+
 /// Find `pattern` appearing as a complete line (after trimming) in `text`.
 /// Returns the byte offset where the pattern starts (not line start).
 /// This prevents substring matches inside content lines.
@@ -223,6 +299,23 @@ fn build_prompt<Req: ToMarkdown, Resp: FromMarkdown>(request: &Req, token: &str)
     )
 }
 
+/// Parse an error chunk from the spawned SSE task into an InferError.
+///
+/// The chunk format is `\n[ERROR] {message}` where message is either:
+/// - `HTTP request failed: {details}` → HttpRequestFailed
+/// - `HTTP {status}: {body}` → HttpStatus
+fn parse_channel_error(chunk: &str) -> InferError {
+    let msg = &chunk[9..]; // skip "\n[ERROR] "
+    if msg.starts_with("HTTP request failed:") {
+        InferError::new(InferErrorCode::HttpRequestFailed, msg)
+    } else if msg.starts_with("HTTP ") {
+        InferError::new(InferErrorCode::HttpStatus, msg)
+    } else {
+        // Fallback: treat unknown error format as channel error
+        InferError::new(InferErrorCode::HttpRequestFailed, msg)
+    }
+}
+
 /// Stream inference: yields parsed elements one by one as they arrive (async)
 ///
 /// Each time a complete element is detected in the stream (delimited by
@@ -230,7 +323,7 @@ fn build_prompt<Req: ToMarkdown, Resp: FromMarkdown>(request: &Req, token: &str)
 pub async fn stream_infer<Req, Resp>(
     channel: &dyn LlmChannel,
     request: &Req,
-) -> Result<StreamInfer<Resp>, String>
+) -> Result<StreamInfer<Resp>, InferError>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
@@ -254,7 +347,7 @@ pub async fn stream_infer_with_on_text<Req, Resp>(
     on_input: Option<Box<dyn FnOnce(&str) + Send>>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     on_thinking: Option<Box<dyn FnMut(&str) + Send>>,
-) -> Result<StreamInfer<Resp>, String>
+) -> Result<StreamInfer<Resp>, InferError>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
@@ -264,7 +357,8 @@ where
     if let Some(cb) = on_input {
         cb(&prompt);
     }
-    let receiver = channel.start_stream(prompt)?;
+    let receiver = channel.start_stream(prompt)
+        .map_err(|e| InferError::new(InferErrorCode::StartStreamFailed, e))?;
 
     Ok(StreamInfer {
         receiver,
@@ -303,7 +397,7 @@ impl<T: FromMarkdown> StreamInfer<T> {
     }
 
     /// Async next: yields the next parsed element from the stream
-    pub async fn next(&mut self) -> Option<Result<T, String>> {
+    pub async fn next(&mut self) -> Option<Result<T, InferError>> {
         if self.done {
             return None;
         }
@@ -331,9 +425,12 @@ impl<T: FromMarkdown> StreamInfer<T> {
                         // Non-empty content before thinking tag = preamble
                         self.done = true;
                         let display = if before_think.len() > 200 { &before_think[..200] } else { before_think };
-                        return Some(Err(format!(
-                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO commentary before the separator. Your output gets thrown away every single time you do this.",
-                            separator, display
+                        return Some(Err(InferError::new(
+                            InferErrorCode::FormatViolation,
+                            format!(
+                                "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO commentary before the separator. Your output gets thrown away every single time you do this.",
+                                separator, display
+                            ),
                         )));
                     }
                     if let Some(think_end) = find_line_match(&self.buffer, &think_close) {
@@ -376,9 +473,12 @@ impl<T: FromMarkdown> StreamInfer<T> {
                         // Non-empty, non-exempt line before any separator = preamble
                         self.done = true;
                         let display = if t.len() > 200 { &t[..200] } else { t };
-                        return Some(Err(format!(
-                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO commentary before the separator. Your output gets thrown away every single time you do this.",
-                            separator, display
+                        return Some(Err(InferError::new(
+                            InferErrorCode::FormatViolation,
+                            format!(
+                                "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO commentary before the separator. Your output gets thrown away every single time you do this.",
+                                separator, display
+                            ),
                         )));
                     }
                 }
@@ -397,9 +497,12 @@ impl<T: FromMarkdown> StreamInfer<T> {
                     }) {
                         self.done = true;
                         let display = if before.len() > 200 { &before[..200] } else { before };
-                        return Some(Err(format!(
-                            "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO commentary before the separator. Your output gets thrown away every single time you do this.",
-                            separator, display
+                        return Some(Err(InferError::new(
+                            InferErrorCode::FormatViolation,
+                            format!(
+                                "FORMAT VIOLATION: Output REJECTED. You MUST start with the separator `{}`, not garbage text. You wrote: `{}`. NO preamble, NO commentary before the separator. Your output gets thrown away every single time you do this.",
+                                separator, display
+                            ),
                         )));
                     }
                     self.buffer = self.buffer[first_pos..].to_string();
@@ -435,7 +538,7 @@ impl<T: FromMarkdown> StreamInfer<T> {
                                     return Some(Ok(items.remove(0)));
                                 }
                                 Ok(_) => { continue; }
-                                Err(e) => return Some(Err(e)),
+                                Err(e) => return Some(Err(InferError::new(InferErrorCode::ParseError, e))),
                             }
                         } else {
                             self.buffer = self.buffer[boundary_pos..].to_string();
@@ -453,7 +556,7 @@ impl<T: FromMarkdown> StreamInfer<T> {
                                     return Some(Ok(items.remove(0)));
                                 }
                                 Ok(_) => return None,
-                                Err(e) => return Some(Err(e)),
+                                Err(e) => return Some(Err(InferError::new(InferErrorCode::ParseError, e))),
                             }
                         }
                         return None;
@@ -470,7 +573,7 @@ impl<T: FromMarkdown> StreamInfer<T> {
                     // Check for error signals from the spawned task
                     if chunk.starts_with("\n[ERROR] ") {
                         self.done = true;
-                        return Some(Err(chunk[9..].to_string()));
+                        return Some(Err(parse_channel_error(&chunk)));
                     }
                     if let Some(ref mut callback) = self.on_text {
                         callback(&chunk);
@@ -488,9 +591,12 @@ impl<T: FromMarkdown> StreamInfer<T> {
                     } else {
                         self.buffer.clone()
                     };
-                    return Some(Err(format!(
-                        "[{}] Missing end marker '{}' after {} element(s). Buffer tail (up to 200 chars): {}",
-                        self.type_name, end_marker, self.parsed_count, tail
+                    return Some(Err(InferError::new(
+                        InferErrorCode::Truncated,
+                        format!(
+                            "[{}] Missing end marker '{}' after {} element(s). Buffer tail (up to 200 chars): {}",
+                            self.type_name, end_marker, self.parsed_count, tail
+                        ),
                     )));
                 }
             }
@@ -505,7 +611,7 @@ impl<T: FromMarkdown> StreamInfer<T> {
 pub async fn infer<Req, Resp>(
     channel: &dyn LlmChannel,
     request: &Req,
-) -> Result<Vec<Resp>, String>
+) -> Result<Vec<Resp>, InferError>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
@@ -524,7 +630,7 @@ pub async fn infer_with_on_text<Req, Resp>(
     on_input: Option<Box<dyn FnOnce(&str) + Send>>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     on_thinking: Option<Box<dyn FnMut(&str) + Send>>,
-) -> Result<Vec<Resp>, String>
+) -> Result<Vec<Resp>, InferError>
 where
     Req: ToMarkdown + StructInput,
     Resp: FromMarkdown + StructOutput,
@@ -612,4 +718,3 @@ mod tests {
         assert!(text[matched_line_start..].starts_with("Action-abc123\nsend_msg"));
     }
 }
-
