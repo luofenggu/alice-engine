@@ -292,7 +292,7 @@ fn build_prompt<Req: ToMarkdown, Resp: FromMarkdown>(request: &Req, token: &str)
     let request_text = request.to_markdown();
     let schema = Resp::schema_markdown(token);
     format!(
-        "{request}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{schema}\n\n如果你需要在输出前思考，可以使用 <think-{token}>...</think-{token}> 标签包裹你的思考过程。思考内容是可选的，思考结束后必须严格按照上面的格式输出。示例：\n<think-{token}>\n分析一下这个问题...\n</think-{token}>\n（然后直接按格式输出）",
+        "{request}\n\n### 输出规范 ###\n你必须严格按照以下格式输出，不要输出任何额外的解释或前言，直接从第一行开始按格式输出。\n\n{schema}\n\n如果你需要在输出前思考，可以使用 <think-{token}>...</think-{token}> 标签包裹你的思考过程。思考内容是可选的。\n可以在实施action之前先记录planning-thinking（思考计划），也可以在关键action之后记录reflection-thinking（观察结果）。\n思考结束后必须严格按照上面的格式输出。示例：\n<think-{token}>\n分析一下这个问题...\n</think-{token}>\n（然后直接按格式输出）",
         request = request_text,
         schema = schema,
         token = token,
